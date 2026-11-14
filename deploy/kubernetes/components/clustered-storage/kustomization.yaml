@@ -1,0 +1,43 @@
+# Clustered storage for any layer (standalone, site or central): PostgreSQL and
+# ClickHouse you run (or rent) instead of SQLite on a volume. Add to a layer's
+# kustomization.yaml:
+#
+#   components:
+#     - ../components/clustered-storage
+#
+# and create the connection secret in that namespace:
+#
+#   kubectl -n cerberus create secret generic cerberus-storage \
+#     --from-literal=postgres-url='postgresql://cerberus:PASSWORD@postgres.db.svc:5432/cerberus' \
+#     --from-literal=clickhouse-url='http://cerberus:PASSWORD@clickhouse.db.svc:8123/cerberus'
+#
+# With the data in those servers the pod keeps nothing itself, so the volume
+# claim is dropped. To move an existing SQLite installation across, see
+# tools/migrate.py (it is in the image).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: Deployment, name: cerberus}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: CERBERUS_POSTGRES_URL_FILE, value: /run/secrets/storage/postgres-url}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: CERBERUS_CLICKHOUSE_URL_FILE, value: /run/secrets/storage/clickhouse-url}
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: {name: storage, mountPath: /run/secrets/storage, readOnly: true}
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: {name: storage, secret: {secretName: cerberus-storage, defaultMode: 0440}}
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value: {name: data, emptyDir: {}}
+  - target: {kind: PersistentVolumeClaim, name: cerberus-data}
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: cerberus-data

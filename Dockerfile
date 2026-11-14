@@ -14,6 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY cerberus ./cerberus
+COPY tools/migrate.py ./tools/migrate.py
 
 # Runs unprivileged, so it listens on 5514 and compose maps host port 514 to it.
 RUN useradd --system --uid 10001 --no-create-home cerberus \

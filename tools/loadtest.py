@@ -97,7 +97,15 @@ async def run(args) -> int:
     cfg.data_dir, cfg.device_identity = tmp, "ip"
     if args.max_events:
         cfg.max_events = args.max_events
-    db = Database(tmp / "cerberus.db", segment_rows_for(cfg.max_events))
+    if args.postgres or args.clickhouse:
+        # Clustered storage. Point these at empty, throwaway databases: the run writes to them.
+        from cerberus.ch import ClickHouseEvents
+        from cerberus.pg import PostgresStore
+        db = PostgresStore(args.postgres, ClickHouseEvents(args.clickhouse))
+        if db.events_stored():
+            raise SystemExit("the ClickHouse database already holds events; use an empty one")
+    else:
+        db = Database(tmp / "cerberus.db", segment_rows_for(cfg.max_events))
     engine = Engine(cfg, db, ConnectorRegistry(), Notifier(db))
     engine.load()
     engine.installed -= 86400  # past the learning period, as a running system would be
@@ -133,8 +141,13 @@ async def run(args) -> int:
         profiler.disable()
     await engine._flush()
 
-    size = sum(f.stat().st_size for f in tmp.iterdir() if f.is_file()) / 1e6
-    alerts = db.q("SELECT COUNT(*) AS n FROM alerts")[0]["n"]
+    if hasattr(db, "events"):  # clustered: what ClickHouse holds on disk for the events table
+        db.events.client.command("OPTIMIZE TABLE events FINAL")
+        size = int(db.events.client.command("SELECT sum(bytes_on_disk) FROM system.parts WHERE active "
+                                            "AND database = currentDatabase() AND table = 'events'")) / 1e6
+    else:
+        size = sum(f.stat().st_size for f in tmp.iterdir() if f.is_file()) / 1e6
+    alerts = db.alert_next_id() - 1
     print(f"\npipeline      {args.messages / cpu:>10,.0f} messages/s on one core (parse + detect)")
     print(f"with storage  {args.messages / (cpu + flush):>10,.0f} messages/s sustained")
     print(f"flush         {1000 * percentile(flushes, 0.5):>10.0f} ms median, {1000 * percentile(flushes, 0.99):.0f} ms p99 "
@@ -158,8 +171,7 @@ async def run(args) -> int:
     }
     print("\nquery times over everything stored")
     t0 = time.perf_counter()
-    db.q("SELECT (minute / 900) * 900 AS t, SUM(events) AS e, SUM(blocked) AS b FROM stats_minute "
-         "WHERE minute >= 0 AND device = '*' GROUP BY t")
+    db.traffic_series(0, 900)
     print(f"  {'dashboard chart':<32}{1000 * (time.perf_counter() - t0):>8.0f} ms")
     for name, filters in searches.items():
         t0 = time.perf_counter()
@@ -182,6 +194,8 @@ def main() -> int:
     ap.add_argument("--messages", type=int, default=500_000)
     ap.add_argument("--rate", type=int, default=5000, help="simulated messages per second (sets flush size and detector windows)")
     ap.add_argument("--max-events", type=int, default=0, help="event cap to test with (default: CERBERUS_MAX_EVENTS)")
+    ap.add_argument("--postgres", default="", help="measure clustered storage: an empty PostgreSQL database URL")
+    ap.add_argument("--clickhouse", default="", help="... and an empty ClickHouse database URL")
     ap.add_argument("--profile", action="store_true", help="print where the CPU time goes")
     return asyncio.run(run(ap.parse_args()))
 

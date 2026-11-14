@@ -2,7 +2,8 @@
 .venv
 data
 tests
-tools
+tools/*
+!tools/migrate.py
 **/__pycache__
 *.md
 docs

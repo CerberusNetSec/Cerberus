@@ -15,13 +15,33 @@ CERBERUS_PASSWORD=dev .venv/bin/python -m cerberus     # syslog on 5514, UI on h
 python tools/simulate.py --port 5514                   # sample attacks and ordinary traffic
 ```
 
+### Clustered-storage tests
+
+`tests/test_backends.py` runs against real PostgreSQL and ClickHouse when two
+URLs are set, and is skipped otherwise:
+
+```sh
+docker run -d --name cerberus-dev-pg -p 127.0.0.1:15432:5432 -e POSTGRES_USER=cerberus \
+  -e POSTGRES_PASSWORD=devtest -e POSTGRES_DB=cerberus postgres:16-alpine
+docker run -d --name cerberus-dev-ch -p 127.0.0.1:18123:8123 -e CLICKHOUSE_USER=cerberus \
+  -e CLICKHOUSE_PASSWORD=devtest -e CLICKHOUSE_DB=cerberus --ulimit nofile=262144:262144 \
+  clickhouse/clickhouse-server:24.8
+CERBERUS_TEST_POSTGRES_URL=postgresql://cerberus:devtest@127.0.0.1:15432/cerberus \
+CERBERUS_TEST_CLICKHOUSE_URL=http://cerberus:devtest@127.0.0.1:18123/cerberus \
+  .venv/bin/python -m pytest tests/test_backends.py
+```
+
+Each test creates and drops its own databases. CI runs them with service
+containers.
+
 ## Tools
 
 | Command | What it does |
 |---|---|
 | `python tools/simulate.py [scenario ...]` | Sends fake syslog over UDP. `--list` shows the scenarios |
 | `python tools/snmp_sim.py [--rogue] [--sites N]` | Fake SNMP agents for the topology feature |
-| `python tools/loadtest.py [--devices N --messages N]` | In-process throughput, storage and query timings |
+| `python tools/loadtest.py [--devices N --messages N]` | In-process throughput, storage and query timings (`--postgres` and `--clickhouse` measure clustered storage on empty databases) |
+| `python tools/migrate.py --from cerberus.db --postgres ... --clickhouse ...` | Move a SQLite installation to clustered storage |
 | `python deploy/make-secrets.py <site> ...` and `docker compose -f deploy/compose/demo.yml up -d --build` | A central console and two sites on one machine |
 
 CI (`.github/workflows/ci.yml`) runs the tests and validates all four

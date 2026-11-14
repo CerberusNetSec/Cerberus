@@ -231,6 +231,39 @@ the devices that `tools/simulate.py` logs as (run Cerberus with
 the one it prints. `--rogue` adds an unexpected switch to trigger the alert.
 `--sites 30` serves a 302-device campus instead.
 
+## Clustered storage
+
+By default everything is kept in one SQLite file. For more history, faster
+searches, or databases your team already runs and backs up, Cerberus can use
+**PostgreSQL** (alerts, devices, settings, channels, sessions, console sites)
+and **ClickHouse** (events and per-minute counters) instead:
+
+```sh
+CERBERUS_POSTGRES_URL=postgresql://cerberus:PASSWORD@db-host:5432/cerberus
+CERBERUS_CLICKHOUSE_URL=http://cerberus:PASSWORD@ch-host:8123/cerberus
+```
+
+Both must be set; the tables are created on first start. Behaviour is
+identical: the same reference traffic produces exactly the same alerts,
+stored events and API answers on either backend (tested in CI against real
+servers). On the load test ClickHouse stored an event in about 100 bytes
+against SQLite's 830 and searched message text over all stored events in
+50 ms; real logs compress less than simulated ones.
+
+- **Try it:** `python deploy/make-secrets.py --storage` then
+  `docker compose -f deploy/compose/clustered-storage.yml up -d --build`
+  runs Cerberus with both databases on one host.
+- **Kubernetes:** add the `components/clustered-storage` component to any
+  layer; see [deploy/README.md](deploy/README.md).
+- **Moving an installation across:** stop Cerberus, then
+  `python tools/migrate.py --from data/cerberus.db --postgres ... --clickhouse ...`
+  (also in the image). Everything moves, the detectors' learned state
+  included; the SQLite file is only read.
+
+Expiry with ClickHouse drops whole hours of events, so the total can exceed
+`CERBERUS_MAX_EVENTS` by up to an hour's worth. A batch is written to
+ClickHouse and then PostgreSQL as two writes, not one transaction.
+
 ## Many sites
 
 For more devices than one instance handles, run one Cerberus per site and
@@ -398,6 +431,7 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_PASSWORD_FILE` | | Read the password from a file instead (Docker and Kubernetes secrets) |
 | `CERBERUS_CENTRAL_URL`, `CERBERUS_CENTRAL_TOKEN[_FILE]`, `CERBERUS_SITE_NAME`, `CERBERUS_CENTRAL_CA` | | Report to a central console (see [deploy/README.md](deploy/README.md)) |
 | `CERBERUS_CENTRAL`, `CERBERUS_SITE_TOKENS_FILE`, `CERBERUS_SITE_SILENT_MINUTES` | `off`, , `5` | Act as the central console |
+| `CERBERUS_POSTGRES_URL`, `CERBERUS_CLICKHOUSE_URL` (or `_FILE`) | | Store data in PostgreSQL and ClickHouse instead of SQLite; set both (see [Clustered storage](#clustered-storage)) |
 
 ## Security notes
 

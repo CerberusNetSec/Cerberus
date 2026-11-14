@@ -70,6 +70,7 @@ stages and requires identical results.
 | `engine.py` | Pipeline, device registry, alert folding, flush and prune loops |
 | `storage.py` | The storage contract (`Store`, `Batch`): every operation a backend provides |
 | `db.py` | The SQLite backend: connections, event segments, and the contract's SQL |
+| `pg.py`, `ch.py`, `backends.py` | The PostgreSQL + ClickHouse backend, and choosing a backend |
 | `state.py` | JSON codec for detector state (no pickle) |
 | `notifiers.py` | Channels and delivery |
 | `snmp.py`, `snmp_poller.py`, `topology.py` | SNMP v2c client, polling, map building |
@@ -79,10 +80,19 @@ stages and requires identical results.
 ## Storage
 
 Everything is stored through the operations in `cerberus/storage.py`; no
-other module contains SQL (a test enforces it), so another backend can replace
-SQLite by implementing that contract. Today's backend keeps everything in
-`cerberus.db` in the data directory (WAL mode, one writer connection, four
-readers).
+other module contains SQL or calls a storage method outside that contract
+(tests enforce both). `backends.open_store()` picks the backend:
+
+- **SQLite** (`db.py`, the default): everything in `cerberus.db` in the data
+  directory (WAL mode, one writer connection, four readers). The tables are
+  below.
+- **PostgreSQL + ClickHouse** (`pg.py`, `ch.py`), when `CERBERUS_POSTGRES_URL`
+  and `CERBERUS_CLICKHOUSE_URL` are set: the same relational tables in
+  PostgreSQL; events (one MergeTree table, partitioned by hour, ids assigned
+  in arrival order) and the per-minute counters (SummingMergeTree) in
+  ClickHouse. `tests/test_backends.py` runs the reference traffic, the API
+  contract, the federation tests and a migration against both and requires
+  identical results.
 
 | Table | Holds |
 |---|---|

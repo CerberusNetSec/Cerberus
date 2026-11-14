@@ -29,6 +29,8 @@ from tools import migrate as migrate_tool  # noqa: E402
 
 PG = os.environ.get("CERBERUS_TEST_POSTGRES_URL", "")
 CH = os.environ.get("CERBERUS_TEST_CLICKHOUSE_URL", "")
+if os.environ.get("CERBERUS_REQUIRE_BACKENDS") and not (PG and CH):
+    raise RuntimeError("CERBERUS_REQUIRE_BACKENDS is set but the server URLs are not")  # CI must not skip silently
 pytestmark = pytest.mark.skipif(not (PG and CH), reason="set CERBERUS_TEST_POSTGRES_URL and CERBERUS_TEST_CLICKHOUSE_URL")
 
 

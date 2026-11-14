@@ -1,6 +1,6 @@
 # Scaling Cerberus to thousands of log sources
 
-Status: **stage 1 (federation) released in 0.2.0; stage 2 phase 1 (seams) released in 0.3.0; phase 2 in progress.**
+Status: **stage 1 (federation) released in 0.2.0; stage 2 phase 1 (seams) in 0.3.0; phase 2 (shared storage) in 0.4.0.**
 
 ## Goal
 
@@ -85,15 +85,31 @@ Estimates assume one experienced engineer and are rough.
    - Detector state snapshots and restores through a JSON codec, and survives
      restarts.
    - Dashboard sessions stored, not held in memory.
-2. **Shared storage (3–4 weeks).** PostgreSQL and ClickHouse backends and a
-   migration tool from SQLite. Top talkers and "new source" figures become
-   queries rather than in-memory counters.
+2. **Shared storage. Done.** PostgreSQL for alerts, devices, settings,
+   channels, sessions and console sites; ClickHouse for events and counters
+   (`pg.py`, `ch.py`), chosen by setting `CERBERUS_POSTGRES_URL` and
+   `CERBERUS_CLICKHOUSE_URL`. `tools/migrate.py` moves a SQLite installation
+   across. Proved by `tests/test_backends.py` against real servers in CI: the
+   reference traffic stores exactly what SQLite stores (also across
+   restarts), the API contract answers identically, federation works with
+   console and sites on their own databases, and a migrated database reads
+   back identically. Reference deployments: `compose/clustered-storage.yml`
+   and the Kubernetes `components/clustered-storage`.
+   - Moved to phase 4: top blocked sources, and the Risk ports page's busiest
+     talkers and "new source" markers, are still counted in memory. They only
+     need to become queries once detection runs on several workers, and
+     phase 4 is where that happens.
+   - Event ids are assigned by the one Cerberus process writing; several
+     collectors writing at once (phase 3) need ids that cannot collide.
 3. **Scale-out ingest (2–3 weeks).** Collector role, publishing to Kafka, TLS
    syslog, spooling to disk when Kafka is unreachable, load-balancer
-   reference configurations.
+   reference configurations, and event ids that several writers can assign
+   without colliding.
 4. **Sharded detection and alerting (4–6 weeks).** Keyed streams, the
    detection worker role, idempotent alert upserts, correlation on the alert
-   stream, a notification outbox so each alert is sent exactly once.
+   stream, a notification outbox so each alert is sent exactly once, splitting
+   `credential_attacks` in two, and top talkers and "new source" markers as
+   ClickHouse queries.
 5. **Availability and operations (3–4 weeks).** State rebuilt on failover by
    replaying a detector's window from Kafka, snapshots for learned baselines,
    leader election, poller leases, Prometheus metrics, and the reference

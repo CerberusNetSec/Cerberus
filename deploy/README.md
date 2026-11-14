@@ -161,6 +161,29 @@ Swarm suits sites that are all reachable from one manager. For sites run by
 different teams or without a shared control plane, use the Compose files per
 site instead.
 
+## Clustered storage (any deployment)
+
+Any of the deployments can keep its data in PostgreSQL and ClickHouse instead
+of SQLite, by setting `CERBERUS_POSTGRES_URL` and `CERBERUS_CLICKHOUSE_URL`
+(or their `_FILE` forms for secrets). See "Clustered storage" in the main
+README for what changes.
+
+- **Compose:** `compose/clustered-storage.yml` runs Cerberus with both
+  databases on one host. Generate its secrets with
+  `python deploy/make-secrets.py --storage`. For your own database servers,
+  set the two URLs on any of the other Compose files instead.
+- **Swarm:** add the two `_FILE` variables and secrets holding the URLs to a
+  service in `swarm/stack.yml`; the service then needs no node label, since its
+  data no longer lives on a node.
+- **Kubernetes:** add `components: [../components/clustered-storage]` to a
+  layer's kustomization and create a `cerberus-storage` secret with
+  `postgres-url` and `clickhouse-url` keys (see the component's header). The
+  volume claim is dropped.
+
+Run PostgreSQL and ClickHouse with replication and backups as your platform
+does (managed services, operators); the Compose file's single containers are
+for trying it.
+
 ## Kubernetes
 
 Kustomize, in layers over one [`base`](kubernetes/base):
@@ -217,7 +240,10 @@ same cluster as the console can use
 | Swarm | `swarm/stack.yml` on a three-node swarm (Docker-in-Docker): services placed by label, both sites reported over the overlay, traffic between nodes confirmed ESP-encrypted, console reached through Caddy's HTTPS, site saw devices' real source addresses |
 | Kubernetes | `standalone`, `site` and `central` on k3s 1.31: all rolled out as non-root with read-only filesystems; the site reported to the console; syslog through the LoadBalancer kept the sender's real address |
 
+| Clustered storage | `compose/clustered-storage.yml` on Docker Desktop with PostgreSQL 16 and ClickHouse 24.8: every attack scenario over TCP, alerts, event search and risk ports through the API, then a restart with the session and detector state intact. The Kubernetes component is checked by rendering only |
+
 Not yet tested: Swarm across real hosts on separate networks, Kubernetes on a
-managed cloud load balancer, and the console's Ingress with an ingress
-controller (k3s ran without one). CI checks on every push that all four
+managed cloud load balancer, the console's Ingress with an ingress
+controller (k3s ran without one), and the clustered-storage component on a
+running cluster. CI checks on every push that all four
 deployments' files are valid.

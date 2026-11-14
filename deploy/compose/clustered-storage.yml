@@ -1,0 +1,77 @@
+# Cerberus on PostgreSQL + ClickHouse instead of SQLite, all on one host.
+#
+#   python deploy/make-secrets.py --storage          # once: passwords and URLs in deploy/secrets/
+#   docker compose -f deploy/compose/clustered-storage.yml up -d --build
+#
+# Dashboard on http://localhost:8080 (password: deploy/secrets/storage_password.txt),
+# syslog on 514.
+#
+# In production, point CERBERUS_POSTGRES_URL / CERBERUS_CLICKHOUSE_URL at your
+# own replicated PostgreSQL and ClickHouse instead of running them here. To move
+# an existing SQLite installation across, see tools/migrate.py.
+name: cerberus-storage
+
+services:
+  cerberus:
+    image: ${CERBERUS_IMAGE:-cerberus:latest}
+    build: ../..
+    restart: unless-stopped
+    read_only: true
+    depends_on:
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+    ports:
+      - "514:5514/tcp"   # on Docker Desktop for Windows/macOS send TCP: external UDP may not arrive
+      - "514:5514/udp"
+      - "8080:8080"
+    environment:
+      CERBERUS_PASSWORD_FILE: /run/secrets/dashboard_password
+      CERBERUS_POSTGRES_URL_FILE: /run/secrets/postgres_url
+      CERBERUS_CLICKHOUSE_URL_FILE: /run/secrets/clickhouse_url
+      CERBERUS_DEVICE_IDENTITY: ${CERBERUS_DEVICE_IDENTITY:-ip}
+      CERBERUS_MAX_EVENTS: ${CERBERUS_MAX_EVENTS:-50000000}   # about 100-300 bytes each in ClickHouse
+      CERBERUS_RETENTION_DAYS: ${CERBERUS_RETENTION_DAYS:-30}
+      TZ: ${TZ:-UTC}
+    secrets: [dashboard_password, postgres_url, clickhouse_url]
+    tmpfs: ["/data:uid=10001,gid=10001"]  # nothing is kept here with clustered storage
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cerberus
+      POSTGRES_DB: cerberus
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cerberus"]
+      interval: 5s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_DB: cerberus
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/clickhouse_password
+    secrets: [clickhouse_password]
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    volumes: [clickhouse-data:/var/lib/clickhouse]
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user cerberus --password \"$$(cat /run/secrets/clickhouse_password)\" --query 'SELECT 1'"]
+      interval: 5s
+      retries: 30
+
+secrets:
+  dashboard_password: {file: ../secrets/storage_password.txt}
+  postgres_password: {file: ../secrets/storage_postgres_password.txt}
+  clickhouse_password: {file: ../secrets/storage_clickhouse_password.txt}
+  postgres_url: {file: ../secrets/storage_postgres_url.txt}
+  clickhouse_url: {file: ../secrets/storage_clickhouse_url.txt}
+
+volumes:
+  postgres-data:
+  clickhouse-data:

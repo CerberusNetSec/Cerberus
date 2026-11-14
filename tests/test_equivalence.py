@@ -25,3 +25,13 @@ def test_same_alerts_and_storage_as_v0_2_0(tmp_path):
         assert got == want
     for table in ("events", "stats_minute", "port_minute", "devices"):
         assert actual[table] == expected[table], table
+
+
+def test_restarting_midway_changes_nothing(tmp_path):
+    """Detector state saved and restored across restarts: the same run, stopped and
+    restarted three times (during baseline learning, mid-attack and during the
+    beacon), detects and stores exactly what an uninterrupted run does."""
+    expected = json.loads(REFERENCE.read_text(encoding="utf-8"))
+    actual = json.loads(json.dumps(golden.run(None, tmp_path, restarts=(0.3, 0.62, 0.8))))
+    assert [a["title"] for a in actual["alerts"]] == [a["title"] for a in expected["alerts"]]
+    assert actual == expected

@@ -20,6 +20,7 @@ from .db import Database
 from .detectors import NewDevice, RateAnomaly, build_detectors
 from .models import Candidate, Event, sev_rank
 from .notifiers import Notifier
+from .state import decode, encode
 from .syslog_parser import parse_syslog
 
 log = logging.getLogger("cerberus.engine")
@@ -29,6 +30,9 @@ TOP_KEYS_PER_MINUTE = 20_000
 MAX_DEVICES = 5000
 MAX_PENDING_EVENTS = 200_000  # events waiting to be written; beyond this the disk is not keeping up
 TOTAL = "*"  # stats_minute row holding the sum over all devices, so charts read one row per minute
+STATE_KEY = "engine_state"  # settings row holding the detectors' working state
+STATE_VERSION = 1
+STATE_SAVE_SECONDS = 300
 # Detectors keyed on a source address; the ignore list applies to these.
 _SOURCE_KEYED = {"port_scan", "host_sweep", "deny_flood", "brute_force", "large_transfer", "threat",
                  "risky_egress", "lateral_movement", "beaconing", "credential_attacks", "correlation",
@@ -83,11 +87,11 @@ class AlertManager:
         self.next_id = 1
         self.new_rows: list[tuple] = []
 
-    def load(self) -> None:
+    def load(self, now: float | None = None) -> None:
         self.next_id = (self.db.q("SELECT MAX(id) AS m FROM alerts")[0]["m"] or 0) + 1
         rows = self.db.q(
             "SELECT * FROM alerts WHERE status != 'resolved' AND last_seen > ?",
-            (time.time() - self.cooldown,),
+            ((time.time() if now is None else now) - self.cooldown,),
         )
         for row in rows:
             self.active[f"{row['detector']}|{row['entity']}"] = _Active(
@@ -151,7 +155,8 @@ class AlertManager:
                     cur.status = status
 
     def expire(self, now: float) -> None:
-        for key in [k for k, v in self.active.items() if now - v.last_seen > self.cooldown]:
+        # An alert with a change not yet written stays until the next flush has written it.
+        for key in [k for k, v in self.active.items() if now - v.last_seen > self.cooldown and not v.dirty]:
             del self.active[key]
 
 
@@ -194,7 +199,8 @@ class Engine:
         self.receiver = None  # set by __main__, for the health figures on the dashboard
 
     # --- lifecycle -------------------------------------------------------
-    def load(self) -> None:
+    def load(self, now: float | None = None) -> None:
+        now = time.time() if now is None else now
         for row in self.db.q("SELECT * FROM devices"):
             self.devices[row["id"]] = Device(**{k: ("" if v is None else v) for k, v in row.items()})
         self.installed = self.db.get_setting("installed")
@@ -208,11 +214,13 @@ class Engine:
                       (TOTAL, TOTAL))
             self.db.set_setting("stats_totals", True)
         self.apply_settings(self.db.get_setting("detectors", {}), self.db.get_setting("general", {}))
-        self.admin_access.restore(self.db.get_setting("admin_sources", {}))
-        now = time.time()
-        self.risk_ports.restore(self.db.q("SELECT * FROM port_minute WHERE minute >= ? ORDER BY minute",
-                                          (int(now - 27 * 3600),)), now)
-        self.alerts.load()
+        restored = self.restore(self.db.get_setting(STATE_KEY) or {}, now)
+        if "admin_access" not in restored:
+            self.admin_access.restore_legacy(self.db.get_setting("admin_sources", {}))
+        if "risk_ports" not in restored:
+            self.risk_ports.restore_rows(self.db.q("SELECT * FROM port_minute WHERE minute >= ? ORDER BY minute",
+                                                   (int(now - 27 * 3600),)), now)
+        self.alerts.load(now)
 
     def apply_settings(self, detectors: dict, general: dict) -> None:
         for det in self.detectors:
@@ -245,10 +253,49 @@ class Engine:
         if self.correlation.enabled:
             self.correlation.on_alert(c, now, lambda found: self.alerts.raise_(found, now))
 
-    def save_state(self) -> None:
-        if self.admin_access.dirty:
-            self.admin_access.dirty = False
-            self.db.set_setting("admin_sources", self.admin_access.dump())
+    # --- working state ---------------------------------------------------
+    def snapshot(self, now: float | None = None) -> dict:
+        """Everything the detectors have learned and are counting, as JSON-compatible data.
+        Call on the event-loop thread: it reads state the pipeline is changing."""
+        return {"version": STATE_VERSION, "saved": time.time() if now is None else now,
+                "detectors": {d.id: d.snapshot() for d in self.detectors},
+                "baselines": encode(self.baselines), "tops": encode(self._tops)}
+
+    def restore(self, snap: dict, now: float) -> set[str]:
+        """Load a snapshot; returns the ids of the detectors restored. A detector whose
+        state does not load starts empty, as it would have without a snapshot."""
+        if not snap or snap.get("version") != STATE_VERSION:
+            return set()
+        restored = set()
+        for det in self.detectors:
+            data = snap.get("detectors", {}).get(det.id)
+            if data is None:
+                continue
+            try:
+                det.restore(data)
+                restored.add(det.id)
+            except (TypeError, ValueError, KeyError, AttributeError):
+                log.warning("could not restore the state of detector %s; it starts empty", det.id)
+        try:
+            # In place: RateAnomaly and DeviceSilent share this object.
+            loaded = decode(snap.get("baselines"))
+            self.baselines.devices, self.baselines.minute = loaded.devices, loaded.minute
+            if now - float(snap.get("saved", now)) > 60:
+                # Cerberus itself was down: devices were not silent, it was not listening.
+                for base in self.baselines.devices.values():
+                    base.last_seen = max(base.last_seen, now)
+            self._tops = decode(snap.get("tops"))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            log.warning("could not restore rate baselines; they warm up again")
+        return restored
+
+    def save_state(self, now: float | None = None) -> None:
+        """Snapshot and store, synchronously (tests and shutdown)."""
+        self.db.set_setting(STATE_KEY, self.snapshot(now))
+
+    async def save_state_async(self) -> None:
+        snap = self.snapshot()  # here, on the loop; the write goes to a thread
+        await asyncio.to_thread(self.db.set_setting, STATE_KEY, snap)
 
     async def start(self) -> None:
         await asyncio.to_thread(self.load)
@@ -262,7 +309,7 @@ class Engine:
         while not self.queue.empty():
             self._process(*self.queue.get_nowait())
         await self._flush()
-        await asyncio.to_thread(self.save_state)
+        await self.save_state_async()
 
     # --- intake ----------------------------------------------------------
     def submit(self, data: bytes, source_ip: str) -> None:
@@ -432,25 +479,35 @@ class Engine:
             await asyncio.sleep(10)
             now = time.time()
             self._rate.append((now, self.received))
-            emit = lambda c: self.raise_alert(c, now)  # noqa: E731
-            for det in self.detectors:
-                try:
-                    det.tick(now, emit if det.enabled else (lambda c: None))
-                except Exception:
-                    log.exception("detector %s tick failed", det.id)
-            self.alerts.expire(now)
+            self.tick(now)
             self.notifier.tick()
 
+    def tick(self, now: float) -> None:
+        """Time-based work: windows expire, baselines roll, silent devices are noticed."""
+        emit = lambda c: self.raise_alert(c, now)  # noqa: E731
+        for det in self.detectors:
+            try:
+                det.tick(now, emit if det.enabled else (lambda c: None))
+            except Exception:
+                log.exception("detector %s tick failed", det.id)
+        self.alerts.expire(now)
+
     async def _prune_loop(self) -> None:
+        saved = time.monotonic()
         while True:
             try:
                 await asyncio.to_thread(
                     self.db.prune, time.time(), self.cfg.retention_days,
                     self.cfg.max_events, self.cfg.alert_retention_days,
                 )
-                await asyncio.to_thread(self.save_state)
             except Exception:
                 log.exception("prune failed")
+            if time.monotonic() - saved >= STATE_SAVE_SECONDS:
+                saved = time.monotonic()
+                try:
+                    await self.save_state_async()
+                except Exception:
+                    log.exception("saving detector state failed")
             await asyncio.sleep(60)
 
     # --- read side for the web UI ----------------------------------------

@@ -14,6 +14,7 @@ from collections import deque
 
 from .detectors import Detector, SlidingSet, _clip, _origin
 from .models import Candidate, Event, is_internal
+from .state import persistent
 
 SERVICES = {
     22: "SSH", 23: "Telnet", 135: "RPC", 139: "NetBIOS", 161: "SNMP", 445: "SMB", 1080: "SOCKS proxy",
@@ -188,6 +189,7 @@ class LateralMovement(_PortDetector):
         self._prune(now, self.cfg["window"] + 60)
 
 
+@persistent
 class _Beat:
     __slots__ = ("last", "gaps")
 
@@ -312,16 +314,15 @@ class AdminAccess(Detector):
         ("quiet_end", 0, "Out-of-hours ends at (hour 0-23)"),
     ]
 
+    _persist = (*Detector._persist, "known", "first")
+
     def __init__(self):
         super().__init__()
         self.known: dict[str, dict[str, float]] = {}  # device -> {source ip: first seen}
         self.first: dict[str, float] = {}  # device -> first login ever observed
-        self.dirty = False
 
-    def dump(self) -> dict:
-        return {"known": self.known, "first": self.first}
-
-    def restore(self, state: dict) -> None:
+    def restore_legacy(self, state: dict) -> None:
+        """What 0.2.0 and earlier saved, under the 'admin_sources' setting."""
         self.known = {str(k): dict(v) for k, v in (state.get("known") or {}).items()}
         self.first = {str(k): float(v) for k, v in (state.get("first") or {}).items()}
 
@@ -364,7 +365,6 @@ class AdminAccess(Detector):
             return
         if len(seen) < 500:
             seen[ev.src_ip] = now
-            self.dirty = True
         if now - first >= self.cfg["learning_hours"] * 3600:
             emit(Candidate(
                 "admin_new_source", f"{ev.src_ip}@{ev.device}", "medium",
@@ -471,6 +471,8 @@ class Correlation(Detector):
         ("indicators", 3, "Different kinds of attack behaviour on one host to call it compromised"),
         ("window_hours", 24, "Look back (hours)"),
     ]
+
+    _persist = (*Detector._persist, "hosts", "hostile")
 
     def __init__(self):
         super().__init__()

@@ -84,6 +84,8 @@ class RiskPorts(Detector):
         ("history_hours", 6, "Hours of history needed before judging a spike"),
     ]
     multiline = ("ports",)
+    # _unsaved is not state: it is written to port_minute at every flush.
+    _persist = (*Detector._persist, "minute", "current", "recent", "hours", "talkers", "first_seen", "since")
 
     def __init__(self):
         super().__init__()
@@ -146,7 +148,7 @@ class RiskPorts(Detector):
         self._unsaved = {}
         return rows
 
-    def restore(self, rows: list[dict], now: float) -> None:
+    def restore_rows(self, rows: list[dict], now: float) -> None:
         """Rebuild the hourly history from stored port_minute rows after a restart."""
         for row in rows:
             key = (row["port"], row["direction"])

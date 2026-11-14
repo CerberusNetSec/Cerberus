@@ -11,6 +11,7 @@ from collections import deque
 from typing import Callable
 
 from .models import Candidate, Event, is_internal, sev_rank
+from .state import decode, encode, persistent
 
 Emit = Callable[[Candidate], None]
 
@@ -23,6 +24,7 @@ def _clip(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+@persistent
 class SlidingSet:
     """Distinct items seen within a time window."""
 
@@ -44,6 +46,7 @@ class SlidingSet:
         return len(items)
 
 
+@persistent
 class Buckets:
     """Sum of amounts within a time window, in coarse buckets."""
 
@@ -69,6 +72,9 @@ class Detector:
     description = ""
     # (key, default, label) - the default's type decides how the UI edits it
     params: list[tuple[str, object, str]] = []
+    # Attributes holding working state: saved across restarts by snapshot()/restore().
+    # Settings and anything derived from them are not state.
+    _persist: tuple[str, ...] = ("_state", "_emitted")
 
     def __init__(self):
         self.enabled = True
@@ -109,6 +115,17 @@ class Detector:
 
     def settings(self) -> dict:
         return {"enabled": self.enabled, **self.cfg}
+
+    # --- persistence -----------------------------------------------------
+    def snapshot(self) -> dict:
+        """Working state as JSON-compatible data."""
+        return {name: encode(getattr(self, name)) for name in self._persist}
+
+    def restore(self, data: dict) -> None:
+        """Load a snapshot. All or nothing: a snapshot that does not decode changes nothing."""
+        decoded = {name: decode(data[name]) for name in self._persist if name in data}
+        for name, value in decoded.items():
+            setattr(self, name, value)
 
     # --- state helpers -------------------------------------------------
     def _get(self, key, factory, now: float):
@@ -241,6 +258,7 @@ class DenyFlood(Detector):
             ))
 
 
+@persistent
 class _AuthState:
     __slots__ = ("times", "users")
 
@@ -444,6 +462,7 @@ class LargeTransfer(Detector):
             ))
 
 
+@persistent
 class _Baseline:
     """Per-device per-minute counts with an exponentially weighted mean/variance."""
 
@@ -459,6 +478,7 @@ class _Baseline:
         self.hostname = ""
 
 
+@persistent
 class Baselines:
     """Shared between RateAnomaly and DeviceSilent."""
 
@@ -561,6 +581,8 @@ class DeviceSilent(Detector):
         self.baselines = baselines
         self.recent: deque = deque(maxlen=2000)  # (when, host) of devices that just went silent
 
+    _persist = (*Detector._persist, "recent")
+
     def tick(self, now, emit):
         cfg = self.cfg
         while self.recent and now - self.recent[0][0] > 600:
@@ -608,6 +630,8 @@ class NewDevice(Detector):
         ("learning_minutes", 30, "Stay quiet for this long after first install (minutes)"),
         ("group", 10, "Report as one alert when more than this many appear within 10 minutes"),
     ]
+
+    _persist = (*Detector._persist, "recent")
 
     def __init__(self):
         super().__init__()

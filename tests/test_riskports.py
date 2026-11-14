@@ -113,7 +113,7 @@ def test_history_survives_a_restart():
     t = steady(rp, 300 * 3600.0, hours=12, per_hour=20, port=445, src="192.168.1.5", dst="192.168.9.9")
     rows = [{"minute": m, "port": p, "direction": d, "allowed": a, "blocked": b} for m, p, d, a, b in rp.drain()]
     fresh = RiskPorts()
-    fresh.restore(rows, t)
+    fresh.restore_rows(rows, t)
     assert fresh.usual((445, "internal"), t)[0][0] == rp.usual((445, "internal"), t)[0][0] > 15
     found = []
     for i in range(500):

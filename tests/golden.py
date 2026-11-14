@@ -67,7 +67,9 @@ def timeline(simulate) -> list[tuple[float, str]]:
     return out
 
 
-def run(code: Path | None, data_dir: Path) -> dict:
+def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = ()) -> dict:
+    """restarts: fractions of the way through the timeline at which to save the
+    engine's state, shut it down and start a new one on the same database."""
     if code is not None:
         sys.path.insert(0, str(code))
     from cerberus.config import Config
@@ -93,13 +95,18 @@ def run(code: Path | None, data_dir: Path) -> dict:
 
     cfg = Config.from_env()
     cfg.data_dir, cfg.device_identity = data_dir, "hostname"
-    db = Database(data_dir / "cerberus.db")
-    engine = Engine(cfg, db, ConnectorRegistry(), Notifier(db))
-    engine.load()
-    engine.installed = START - 86400  # long installed: new-device alerts are live
-    watch = {d.id: d.settings() for d in engine.detectors}
-    watch["watchlist"]["entries"] = "45.77.0.0/16"
-    engine.apply_settings(watch, engine.general_settings())
+
+    def start(now: float | None):
+        db = Database(data_dir / "cerberus.db")
+        engine = Engine(cfg, db, ConnectorRegistry(), Notifier(db))
+        engine.load() if now is None else engine.load(now)
+        engine.installed = START - 86400  # long installed: new-device alerts are live
+        watch = {d.id: d.settings() for d in engine.detectors}
+        watch["watchlist"]["entries"] = "45.77.0.0/16"
+        engine.apply_settings(watch, engine.general_settings())
+        return db, engine
+
+    db, engine = start(None)
 
     def tick(now: float) -> None:
         if hasattr(engine, "tick"):
@@ -111,15 +118,30 @@ def run(code: Path | None, data_dir: Path) -> dict:
         engine.alerts.expire(now)
 
     import asyncio
+    loop = asyncio.new_event_loop()
     next_tick = START + TICK
-    for offset, line in timeline(simulate):
+    lines = timeline(simulate)
+    stops = {int(len(lines) * f) for f in restarts}
+    last = START
+    for index, (offset, line) in enumerate(lines):
+        if index in stops:
+            loop.run_until_complete(engine._flush())
+            engine.save_state(last)
+            db.close()
+            db, engine = start(last)
         ts = START + offset
+        last = ts
         while next_tick <= ts:
+            # Production writes to disk every second and ticks every ten; write before
+            # each tick so nothing is held only in memory across a tick.
+            loop.run_until_complete(engine._flush())
             tick(next_tick)
             next_tick += TICK
         engine._process(line.encode(), "10.255.0.1", ts)
+    loop.run_until_complete(engine._flush())
     tick(next_tick)
-    asyncio.run(engine._flush())
+    loop.run_until_complete(engine._flush())
+    loop.close()
     db.close()
     return summarise(data_dir / "cerberus.db")
 

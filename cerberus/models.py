@@ -92,6 +92,11 @@ class Event:
     def as_dict(self) -> dict:
         return {name: getattr(self, name) for name in self.__slots__}
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Event":
+        """Inverse of as_dict; unknown keys are ignored so newer senders stay readable."""
+        return cls(**{name: data[name] for name in cls.__slots__ if name in data})
+
 
 @dataclass(slots=True)
 class Candidate:
@@ -106,3 +111,10 @@ class Candidate:
     src_ip: str | None = None
     device: str = ""
     details: dict = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        return {name: getattr(self, name) for name in self.__slots__}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Candidate":
+        return cls(**{name: data[name] for name in cls.__slots__ if name in data})

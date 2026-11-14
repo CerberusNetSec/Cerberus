@@ -401,3 +401,11 @@ alert folding, batching to SQLite) → `notifiers.py` and `web.py` + `static/`.
 Alongside: `snmp.py` (a small v2c client) → `snmp_poller.py` → `topology.py`.
 The wording of every alert's guidance lives in `playbooks.py`; `riskports.py` is the high-risk port
 tracker and its list of services.
+
+## Licence
+
+Apache License 2.0: see [LICENSE](LICENSE). You may use, modify and
+redistribute Cerberus, including commercially and inside your organisation,
+without charge. Keep the licence and the [NOTICE](NOTICE) file with copies you
+distribute, and mark files you change. The licence includes a patent grant and
+comes with no warranty.

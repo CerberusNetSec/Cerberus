@@ -85,6 +85,11 @@ class _PortDetector(Detector):
 
 
 class ExposedService(_PortDetector):
+    event_types = frozenset({"traffic"})
+    partition = "target"  # the internal host the connection ends at
+
+    def partition_key(self, ev):
+        return _inside(ev) or ""
     id = "exposed_service"
     name = "Sensitive service reachable from the internet"
     description = ("The firewall allowed an internet address to connect to an internal host on a remote-access, "
@@ -122,6 +127,8 @@ class ExposedService(_PortDetector):
 
 
 class RiskyEgress(_PortDetector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "risky_egress"
     name = "Risky outbound connection"
     description = ("An internal host was allowed out to the internet on a port with little legitimate use: SMB, "
@@ -155,6 +162,8 @@ class RiskyEgress(_PortDetector):
 
 
 class LateralMovement(_PortDetector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "lateral_movement"
     name = "Lateral movement"
     description = ("One internal host opening remote-administration or file-sharing connections to many other "
@@ -199,6 +208,8 @@ class _Beat:
 
 
 class Beaconing(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "beaconing"
     name = "Beaconing (possible command-and-control)"
     description = ("An internal host contacting the same internet address at very regular intervals, the way "
@@ -258,6 +269,9 @@ class Beaconing(Detector):
 
 
 class CredentialAttacks(Detector):
+    event_types = frozenset({"auth_failure"})
+    # Spraying is keyed by source, distributed guessing by account: two detectors in one.
+    partition = "split"
     id = "credential_attacks"
     name = "Password spraying and distributed guessing"
     description = ("One source trying many different usernames (spraying), or one account being attacked from "
@@ -303,6 +317,8 @@ class CredentialAttacks(Detector):
 
 
 class AdminAccess(Detector):
+    event_types = frozenset({"auth_success", "config_change"})
+    partition = "device"
     id = "admin_access"
     name = "Unexpected administrative access"
     description = ("A successful login to a firewall or switch from the internet, or from an address that has "
@@ -376,6 +392,8 @@ class AdminAccess(Detector):
 
 
 class Watchlist(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "pair"
     id = "watchlist"
     name = "Watchlist match"
     description = ("Traffic to or from addresses you list here: known-bad IPs from an incident or a threat feed, "
@@ -462,6 +480,9 @@ _SAME_KIND = {"port_scan": "network scanning", "host_sweep": "network scanning",
 
 
 class Correlation(Detector):
+    # Reads traffic, and every alert through on_alert(); both are keyed by source address.
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "correlation"
     name = "Correlation"
     description = ("Joins separate alerts: an internal host showing several different kinds of attack behaviour "

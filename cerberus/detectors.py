@@ -19,6 +19,19 @@ MAX_TRACKED = 50_000  # cap on keys per detector, so spoofed floods cannot eat m
 EMIT_INTERVAL = 5.0  # seconds between repeat emits for one entity
 
 
+# How a detector's state is keyed, which decides how events can be divided between
+# several copies of it (clustering): every event with the same key must reach the
+# same copy. "split" marks a detector that keys on two things at once and must be
+# divided into two detectors before it can be sharded; "none" reads no events.
+PARTITIONS = {
+    "source": lambda ev: ev.src_ip or "",
+    "source_or_device": lambda ev: ev.src_ip or f"device {ev.device}",
+    "device": lambda ev: ev.device,
+    "pair": lambda ev: "|".join(sorted((ev.src_ip or "", ev.dst_ip or ""))),
+    "port": lambda ev: "" if ev.dst_port is None else str(ev.dst_port),
+}
+
+
 def _clip(text: str, limit: int = 80) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -75,6 +88,15 @@ class Detector:
     # Attributes holding working state: saved across restarts by snapshot()/restore().
     # Settings and anything derived from them are not state.
     _persist: tuple[str, ...] = ("_state", "_emitted")
+    # The event types process() acts on (None: any). The engine does not call
+    # process() for others. Must include every type the detector reacts to.
+    event_types: frozenset | None = None
+    # What the detector's state is keyed by: a key of PARTITIONS, "split" or "none".
+    partition = "none"
+
+    def partition_key(self, ev: Event) -> str:
+        """Events with equal keys must be seen by the same copy of this detector."""
+        return PARTITIONS[self.partition](ev)
 
     def __init__(self):
         self.enabled = True
@@ -165,6 +187,8 @@ def _origin(ip: str) -> str:
 
 
 class PortScan(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "port_scan"
     name = "Port scan"
     description = "One source probing many different ports on a single destination."
@@ -198,6 +222,8 @@ class PortScan(Detector):
 
 
 class HostSweep(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "host_sweep"
     name = "Host sweep"
     description = "One source trying the same port across many destinations (worm-like or reconnaissance)."
@@ -232,6 +258,8 @@ class HostSweep(Detector):
 
 
 class DenyFlood(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "deny_flood"
     name = "Blocked-traffic flood"
     description = "One source generating a large volume of blocked connections."
@@ -268,6 +296,8 @@ class _AuthState:
 
 
 class BruteForce(Detector):
+    event_types = frozenset({"auth_failure", "auth_success"})
+    partition = "source_or_device"
     id = "brute_force"
     name = "Login brute force"
     description = "Repeated failed logins from one source, and a successful login that follows them."
@@ -319,6 +349,8 @@ class BruteForce(Detector):
 
 
 class LinkFlap(Detector):
+    event_types = frozenset({"link_state"})
+    partition = "device"
     id = "link_flap"
     name = "Link flapping"
     description = "An interface changing state repeatedly (bad cable, failing optic, or a loop)."
@@ -348,6 +380,8 @@ class LinkFlap(Detector):
 
 
 class ThreatEvent(Detector):
+    event_types = frozenset({"threat"})
+    partition = "source"
     id = "threat"
     name = "IDS / threat log"
     description = "Threats the device itself reported (Palo Alto threat logs, Suricata alerts)."
@@ -391,6 +425,8 @@ _NOTABLE = {
 
 
 class NotableEvent(Detector):
+    event_types = frozenset({*_NOTABLE, "system", "other"})
+    partition = "device"
     id = "notable"
     name = "Notable device events"
     description = ("Port-security and DHCP/ARP inspection violations, loops, spanning-tree guards, MAC flaps, "
@@ -431,6 +467,8 @@ class NotableEvent(Detector):
 
 
 class LargeTransfer(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "source"
     id = "large_transfer"
     name = "Large outbound transfer"
     description = ("An internal host sending an unusual amount of data to the internet. "
@@ -533,6 +571,8 @@ class Baselines:
 
 
 class RateAnomaly(Detector):
+    event_types = frozenset()  # fed by the engine (or the SNMP poller), not by process()
+    partition = "device"
     id = "rate_anomaly"
     name = "Traffic rate anomaly"
     description = ("A device suddenly logging far more than its learned baseline, overall or in blocked "
@@ -566,6 +606,8 @@ class RateAnomaly(Detector):
 
 
 class DeviceSilent(Detector):
+    event_types = frozenset()  # fed by the engine (or the SNMP poller), not by process()
+    partition = "device"
     id = "device_silent"
     name = "Device went silent"
     description = "A device that normally logs steadily has stopped sending (down, unplugged, or logging disabled)."
@@ -623,6 +665,8 @@ class DeviceSilent(Detector):
 
 
 class NewDevice(Detector):
+    event_types = frozenset()  # fed by the engine (or the SNMP poller), not by process()
+    partition = "device"
     id = "new_device"
     name = "New log source"
     description = "A device that has never sent logs before started sending."
@@ -662,6 +706,8 @@ class NewDevice(Detector):
 
 
 class TopologyChange(Detector):
+    event_types = frozenset()  # fed by the engine (or the SNMP poller), not by process()
+    partition = "device"
     id = "topology_change"
     name = "Topology change"
     description = ("A device gained or lost an LLDP/CDP neighbour between SNMP polls - for example an "

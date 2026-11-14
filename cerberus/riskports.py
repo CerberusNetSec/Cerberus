@@ -73,6 +73,8 @@ def parse_ports(text: str) -> list[int]:
 
 
 class RiskPorts(Detector):
+    event_types = frozenset({"traffic"})
+    partition = "port"
     id = "risk_ports"
     name = "High-risk port activity"
     description = ("Tracks traffic on ports that attackers target first, for the Risk ports page, and alerts when "

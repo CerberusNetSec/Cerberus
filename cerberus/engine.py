@@ -169,6 +169,7 @@ class Engine:
         self.alerts = AlertManager(db, notifier)
         self.detectors = build_detectors()
         self.by_id = {d.id: d for d in self.detectors}
+        self._for_type: dict[str, list] = {}  # event type -> detectors that read it, in order
         self.baselines = next(d for d in self.detectors if isinstance(d, RateAnomaly)).baselines
         self.new_device: NewDevice = self.by_id["new_device"]  # type: ignore[assignment]
         self.correlation = self.by_id["correlation"]
@@ -429,7 +430,11 @@ class Engine:
         ignored = self._ignored(ev.src_ip)
         ignored_dst = self._ignore_dst_nets and (
             self._ignored(ev.dst_ip, True) or self._ignored(ev.extra.get("nat_dst_ip"), True))
-        for det in self.detectors:
+        readers = self._for_type.get(ev.event_type)
+        if readers is None:
+            readers = self._for_type[ev.event_type] = [
+                d for d in self.detectors if d.event_types is None or ev.event_type in d.event_types]
+        for det in readers:
             if det.enabled and not (ignored and det.id in _SOURCE_KEYED) and not (ignored_dst and det.id in _DEST_KEYED):
                 det.process(ev, ts, emit)
 

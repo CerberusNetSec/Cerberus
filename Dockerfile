@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    CERBERUS_DATA_DIR=/data
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY cerberus ./cerberus
+
+# Runs unprivileged, so it listens on 5514 and compose maps host port 514 to it.
+RUN useradd --system --uid 10001 --no-create-home cerberus \
+    && mkdir /data && chown cerberus:cerberus /data
+USER cerberus
+VOLUME /data
+
+EXPOSE 5514/udp 5514/tcp 8080/tcp
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD \
+    python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+
+CMD ["python", "-m", "cerberus"]

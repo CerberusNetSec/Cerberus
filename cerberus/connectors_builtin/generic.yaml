@@ -1,0 +1,44 @@
+id: generic
+name: Generic syslog
+description: >
+  Fallback for anything no other connector claims: OpenSSH and PAM logins,
+  netfilter/iptables packet logs, and common "link up/down" wording from
+  Linux, FreeBSD and managed switches.
+priority: 1000
+
+match: always
+
+rules:
+  - name: ssh-failed
+    pattern: 'Failed (?P<method>\S+) for (?:invalid user )?(?P<user>\S+) from (?P<src_ip>[0-9a-fA-F.:]+) port (?P<src_port>\d+)'
+    set: {event_type: auth_failure}
+
+  - name: ssh-invalid-user
+    pattern: '[Ii]nvalid user (?P<user>\S*) from (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  - name: ssh-accepted
+    pattern: 'Accepted (?P<method>\S+) for (?P<user>\S+) from (?P<src_ip>[0-9a-fA-F.:]+) port (?P<src_port>\d+)'
+    set: {event_type: auth_success}
+
+  - name: pam-failure
+    pattern: 'authentication failure;.*?rhost=(?P<src_ip>[0-9a-fA-F.:]+)(?:\s+user=(?P<user>\S+))?'
+    set: {event_type: auth_failure}
+
+  - name: generic-login-failed
+    pattern: '(?i)(?:login|authentication) (?:failed|failure|error|incorrect)(?:.*?\buser[ =:]+[''"]?(?P<user>[\w.@\-]+))?(?:.*?\bfrom[ =:]+(?P<src_ip>\d+\.\d+\.\d+\.\d+))?'
+    set: {event_type: auth_failure}
+
+  # Linux netfilter LOG target. These are normally only logged for drops.
+  - name: netfilter
+    pattern: '\bIN=(?P<interface>\S*) OUT=\S*.*? SRC=(?P<src_ip>[0-9a-fA-F.:]+) DST=(?P<dst_ip>[0-9a-fA-F.:]+).*? PROTO=(?P<proto>\w+)(?:.*? SPT=(?P<src_port>\d+) DPT=(?P<dst_port>\d+))?'
+    set: {event_type: traffic, action: block}
+
+  - name: link-state-bsd-linux
+    source: raw
+    pattern: '(?i)\b(?P<interface>[a-z][\w./\-]*): link (?:state changed to |is |becomes )?(?P<state>up|down)\b'
+    set: {event_type: link_state}
+
+  - name: link-state-switch
+    pattern: '(?i)\b(?:port|interface) (?P<interface>[\w./\-]+),? (?:link )?(?:is |changed state to |went |status changed to )?(?:link )?(?P<state>up|down)\b'
+    set: {event_type: link_state}

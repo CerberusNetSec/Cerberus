@@ -1,0 +1,54 @@
+id: opnsense
+name: OPNsense / pfSense
+description: >
+  pf filterlog (CSV firewall log), Suricata fast-format IDS alerts and web GUI
+  logins. SSH logins and interface link changes from the same box are picked up
+  by the generic connector.
+priority: 10
+
+match:
+  app: ['^filterlog$', '^suricata$', '^audit$', '^php-fpm$']
+
+rules:
+  # https://docs.netgate.com/pfsense/en/latest/monitoring/logs/raw-filter-format.html
+  - name: filterlog
+    when: {app: '^filterlog$'}
+    parser: csv
+    min_columns: 9
+    columns: [pf_rule, pf_subrule, pf_anchor, pf_label, interface, reason, action, direction, ip_version]
+    set: {event_type: traffic}
+    switch:
+      field: ip_version
+      cases:
+        4:
+          columns: [null, null, ttl, null, null, null, null, proto, length, src_ip, dst_ip]
+          switch:
+            field: proto
+            cases:
+              tcp: {columns: [src_port, dst_port, null, tcp_flags]}
+              udp: {columns: [src_port, dst_port]}
+        6:
+          columns: [null, null, ttl, proto, null, length, src_ip, dst_ip]
+          switch:
+            field: proto
+            cases:
+              tcp: {columns: [src_port, dst_port, null, tcp_flags]}
+              udp: {columns: [src_port, dst_port]}
+    map:
+      action: {pass: allow, rdr: allow, nat: allow, binat: allow, block: block, reject: block, _default: ''}
+
+  # [1:2010935:3] ET SCAN ... [Classification: ...] [Priority: 2] {TCP} 1.2.3.4:1234 -> 5.6.7.8:80
+  - name: suricata-alert
+    when: {app: '^suricata$'}
+    pattern: '\[\d+:(?P<sid>\d+):\d+\] (?P<threat_name>.+?) \[Classification: (?P<classification>[^\]]*)\] \[Priority: (?P<level>\d+)\] \{(?P<proto>[^}]+)\} (?P<src_ip>[0-9a-fA-F.:]+?):(?P<src_port>\d+) -> (?P<dst_ip>[0-9a-fA-F.:]+?):(?P<dst_port>\d+)'
+    set: {event_type: threat}
+    map:
+      level: {'1': high, '2': medium, '3': low, _default: info}
+
+  - name: gui-login-failed
+    pattern: '(?i)authentication (?:error|failure) for (?:user )?[''"]?(?P<user>[^''" ]+)[''"]? from:? (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  - name: gui-login-success
+    pattern: '(?i)successful login for user [''"]?(?P<user>[^''" ]+)[''"]? from:? (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}

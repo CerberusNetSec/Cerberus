@@ -1,0 +1,99 @@
+id: cisco_ios
+name: Cisco IOS / IOS-XE
+description: >
+  Catalyst-style %FACILITY-SEVERITY-MNEMONIC messages: link state, logins,
+  configuration changes, ACL hits, port security, spanning tree and MAC flaps.
+  Works with or without sequence numbers, origin-id and timestamps.
+priority: 30
+
+match:
+  raw: ['%[A-Z0-9_]+-[0-7]-[A-Z0-9_]+:']
+
+rules:
+  - name: link-updown
+    source: raw
+    pattern: '%LINK-\d-UPDOWN: Interface (?P<interface>[^,\s]+), changed state to (?P<state>up|down|administratively down)'
+    set: {event_type: link_state}
+
+  # Follows every LINK-3-UPDOWN, so it is recorded but not counted as a flap.
+  - name: lineproto-updown
+    source: raw
+    pattern: '%LINEPROTO-\d-UPDOWN: Line protocol on Interface (?P<interface>[^,\s]+), changed state to (?P<state>up|down)'
+    set: {event_type: link_protocol}
+
+  - name: login-failed
+    source: raw
+    pattern: '%SEC_LOGIN-\d-LOGIN_FAILED: Login failed \[user: (?P<user>[^\]]*)\] \[Source: (?P<src_ip>[^\]]+)\]'
+    set: {event_type: auth_failure}
+
+  - name: login-success
+    source: raw
+    pattern: '%SEC_LOGIN-\d-LOGIN_SUCCESS: Login Success \[user: (?P<user>[^\]]*)\] \[Source: (?P<src_ip>[^\]]+)\]'
+    set: {event_type: auth_success}
+
+  - name: ssh-auth-failed
+    source: raw
+    pattern: '%SSH-\d-SSH2_USERAUTH: User ''(?P<user>[^'']*)'' authentication for SSH2 Session from (?P<src_ip>[0-9a-fA-F.:]+) .*Failed'
+    set: {event_type: auth_failure}
+
+  - name: ssh-auth-success
+    source: raw
+    pattern: '%SSH-\d-SSH2_USERAUTH: User ''(?P<user>[^'']*)'' authentication for SSH2 Session from (?P<src_ip>[0-9a-fA-F.:]+) .*Succeeded'
+    set: {event_type: auth_success}
+
+  - name: dot1x-failed
+    source: raw
+    pattern: '%(?:DOT1X|MAB|AUTHMGR)-\d-FAIL: .*?client \((?P<mac>[0-9a-fA-F.:]+)\) on Interface (?P<interface>\S+)'
+    set: {event_type: auth_failure}
+
+  - name: config-change
+    source: raw
+    pattern: '%SYS-\d-CONFIG_I: Configured from (?P<config_source>\S+) by (?P<user>\S+?)(?: on (?P<line>\S+))?(?: \((?P<src_ip>[0-9a-fA-F.:]+)\))?\s*$'
+    set: {event_type: config_change}
+
+  - name: acl-hit-ports
+    source: raw
+    pattern: '%SEC-\d-IPACCESSLOGP: list (?P<acl>\S+) (?P<action>permitted|denied) (?P<proto>\w+) (?P<src_ip>[0-9a-fA-F.:]+)\((?P<src_port>\d+)\)(?: \([^)]*\))? -> (?P<dst_ip>[0-9a-fA-F.:]+)\((?P<dst_port>\d+)\)'
+    set: {event_type: traffic}
+    map: {action: {permitted: allow, denied: block}}
+
+  - name: acl-hit
+    source: raw
+    pattern: '%SEC-\d-IPACCESSLOG(?:DP|NP|S)?: list (?P<acl>\S+) (?P<action>permitted|denied) (?:(?P<proto>[a-z]\w*) )?(?P<src_ip>[0-9a-fA-F.:]+)(?: \([^)]*\))?(?: -> (?P<dst_ip>[0-9a-fA-F.:]+))?'
+    set: {event_type: traffic}
+    map: {action: {permitted: allow, denied: block}}
+
+  - name: port-security-violation
+    source: raw
+    pattern: '%PORT_SECURITY-\d-PSECURE_VIOLATION\S*: Security violation occurred, caused by MAC address (?P<mac>[0-9a-fA-F.:]+) on port (?P<interface>[^\s.]+(?:\.\d+)?)'
+    set: {event_type: security_violation}
+
+  - name: err-disable
+    source: raw
+    pattern: '%PM-\d-ERR_DISABLE: (?P<cause>\S+) error detected on (?P<interface>[^,\s]+)'
+    set: {event_type: security_violation}
+
+  - name: arp-dhcp-inspection
+    source: raw
+    pattern: '%(?:SW_DAI-\d-(?:DHCP_SNOOPING_DENY|INVALID_ARP|ACL_DENY)|DHCP_SNOOPING-\d-\w+|IP_SOURCE_GUARD-\d-\w+): (?P<detail>.*)'
+    set: {event_type: security_violation}
+
+  - name: mac-flap
+    source: raw
+    pattern: '%SW_MATM-\d-MACFLAP_NOTIF: Host (?P<mac>\S+) in vlan (?P<vlan>\d+) is flapping between port (?P<interface>\S+) and port (?P<interface2>\S+)'
+    set: {event_type: mac_flap}
+
+  - name: stp-guard
+    source: raw
+    pattern: '%SPANTREE-\d-(?P<cause>BLOCK_BPDUGUARD|LOOPGUARD_BLOCK|ROOTGUARD_BLOCK|RECV_PVID_ERR|BLOCK_PVID_LOCAL|BLOCK_PVID_PEER)\w*: .*?(?:port|Port) (?P<interface>[A-Za-z][^\s,.]*)'
+    set: {event_type: stp_guard}
+
+  - name: stp-change
+    source: raw
+    pattern: '%SPANTREE-\d-(?:TOPOTRAP|ROOTCHANGE): (?P<detail>.*)'
+    set: {event_type: stp_change}
+
+  - name: restart
+    source: raw
+    pattern: '%SYS-\d-(?:RESTART|RELOAD): (?P<detail>.*)'
+    set: {event_type: system_restart}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3l11 4v8c0 7-4.6 12-11 14C9.600 27 5 22 5 15V7z' fill='%232a78d6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="card login-card">
+    <h1>Cerberus</h1>
+    <p class="muted">Sign in to the dashboard.</p>
+    <label for="login-password">Password</label>
+    <input id="login-password" type="password" autocomplete="current-password" required>
+    <p id="login-error" class="error" role="alert"></p>
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="shell" class="shell" hidden>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M16 3l11 4v8c0 7-4.6 12-11 14C9.600 27 5 22 5 15V7z" fill="currentColor"/></svg>
+      Cerberus
+    </a>
+    <nav id="nav">
+      <a href="#/" data-page="dashboard">Dashboard</a>
+      <a href="#/alerts" data-page="alerts">Alerts <span id="nav-alerts" class="pill" hidden></span></a>
+      <a href="#/riskports" data-page="riskports">Risk ports</a>
+      <a href="#/events" data-page="events">Events</a>
+      <a href="#/devices" data-page="devices">Devices</a>
+      <a href="#/topology" data-page="topology">Topology</a>
+      <a href="#/connectors" data-page="connectors">Connectors</a>
+      <a href="#/detection" data-page="detection">Detection</a>
+      <a href="#/notifications" data-page="notifications">Notifications</a>
+    </nav>
+    <button id="logout" class="ghost" type="button" hidden>Sign out</button>
+  </header>
+  <main id="main"></main>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

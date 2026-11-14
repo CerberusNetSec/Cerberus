@@ -1,0 +1,93 @@
+id: paloalto
+name: Palo Alto Networks PAN-OS
+description: >
+  PAN-OS default (CSV) syslog format for TRAFFIC, THREAT, SYSTEM and CONFIG
+  logs, as sent by PA-400 series and other PAN-OS 10.x / 11.x firewalls. Field
+  positions follow the PAN-OS "Syslog Field Descriptions" reference; if you use
+  a custom log format on the firewall, copy this file and adjust the indexes.
+priority: 20
+
+match:
+  message: ['^\d+,\d{4}/\d\d/\d\d \d\d:\d\d:\d\d,[^,]*,(?:TRAFFIC|THREAT|SYSTEM|CONFIG|USERID|GLOBALPROTECT|DECRYPTION|HIPMATCH|CORRELATION),']
+
+rules:
+  - name: pan-csv
+    parser: csv
+    min_columns: 8
+    fields: {serial: 2, log_type: 3, subtype: 4}
+    set: {event_type: other}
+    switch:
+      field: log_type
+      cases:
+        traffic:
+          set: {event_type: traffic}
+          fields:
+            src_ip: 7
+            dst_ip: 8
+            nat_src_ip: 9
+            nat_dst_ip: 10
+            policy: 11
+            user: 12
+            application: 14
+            src_zone: 16
+            dst_zone: 17
+            interface: 18
+            session_id: 22
+            src_port: 24
+            dst_port: 25
+            proto: 29
+            action: 30
+            bytes: 31
+            bytes_sent: 32
+            bytes_received: 33
+            category: 37
+            end_reason: 46
+        threat:
+          set: {event_type: threat}
+          fields:
+            src_ip: 7
+            dst_ip: 8
+            policy: 11
+            user: 12
+            application: 14
+            src_zone: 16
+            dst_zone: 17
+            interface: 18
+            src_port: 24
+            dst_port: 25
+            proto: 29
+            action: 30
+            detail: 31
+            threat_name: 32
+            category: 33
+            level: 34
+            direction: 35
+        system:
+          set: {event_type: system}
+          fields: {event_id: 8, object: 9, module: 12, level: 13, detail: 14}
+          extract:
+            - from: detail
+              patterns:
+                - '(?i)for user [''"]?(?P<user>[^''". ]+)[''"]?.*?From: (?P<src_ip>[0-9a-fA-F.:]*[0-9a-fA-F])'
+                - '(?i)user [''"]?(?P<user>[^''". ]+)[''"]? .*?from (?P<src_ip>[0-9a-fA-F.:]*[0-9a-fA-F])'
+          switch:
+            field: event_id
+            cases:
+              auth-fail: {set: {event_type: auth_failure}}
+              auth-success: {set: {event_type: auth_success}}
+        config:
+          set: {event_type: config_change}
+          fields: {client_host: 7, command: 9, user: 10, client: 11, result: 12, path: 13}
+    map:
+      action:
+        allow: allow
+        alert: allow
+        continue: allow
+        _default: block
+      level:
+        informational: info
+        low: low
+        medium: medium
+        high: high
+        critical: critical
+        _default: ''

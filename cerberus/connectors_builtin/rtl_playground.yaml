@@ -1,0 +1,74 @@
+id: rtl_playground
+name: RTL-Playground switches
+description: >
+  RTL8372/RTL8373 2.5GbE switches running the open RTLPlayground firmware. The
+  firmware forwards its console lines as "<14>[hostname ]text" with no
+  timestamp, so every message arrives at syslog severity "info" and events are
+  recognised by their text. Patterns were written from the firmware source
+  (syslog.c, rtl837x_stp.c, rtlplayground.c). If your build words a message
+  differently, pin this connector to the device and add a rule.
+priority: 40
+
+match:
+  raw:
+    - '(?:^|\s)STP: '
+    - '<new link: [0-9a-fA-F]+, was [0-9a-fA-F]+>'
+    - '(?:^|\s)Updating Root bridge'
+
+rules:
+  # Link bitmask changed. The firmware reports one mask for all ports, so flap
+  # detection is per switch rather than per port.
+  - name: link-change
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?<new link: (?P<link_bits>[0-9a-fA-F]+), was (?P<link_bits_prev>[0-9a-fA-F]+)>'
+    set: {event_type: link_state, state: changed}
+
+  - name: stp-loop
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?STP: loop detected, blocking port (?P<interface>\S+)'
+    set: {event_type: loop_detected}
+
+  - name: stp-bpdu-guard
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?STP: BPDU guard tripped, disabling port (?P<interface>\S+)'
+    set: {event_type: stp_guard, cause: bpdu-guard}
+
+  - name: stp-root-guard
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?STP: root guard blocking port (?P<interface>\S+)'
+    set: {event_type: stp_guard, cause: root-guard}
+
+  - name: stp-root-change
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?(?P<detail>STP: root aged out, claiming root|Updating Root bridge)'
+    set: {event_type: stp_change}
+
+  - name: stp-port-blocked
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?(?P<detail>STP: (?:dispute, port discarding|better bridge on the segment, blocking port)) (?P<interface>\S+)'
+    set: {event_type: stp_change}
+
+  - name: stp-link-down
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?STP: link down, port blocking (?P<interface>\S+)'
+    set: {event_type: stp_state, state: down}
+
+  - name: stp-port-state
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?STP: (?P<state>rapid transition, port forwarding|edge port forwarding|port forwarding|port learning|port released, listening) (?P<interface>\S+)'
+    set: {event_type: stp_state}
+
+  - name: reset
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?(?P<detail>>3s button detected; resetting chip|Now resetting|Resetting now)'
+    set: {event_type: system_restart}
+
+  - name: config-reset
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?(?P<detail>>10s button detected; reverting to default settings|Written default config to flash|Update in progress.*|found update image.*)'
+    set: {event_type: config_change}
+
+  - name: stp-other
+    source: raw
+    pattern: '^(?:(?P<hostname>[^\s<:]+) )?STP: (?P<detail>.*)'
+    set: {event_type: stp_state}

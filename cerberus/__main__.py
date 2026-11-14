@@ -1,0 +1,69 @@
+"""Entry point: python -m cerberus"""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import uvicorn
+
+from . import __version__
+from .config import Config
+from .connectors import ConnectorRegistry
+from .db import Database, segment_rows_for
+from .engine import Engine
+from .notifiers import Notifier
+from .receiver import SyslogReceiver
+from .snmp_poller import SnmpPoller
+from .web import create_app
+
+log = logging.getLogger("cerberus")
+
+
+async def amain() -> None:
+    cfg = Config.from_env()
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    user_connectors = cfg.data_dir / "connectors"
+    user_connectors.mkdir(exist_ok=True)
+
+    db = Database(cfg.data_dir / "cerberus.db", segment_rows_for(cfg.max_events))
+    notifier = Notifier(db, cfg.public_url)
+    engine = Engine(cfg, db, ConnectorRegistry(user_connectors), notifier)
+    receiver = SyslogReceiver(engine.submit, cfg.bind, cfg.syslog_udp_port, cfg.syslog_tcp_port,
+                              cfg.max_tcp_clients)
+
+    poller = SnmpPoller(engine, db)
+
+    await engine.start()
+    notify_task = asyncio.create_task(notifier.run())
+    snmp_task = asyncio.create_task(poller.run())
+    await receiver.start()
+
+    engine.receiver = receiver
+    app = create_app(cfg, db, engine, notifier, poller)
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=cfg.bind, port=cfg.web_port, log_level="warning", access_log=False))
+    log.info("Cerberus %s - dashboard on http://%s:%d", __version__, cfg.bind, cfg.web_port)
+    try:
+        await server.serve()  # returns on SIGINT / SIGTERM
+    finally:
+        await receiver.stop()
+        snmp_task.cancel()
+        poller.client.close()
+        await engine.stop()
+        notify_task.cancel()
+        await notifier.close()
+        db.close()
+        log.info("stopped")
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include bot-token URLs
+    try:
+        asyncio.run(amain())
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

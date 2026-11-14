@@ -1,0 +1,152 @@
+id: fortinet
+name: Fortinet FortiGate (FortiOS)
+description: >
+  FortiOS key=value syslog ("default" format, also inside an RFC 5424 header):
+  forward/local traffic, IPS and anomaly (DoS) detections, antivirus, admin and
+  SSL-VPN logins, configuration changes and interface state. The CSV and CEF
+  output formats are not covered - set `format default` under
+  `config log syslogd setting`.
+priority: 25
+
+match:
+  message:
+    - '\bdevid="?F[A-Z0-9]{6,}'
+    - '^date=\d{4}-\d\d-\d\d time=\S+ .*\blogid='
+
+rules:
+  - name: traffic
+    when: {message: '\btype="?traffic\b'}
+    parser: kv
+    rename:
+      level: log_level
+      devname: hostname
+      srcip: src_ip
+      dstip: dst_ip
+      srcport: src_port
+      dstport: dst_port
+      srcintf: interface
+      dstintf: out_interface
+      sentbyte: bytes_sent
+      rcvdbyte: bytes_received
+      tranip: nat_dst_ip
+      app: application
+    set: {event_type: traffic}
+    map:
+      # Everything except an explicit deny/block passed a policy.
+      action: {deny: block, blocked: block, dropped: block, drop: block, _default: allow}
+      proto: {'1': icmp, '6': tcp, '17': udp, '47': gre, '50': esp, '58': icmpv6}
+
+  - name: ips
+    when: {message: '^(?=.*\btype="?utm\b)(?=.*\bsubtype="?(?:ips|anomaly)\b)'}
+    parser: kv
+    rename:
+      level: log_level
+      severity: level
+      attack: threat_name
+      devname: hostname
+      srcip: src_ip
+      dstip: dst_ip
+      srcport: src_port
+      dstport: dst_port
+      srcintf: interface
+      msg: detail
+    set: {event_type: threat}
+    map:
+      action: {detected: allow, pass: allow, pass_session: allow, monitored: allow, _default: block}
+      proto: {'1': icmp, '6': tcp, '17': udp, '58': icmpv6}
+      level: {info: info, informational: info, low: low, medium: medium, high: high, critical: critical, _default: ''}
+
+  - name: antivirus
+    when: {message: '^(?=.*\btype="?utm\b)(?=.*\bsubtype="?virus\b)'}
+    parser: kv
+    rename:
+      level: log_level
+      virus: threat_name
+      devname: hostname
+      srcip: src_ip
+      dstip: dst_ip
+      srcport: src_port
+      dstport: dst_port
+      srcintf: interface
+      msg: detail
+    set: {event_type: threat, level: high}
+    map:
+      action: {passthrough: allow, monitored: allow, analytics: allow, _default: block}
+      proto: {'1': icmp, '6': tcp, '17': udp, '58': icmpv6}
+
+  # Web filter, application control, DNS filter, ... are stored but not alerted on.
+  - name: utm-other
+    when: {message: '\btype="?utm\b'}
+    parser: kv
+    rename:
+      level: log_level
+      devname: hostname
+      srcip: src_ip
+      dstip: dst_ip
+      srcport: src_port
+      dstport: dst_port
+      srcintf: interface
+    set: {event_type: utm}
+    map:
+      action: {blocked: block, block: block, deny: block, dropped: block, _default: allow}
+      proto: {'1': icmp, '6': tcp, '17': udp, '58': icmpv6}
+
+  - name: admin-login-failed
+    when: {message: '\blogdesc="Admin login failed"'}
+    parser: kv
+    rename: {level: log_level, devname: hostname, srcip: src_ip, msg: detail}
+    extract:
+      - from: ui
+        patterns: ['\((?P<src_ip>[0-9a-fA-F.:]+)\)']
+    set: {event_type: auth_failure}
+
+  - name: admin-login
+    when: {message: '\blogdesc="Admin login successful"'}
+    parser: kv
+    rename: {level: log_level, devname: hostname, srcip: src_ip, msg: detail}
+    extract:
+      - from: ui
+        patterns: ['\((?P<src_ip>[0-9a-fA-F.:]+)\)']
+    set: {event_type: auth_success}
+
+  - name: vpn-login-failed
+    when: {message: '\baction="?(?:ssl-login-fail|ssl-alert)\b|\blogdesc="SSL VPN login fail"'}
+    parser: kv
+    rename: {level: log_level, devname: hostname, remip: src_ip, msg: detail}
+    set: {event_type: auth_failure}
+
+  - name: config-change
+    when: {message: '\bcfgpath='}
+    parser: kv
+    rename: {level: log_level, devname: hostname, msg: detail}
+    extract:
+      - from: ui
+        patterns: ['\((?P<src_ip>[0-9a-fA-F.:]+)\)']
+    set: {event_type: config_change}
+
+  - name: interface-status
+    when: {message: '\blogdesc="Interface status changed"|\baction="?interface-stat-change\b'}
+    parser: kv
+    rename: {level: log_level, devname: hostname, status: state, msg: detail}
+    extract:
+      - from: detail
+        patterns:
+          - '[Ii]nterface (?P<interface>[\w./\-]+).*?\b(?P<state>up|down)\b'
+          - '[Ii]nterface (?P<interface>[\w./\-]+)'
+    set: {event_type: link_state}
+
+  - name: restart
+    when: {message: '\baction="?(?:reboot|shutdown)\b|\blogdesc="(?:System restarted|Device rebooted|Device shutdown)'}
+    parser: kv
+    rename: {level: log_level, devname: hostname, msg: detail}
+    set: {event_type: system_restart}
+
+  # Remaining event logs. FortiOS log levels map onto alert severities so that
+  # emergency/alert/critical entries surface as "Device reported a problem".
+  - name: event
+    when: {message: '\btype="?event\b'}
+    parser: kv
+    rename: {devname: hostname, srcip: src_ip, msg: detail}
+    set: {event_type: system}
+    map:
+      level: {emergency: critical, alert: high, critical: high, error: medium, warning: low, _default: info}

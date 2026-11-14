@@ -1,6 +1,6 @@
 # Scaling Cerberus to thousands of log sources
 
-Status: **plan, with stage 1 (federation) implemented on the `cluster` branch.**
+Status: **stage 1 (federation) released in 0.2.0; stage 2 phase 1 (seams) done.**
 
 ## Goal
 
@@ -25,7 +25,7 @@ README).
 | Reference deployments | Standalone, Docker Compose, Docker Swarm and Kubernetes (Kustomize layers), one image published to GHCR |
 | Licence | Apache 2.0 |
 
-## Stage 1: federation (done on this branch)
+## Stage 1: federation (released in 0.2.0)
 
 Each site runs an unchanged Cerberus against its own devices. With
 `CERBERUS_CENTRAL_URL` set, it reports new and changed alerts plus a health
@@ -71,11 +71,20 @@ console as small sites.
 
 Estimates assume one experienced engineer and are rough.
 
-1. **Seams in the single node (2–3 weeks).** No behaviour change, so it can
-   merge to `main`. Storage behind an interface; the engine split into parse,
-   detect and alert stages; each detector declares its partition key and the
-   events it needs; serialisable events; detector snapshot and restore;
-   sessions out of process memory.
+1. **Seams in the single node. Done.** No change in behaviour, proved by
+   identical results to 0.2.0 on a reference run (`tests/test_equivalence.py`)
+   and identical API answers (`tests/test_api_contract.py`).
+   - Storage behind a contract (`cerberus/storage.py`); no SQL outside the
+     SQLite backend.
+   - The engine split into parse, record, detect and alert stages that share
+     nothing but serialisable events and candidates.
+   - Each detector declares the event types it reads and its partition key,
+     checked by dividing the reference traffic four ways. Every event-driven
+     detector divides correctly except `credential_attacks`, which keys on
+     source and on account and must be split in two (phase 4).
+   - Detector state snapshots and restores through a JSON codec, and survives
+     restarts.
+   - Dashboard sessions stored, not held in memory.
 2. **Shared storage (3–4 weeks).** PostgreSQL and ClickHouse backends and a
    migration tool from SQLite. Top talkers and "new source" figures become
    queries rather than in-memory counters.

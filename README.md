@@ -130,8 +130,7 @@ background noise and are counted but not treated as a finding unless they
 surge.
 
 It only knows what firewalls log: a rule without logging, and traffic that
-never crosses a firewall, do not appear. Busiest sources and "new" markers are
-kept in memory and start again after a restart; totals and charts are stored.
+never crosses a firewall, do not appear.
 
 The dashboard ranks **hosts needing attention** by a risk score (severity of
 each unresolved alert, weighted up when a host shows several kinds of
@@ -175,8 +174,11 @@ are notified once per alert, again only if it escalates.
 **Ignored sources** (Detection → General) exempts addresses such as a
 vulnerability scanner from the source-based detectors.
 
-The rate baselines live in memory, so the rate and silence detectors warm up
-again for 30 minutes after a restart.
+What the detectors have learned (rate baselines, sliding windows, admin
+sources, correlation, risk-port history) is saved every 5 minutes and at
+shutdown, so a restart does not start them from scratch. A new installation
+needs about 30 minutes of traffic before the rate and silence detectors judge
+anything.
 
 ## Topology (SNMP)
 

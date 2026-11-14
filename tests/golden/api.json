@@ -40169,8 +40169,7 @@
    "auth": false,
    "central": false,
    "signed_in": true,
-   "site": null,
-   "version": "0.2.0"
+   "site": null
   },
   "status": 200
  },

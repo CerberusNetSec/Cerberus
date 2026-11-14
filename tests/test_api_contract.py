@@ -34,7 +34,7 @@ from tools import simulate  # noqa: E402
 
 RECORDING = Path(__file__).resolve().parent / "golden" / "api.json"
 NOW = golden.START + 6000  # just after the reference traffic ends
-VOLATILE = {"uptime", "flush_ms", "rate", "queue", "updated"}  # depend on the machine or the wall clock
+VOLATILE = {"uptime", "flush_ms", "rate", "queue", "updated", "version"}  # machine, wall clock, release
 
 
 def scrub(value):

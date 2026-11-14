@@ -7,18 +7,20 @@ where to make common changes.
 ## The path of a message
 
 ```
-device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ engine.py
-                                                   │
-                         syslog_parser.py  ◀───────┤ 1. split the syslog envelope
-                         connectors.py     ◀───────┤ 2. vendor text → normalised Event
-                         detectors.py, security.py,│ 3. every enabled detector sees the Event
-                         riskports.py      ◀───────┤
-                                                   ▼
-                                    AlertManager (folds repeats into one alert)
-                                       │                    │
-                                 notifiers.py          db.py (once a second)
-                              (SMTP, Telegram,       events, alerts, per-minute
-                                 Pushbullet)          counters, device records
+device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ Engine
+                                                    │
+               parse   syslog_parser.py,  ◀─────────┤ bytes → Event
+                       connectors.py                │
+               record  device registry, counters,◀──┤ Event → storage buffer
+                       storage buffer               │
+               detect  detectors.py, security.py,◀──┤ Event → Candidates
+                       riskports.py                 │
+                                                    ▼
+               alert   AlertManager + Correlation   (folds repeats into one alert)
+                          │                    │
+                    notifiers.py        Store (cerberus/storage.py), written once a second
+                 (SMTP, Telegram,       as one Batch: events, alerts, counters, devices
+                    Pushbullet)
 ```
 
 1. **Receive.** `receiver.py` listens on UDP and TCP (octet-counted and
@@ -29,18 +31,27 @@ device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ engine.p
    `connectors_builtin/` or the data volume) and applies its first matching
    rule, producing an `Event` (`models.py`) with normalised fields such as
    `event_type`, `action`, `src_ip`, `dst_port`.
-3. **Detect.** Each detector's `process(event, now, emit)` runs on every
-   event; `tick(now, emit)` runs every ten seconds for time-based checks.
-   Detectors keep bounded in-memory state and report by emitting a `Candidate`.
-4. **Alert.** `AlertManager` turns a candidate into a new alert, or folds it
+3. **Record.** The engine updates the device registry and per-minute
+   counters and buffers the event for storage.
+4. **Detect.** Each detector declares the event types it reads
+   (`Detector.event_types`); its `process(event, now, emit)` runs on those,
+   and `tick(now, emit)` every ten seconds for time-based checks. Detectors
+   keep bounded state and report by emitting a `Candidate`.
+5. **Alert.** `AlertManager` turns a candidate into a new alert, or folds it
    into an open alert for the same `detector|entity` within the cooldown. The
    correlator (`security.Correlation`) sees every alert and raises its own when
    several point at one host.
-5. **Notify.** `notifiers.py` formats the alert with its guidance from
+6. **Notify.** `notifiers.py` formats the alert with its guidance from
    `playbooks.py` and delivers it to each channel at or above its severity,
    rate-limited per channel.
-6. **Store.** Once a second the engine writes the buffered events, counters,
-   device records and alert changes in one transaction.
+7. **Store.** Once a second the engine writes the buffered events, counters,
+   device records and alert changes as one `Batch`.
+
+`Engine.parse`, `record` and `detect` are separate methods and pass nothing
+between them but the `Event`, and candidates go to the alert stage as data:
+clustering can run the stages in different processes. A test runs the
+reference traffic with every event and candidate passed through JSON between
+stages and requires identical results.
 
 ## Modules
 
@@ -57,7 +68,9 @@ device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ engine.p
 | `riskports.py` | High-risk port counters, surge alert, findings for the Risk ports page |
 | `playbooks.py` | Per-alert explanation, ATT&CK technique and steps |
 | `engine.py` | Pipeline, device registry, alert folding, flush and prune loops |
-| `db.py` | SQLite access and event segments |
+| `storage.py` | The storage contract (`Store`, `Batch`): every operation a backend provides |
+| `db.py` | The SQLite backend: connections, event segments, and the contract's SQL |
+| `state.py` | JSON codec for detector state (no pickle) |
 | `notifiers.py` | Channels and delivery |
 | `snmp.py`, `snmp_poller.py`, `topology.py` | SNMP v2c client, polling, map building |
 | `federation.py` | Site → central console reporting (`Forwarder`) and the console side (`Central`) |
@@ -65,8 +78,11 @@ device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ engine.p
 
 ## Storage
 
-All state is in `cerberus.db` in the data directory (WAL mode, one writer
-connection, four readers).
+Everything is stored through the operations in `cerberus/storage.py`; no
+other module contains SQL (a test enforces it), so another backend can replace
+SQLite by implementing that contract. Today's backend keeps everything in
+`cerberus.db` in the data directory (WAL mode, one writer connection, four
+readers).
 
 | Table | Holds |
 |---|---|
@@ -77,12 +93,16 @@ connection, four readers).
 | `devices` | Log sources and their per-device settings (including SNMP community strings) |
 | `snmp_data` | Last SNMP poll result per device, as JSON |
 | `channels` | Notification channels (including their credentials) |
-| `settings` | Detector settings, ignore lists, SNMP settings, password hash, learned admin sources, the site's report cursor and instance id |
+| `settings` | Detector settings, ignore lists, SNMP settings, password hash, the detectors' saved working state (`engine_state`), the site's report cursor and instance id |
+| `sessions` | Dashboard logins, as hashes of their tokens |
 | `sites`, `site_alerts` | Central console only: registered sites (token hashes, last report, health summary) and the alerts they reported |
 
-Held in memory only, and rebuilt after a restart: detector sliding windows, the
-per-device rate baselines (30 minutes to warm up), top blocked sources and
-ports, and the Risk ports page's busiest sources and "new" markers.
+Detectors work in memory. Their working state (sliding windows, rate
+baselines, learned admin sources, correlation, risk-port history, top blocked
+sources) is encoded by `state.py` and saved every 5 minutes and at shutdown,
+and loaded at start; after a real outage, device silence is measured from the
+restart. A reference run stopped and restarted three times gives exactly the
+same alerts as an uninterrupted one.
 
 ## Extending
 
@@ -94,13 +114,31 @@ README) and use the Connectors page to test a sample line.
 1. Subclass `Detector` (`detectors.py`): set `id`, `name`, `description` and
    `params` (each becomes an editable setting), and implement `process` and/or
    `tick`. Use `self._get` for per-key state and `self._may_emit` to throttle.
+   Declare `event_types` (what `process` reacts to) and `partition` (what its
+   state is keyed by); list any extra state attributes in `_persist`, and mark
+   helper classes kept in state with `@persistent`.
+   `tests/test_partitioning.py` checks both declarations on real traffic.
 2. Add it to `build_detectors()` or `build_security_detectors()`.
 3. Add an entry under its `id` in `playbooks.PLAYBOOKS` (stage, technique,
    why, actions). `tests/test_security.py` checks every alert kind has one.
 4. If it is keyed on a source or destination address, add its `id` to
    `_SOURCE_KEYED` / `_DEST_KEYED` in `engine.py` so the ignore lists apply.
 5. Add a scenario to `tools/simulate.py` and a test that feeds it through the
-   real engine.
+   real engine. A new scenario changes the reference run: re-record
+   `tests/golden/` (see below) and say so in the commit.
+
+## Guard rails for refactoring
+
+| Test | Holds the code to |
+|---|---|
+| `test_equivalence.py` | The same alerts, events, counters and devices as the 0.2.0 release, on two simulated hours of traffic (`tests/golden.py`); also restarted midway, and with every stage boundary passed through JSON |
+| `test_api_contract.py` | The same answer from every HTTP endpoint, reads and writes, as recorded in `tests/golden/api.json` |
+| `test_partitioning.py` | Each detector finding the same when its events are divided by its declared key, and when fed only its declared event types |
+| `test_storage_contract.py` | No SQL outside the backend; every contract operation implemented |
+
+A deliberate change in behaviour means re-recording a reference
+(`python tests/golden.py --code <checkout> --out ...` from a release, or
+`RECORD_API_CONTRACT=1`) and explaining why in the commit.
 
 **A new notification channel:** add its fields to `CHANNEL_TYPES` and a sender
 in `notifiers.py`; the UI form is generated from the field list.

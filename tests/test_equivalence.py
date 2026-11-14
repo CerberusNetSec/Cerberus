@@ -35,3 +35,10 @@ def test_restarting_midway_changes_nothing(tmp_path):
     actual = json.loads(json.dumps(golden.run(None, tmp_path, restarts=(0.3, 0.62, 0.8))))
     assert [a["title"] for a in actual["alerts"]] == [a["title"] for a in expected["alerts"]]
     assert actual == expected
+
+
+def test_stages_need_nothing_but_what_travels_between_them(tmp_path):
+    """Events and alert candidates passed between the pipeline's stages as JSON, the
+    way a message bus between processes would carry them: nothing changes."""
+    expected = json.loads(REFERENCE.read_text(encoding="utf-8"))
+    assert json.loads(json.dumps(golden.run(None, tmp_path, wire=True))) == expected

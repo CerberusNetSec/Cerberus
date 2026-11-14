@@ -67,9 +67,11 @@ def timeline(simulate) -> list[tuple[float, str]]:
     return out
 
 
-def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = ()) -> dict:
+def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = (), wire: bool = False) -> dict:
     """restarts: fractions of the way through the timeline at which to save the
-    engine's state, shut it down and start a new one on the same database."""
+    engine's state, shut it down and start a new one on the same database.
+    wire: pass every event between the parse and the later stages, and every alert
+    candidate to the alert stage, through JSON, as a message bus between processes would."""
     if code is not None:
         sys.path.insert(0, str(code))
     from cerberus.config import Config
@@ -137,7 +139,14 @@ def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = ()) -> 
             loop.run_until_complete(engine._flush())
             tick(next_tick)
             next_tick += TICK
-        engine._process(line.encode(), "10.255.0.1", ts)
+        if not wire:
+            engine._process(line.encode(), "10.255.0.1", ts)
+            continue
+        from cerberus.models import Candidate, Event
+        ev = Event.from_dict(json.loads(json.dumps(engine.parse(line.encode(), "10.255.0.1", ts).as_dict())))
+        if engine.record(ev, ts):
+            engine.detect(ev, ts, emit=lambda c, t=ts, e=engine: e.raise_alert(
+                Candidate.from_dict(json.loads(json.dumps(c.as_dict()))), t))
     loop.run_until_complete(engine._flush())
     tick(next_tick)
     loop.run_until_complete(engine._flush())

@@ -249,7 +249,7 @@ class Engine:
                 "cooldown_minutes": int(self.alerts.cooldown // 60)}
 
     def raise_alert(self, c: Candidate, now: float) -> None:
-        """Raise an alert and let the correlator see it."""
+        """The alert stage: fold the candidate into an alert, and let the correlator see it."""
         self.alerts.raise_(c, now)
         if self.correlation.enabled:
             self.correlation.on_alert(c, now, lambda found: self.alerts.raise_(found, now))
@@ -366,24 +366,37 @@ class Engine:
             pin, hint = (dev.connector_pin, dev.connector_seen) if dev else ("", "")
         return self.connectors.build_event(parsed, ts, device_id, source_ip, pin, hint)
 
+    # --- the per-message pipeline -----------------------------------------
+    # Three stages, kept apart so that clustering can run them in different
+    # processes: parse (bytes -> Event), record (device registry, counters,
+    # storage), detect (Event -> alert candidates). Candidates go to the alert
+    # stage, raise_alert(). Everything a stage needs travels in the Event.
     def _process(self, data: bytes, source_ip: str, ts: float) -> None:
+        ev = self.parse(data, source_ip, ts)
+        if self.record(ev, ts):
+            self.detect(ev, ts)
+
+    def parse(self, data: bytes | str, source_ip: str, ts: float) -> Event:
+        """Stage 1: syslog bytes to a normalised Event."""
         self.received += 1
         ev = self.build_event(data, source_ip, ts)
         if self.cfg.device_identity == "hostname" and ev.hostname and ev.device != ev.hostname:
             ev.device = ev.hostname  # the connector found a hostname the envelope did not have
+        return ev
 
-        emit = lambda c: self.raise_alert(c, ts)  # noqa: E731
-
+    def record(self, ev: Event, ts: float) -> bool:
+        """Stage 2: the device registry, per-minute counters and the storage buffer.
+        Returns False for a message from a source beyond MAX_DEVICES, which goes no further."""
         dev = self.devices.get(ev.device)
         if dev is None:
             if len(self.devices) >= MAX_DEVICES:
                 self.refused_devices += 1
-                return  # refuse to track an unbounded number of (possibly spoofed) sources
-            dev = self.devices[ev.device] = Device(ev.device, source_ip, first_seen=ts)
+                return False  # refuse to track an unbounded number of (possibly spoofed) sources
+            dev = self.devices[ev.device] = Device(ev.device, ev.source_ip, first_seen=ts)
             learning = ts - self.installed < self.new_device.cfg["learning_minutes"] * 60
             if self.new_device.enabled and not learning:
-                emit(self.new_device.seen(ev.device, source_ip, ev.hostname, ts))
-        dev.ip = source_ip
+                self.raise_alert(self.new_device.seen(ev.device, ev.source_ip, ev.hostname, ts), ts)
+        dev.ip = ev.source_ip
         dev.last_seen = ts
         dev.events += 1
         if ev.hostname:
@@ -425,7 +438,12 @@ class Engine:
             ))
         else:
             self.unstored += 1
+        return True
 
+    def detect(self, ev: Event, ts: float, emit=None) -> None:
+        """Stage 3: every detector that reads this kind of event. Candidates go to
+        emit, by default the alert stage."""
+        emit = emit or (lambda c: self.raise_alert(c, ts))
         self.baselines.observe(ev, ts)
         ignored = self._ignored(ev.src_ip)
         ignored_dst = self._ignore_dst_nets and (

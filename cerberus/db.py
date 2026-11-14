@@ -88,6 +88,9 @@ CREATE TABLE IF NOT EXISTS port_minute (
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
+-- Dashboard logins. Only a hash of each session token is kept.
+CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires REAL NOT NULL);
+
 -- Central console only: the sites that report here, and their alerts.
 CREATE TABLE IF NOT EXISTS sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -356,6 +359,7 @@ class Database(Store):
         self.x("DELETE FROM stats_minute WHERE minute < ?", (int(cutoff),))
         self.x("DELETE FROM port_minute WHERE minute < ?", (int(cutoff),))
         self.x("DELETE FROM alerts WHERE last_seen < ?", (now - alert_days * 86400,))
+        self.x("DELETE FROM sessions WHERE expires < ?", (now,))
         self.x("DELETE FROM site_alerts WHERE last_seen < ?", (now - alert_days * 86400,))
         return removed
 
@@ -545,6 +549,17 @@ class Database(Store):
         self.x("INSERT INTO snmp_data(device, polled, ok, error, last_ok, data) VALUES(?,?,?,?,?,?) "
                "ON CONFLICT(device) DO UPDATE SET polled=excluded.polled, ok=excluded.ok, error=excluded.error, "
                "last_ok=excluded.last_ok, data=excluded.data", (device, polled, int(ok), error, last_ok, data))
+
+    # --- dashboard sessions ----------------------------------------------------------------------
+    def session_add(self, token_hash: str, expires: float) -> None:
+        self.x("INSERT OR REPLACE INTO sessions(token_hash, expires) VALUES(?, ?)", (token_hash, expires))
+
+    def session_expires(self, token_hash: str) -> float | None:
+        rows = self.q("SELECT expires FROM sessions WHERE token_hash = ?", (token_hash,))
+        return rows[0]["expires"] if rows else None
+
+    def session_delete(self, token_hash: str) -> None:
+        self.x("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
     # --- central console: sites and their alerts -----------------------------------------------
     def sites_provision(self, entries: list[tuple[str, str]], now: float) -> None:

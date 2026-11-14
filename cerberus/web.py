@@ -34,10 +34,15 @@ log = logging.getLogger("cerberus.web")
 STATIC = Path(__file__).parent / "static"
 COOKIE = "cerberus_session"
 SESSION_TTL = 7 * 86400
+SESSION_CACHE_SECONDS = 30  # how long a replica trusts its memory of a session before asking storage again
 RISK_WEIGHT = {"info": 0, "low": 1, "medium": 3, "high": 7, "critical": 15}
 RANGES = {"1h": (3600, 60), "6h": (6 * 3600, 300), "24h": (86400, 900), "7d": (7 * 86400, 3600)}
 SEARCH_SECONDS = 10  # an event search running longer than this is cancelled
 OPEN_PATHS = {"/api/login", "/api/logout", "/api/me", "/api/federation/report"}  # the last checks its own token
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _hash(password: str, salt: bytes) -> bytes:
@@ -47,7 +52,10 @@ def _hash(password: str, salt: bytes) -> bytes:
 class Auth:
     def __init__(self, cfg: Config, db: Store):
         self.enabled = cfg.auth_enabled
-        self.sessions: dict[str, float] = {}
+        self.db = db
+        # Sessions live in storage, so they survive restarts and any web replica
+        # accepts them; this caches recent answers (token hash -> (expires, checked)).
+        self._seen: dict[str, tuple[float, float]] = {}
         self.failures: dict[str, deque] = {}
         self.salt = b""
         self.digest = b""
@@ -82,10 +90,8 @@ class Auth:
         now = time.time()
         if hmac.compare_digest(_hash(password, self.salt), self.digest):
             self.failures.pop(ip, None)
-            for token in [t for t, exp in self.sessions.items() if exp < now]:
-                del self.sessions[token]
             token = secrets.token_urlsafe(32)
-            self.sessions[token] = now + SESSION_TTL
+            self.db.session_add(_token_hash(token), now + SESSION_TTL)
             return token
         if len(self.failures) > 10_000:
             self.failures.clear()
@@ -95,8 +101,22 @@ class Auth:
     def valid(self, request: Request) -> bool:
         if not self.enabled:
             return True
-        expiry = self.sessions.get(request.cookies.get(COOKIE, ""))
-        return bool(expiry and expiry > time.time())
+        token = request.cookies.get(COOKIE, "")
+        if not token:
+            return False
+        key, now = _token_hash(token), time.time()
+        cached = self._seen.get(key)
+        if cached is None or now - cached[1] > SESSION_CACHE_SECONDS:
+            if len(self._seen) > 10_000:
+                self._seen.clear()
+            cached = self._seen[key] = (self.db.session_expires(key) or 0.0, now)
+        return cached[0] > now
+
+    def logout(self, token: str) -> None:
+        if token:
+            key = _token_hash(token)
+            self._seen.pop(key, None)
+            self.db.session_delete(key)
 
 
 def _bad(message: str, status: int = 400) -> HTTPException:
@@ -123,7 +143,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
-        if path.startswith("/api/") and path not in OPEN_PATHS and not auth.valid(request):
+        if path.startswith("/api/") and path not in OPEN_PATHS and not await _run(auth.valid, request):
             return JSONResponse({"detail": "not signed in"}, status_code=401)
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
@@ -147,7 +167,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     # --- auth ------------------------------------------------------------
     @app.get("/api/me")
     async def me(request: Request):
-        return {"signed_in": auth.valid(request), "auth": auth.enabled, "version": __version__,
+        return {"signed_in": await _run(auth.valid, request), "auth": auth.enabled, "version": __version__,
                 "central": central is not None, "site": cfg.site_name if forwarder else None}
 
     @app.post("/api/login")
@@ -155,7 +175,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         ip = request.client.host if request.client else "?"
         if auth.throttled(ip, time.time()):
             raise _bad("Too many attempts. Wait a few minutes and try again.", 429)
-        token = auth.login(str(body.get("password", ""))[:256], ip)
+        token = await _run(auth.login, str(body.get("password", ""))[:256], ip)
         if not token:
             log.warning("failed dashboard login from %s", ip)
             raise _bad("Wrong password.", 401)
@@ -166,7 +186,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
 
     @app.post("/api/logout")
     async def logout(request: Request):
-        auth.sessions.pop(request.cookies.get(COOKIE, ""), None)
+        await _run(auth.logout, request.cookies.get(COOKIE, ""))
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE)
         return response

@@ -153,6 +153,17 @@ class Store:
                          data: str | None) -> None:
         raise NotImplementedError
 
+    # --- dashboard sessions ------------------------------------------------------------------
+    def session_add(self, token_hash: str, expires: float) -> None:
+        raise NotImplementedError
+
+    def session_expires(self, token_hash: str) -> float | None:
+        """When a session ends, or None if there is no such session."""
+        raise NotImplementedError
+
+    def session_delete(self, token_hash: str) -> None:
+        raise NotImplementedError
+
     # --- central console: sites and their alerts -------------------------------------------------
     def sites_provision(self, entries: list[tuple[str, str]], now: float) -> None:
         """(name, token hash) pairs from configuration: created, or re-keyed if present."""

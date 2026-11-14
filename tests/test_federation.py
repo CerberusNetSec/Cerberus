@@ -262,3 +262,32 @@ def test_console_endpoints_absent_on_ordinary_instances(tmp_path):
     assert http.get("/api/sites").status_code == 404
     assert http.get("/api/me").json()["central"] is False
     db.close()
+
+
+def test_sessions_survive_a_restart_and_logout_reaches_every_replica(tmp_path):
+    from cerberus import web
+    cfg = config(tmp_path, auth_enabled=True, password="correct horse")
+    db = Database(tmp_path / "s.db")
+
+    def replica():
+        engine = Engine(cfg, db, ConnectorRegistry(), Notifier(db))
+        engine.load()
+        return TestClient(web.create_app(cfg, db, engine, engine.notifier, SnmpPoller(engine, db)))
+
+    first = replica()
+    assert first.get("/api/devices").status_code == 401
+    assert first.post("/api/login", json={"password": "wrong"}).status_code == 401
+    assert first.post("/api/login", json={"password": "correct horse"}).status_code == 200
+    token = first.cookies.get(web.COOKIE)
+    assert first.get("/api/devices").status_code == 200
+    # Only a hash of the token is stored.
+    assert db.session_expires(token) is None and db.session_expires(web._token_hash(token)) > time.time()
+
+    second = replica()  # another replica, or the same one after a restart
+    second.cookies.set(web.COOKIE, token)
+    assert second.get("/api/me").json()["signed_in"] is True
+    assert first.post("/api/logout").status_code == 200
+    third = replica()
+    third.cookies.set(web.COOKIE, token)
+    assert third.get("/api/devices").status_code == 401  # logged out everywhere
+    db.close()

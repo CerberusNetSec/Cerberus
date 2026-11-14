@@ -66,11 +66,11 @@ services:
       retries: 30
 
 secrets:
-  dashboard_password: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/storage_password.txt}
-  postgres_password: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/storage_postgres_password.txt}
-  clickhouse_password: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/storage_clickhouse_password.txt}
-  postgres_url: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/storage_postgres_url.txt}
-  clickhouse_url: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/storage_clickhouse_url.txt}
+  dashboard_password: {file: "${CERBERUS_SECRETS_DIR:-../secrets}/storage_password.txt"}
+  postgres_password: {file: "${CERBERUS_SECRETS_DIR:-../secrets}/storage_postgres_password.txt"}
+  clickhouse_password: {file: "${CERBERUS_SECRETS_DIR:-../secrets}/storage_clickhouse_password.txt"}
+  postgres_url: {file: "${CERBERUS_SECRETS_DIR:-../secrets}/storage_postgres_url.txt"}
+  clickhouse_url: {file: "${CERBERUS_SECRETS_DIR:-../secrets}/storage_clickhouse_url.txt"}
 
 volumes:
   postgres-data:

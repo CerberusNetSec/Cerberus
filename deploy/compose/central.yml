@@ -45,9 +45,9 @@ services:
 
 secrets:
   central_password:
-    file: ${CERBERUS_SECRETS_DIR:-../secrets}/central_password.txt
+    file: "${CERBERUS_SECRETS_DIR:-../secrets}/central_password.txt"
   site_tokens:
-    file: ${CERBERUS_SECRETS_DIR:-../secrets}/site_tokens.txt
+    file: "${CERBERUS_SECRETS_DIR:-../secrets}/site_tokens.txt"
 
 volumes:
   central-data:

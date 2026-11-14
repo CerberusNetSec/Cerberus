@@ -80,6 +80,9 @@ python deploy/make-secrets.py north south     # writes deploy/secrets/ (git-igno
 This creates the console's password and `site_tokens.txt`, and for each site a
 `<site>.token` and `<site>_password.txt`. Run it again with a new name to add a
 site; existing tokens are kept. Give each site only its own two files.
+The Compose files read secrets from `deploy/secrets/`, or from the folder in
+`CERBERUS_SECRETS_DIR` (relative to `deploy/compose/`, or absolute), so a test
+stack can keep its own.
 
 Tokens are bearer credentials: anyone holding a site's token can post alerts
 as that site. Keep the token files out of version control, send site reports

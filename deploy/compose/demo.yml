@@ -58,10 +58,10 @@ services:
     volumes: [south-data:/data]
 
 secrets:
-  central_password: {file: ../secrets/central_password.txt}
-  site_tokens: {file: ../secrets/site_tokens.txt}
-  north_token: {file: ../secrets/north.token}
-  south_token: {file: ../secrets/south.token}
+  central_password: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/central_password.txt}
+  site_tokens: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/site_tokens.txt}
+  north_token: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/north.token}
+  south_token: {file: ${CERBERUS_SECRETS_DIR:-../secrets}/south.token}
 
 volumes:
   console-data:

@@ -1,0 +1,54 @@
+# Central console, with Caddy in front for HTTPS.
+#
+#   python deploy/make-secrets.py north south        # once; writes deploy/secrets/
+#   CENTRAL_DOMAIN=cerberus.example.com docker compose -f deploy/compose/central.yml up -d --build
+#
+# Sites report to https://$CENTRAL_DOMAIN. Caddy gets a certificate from Let's
+# Encrypt when that name resolves publicly to this host; on an internal network
+# see the note in Caddyfile. See deploy/README.md.
+name: cerberus-central
+
+services:
+  cerberus:
+    image: ${CERBERUS_IMAGE:-cerberus:latest}
+    build: ../..
+    restart: unless-stopped
+    read_only: true
+    environment:
+      CERBERUS_CENTRAL: "on"
+      CERBERUS_PASSWORD_FILE: /run/secrets/central_password
+      CERBERUS_SITE_TOKENS_FILE: /run/secrets/site_tokens
+      CERBERUS_PUBLIC_URL: https://${CENTRAL_DOMAIN:?set CENTRAL_DOMAIN to the console's DNS name}
+      CERBERUS_SITE_SILENT_MINUTES: ${CERBERUS_SITE_SILENT_MINUTES:-5}
+      # The console only receives site reports. To also collect syslog here,
+      # set these to 5514 and publish the ports as in the main docker-compose.yml.
+      CERBERUS_SYSLOG_UDP_PORT: "0"
+      CERBERUS_SYSLOG_TCP_PORT: "0"
+      TZ: ${TZ:-UTC}
+    secrets: [central_password, site_tokens]
+    volumes:
+      - central-data:/data
+    expose: ["8080"]
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on: [cerberus]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CENTRAL_DOMAIN: ${CENTRAL_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+secrets:
+  central_password:
+    file: ../secrets/central_password.txt
+  site_tokens:
+    file: ../secrets/site_tokens.txt
+
+volumes:
+  central-data:
+  caddy-data:

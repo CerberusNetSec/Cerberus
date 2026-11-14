@@ -1,0 +1,33 @@
+# Central console.
+#
+#   python deploy/make-secrets.py north south
+#   kubectl create namespace cerberus
+#   kubectl -n cerberus create secret generic cerberus-central \
+#     --from-file=password=deploy/secrets/central_password.txt \
+#     --from-file=site-tokens=deploy/secrets/site_tokens.txt
+#   kubectl apply -k deploy/kubernetes/central
+#
+# Edit the image, host name and storage class below for your cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+labels:
+  - pairs: {app.kubernetes.io/part-of: cerberus}
+    includeSelectors: false
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+images:
+  - name: cerberus
+    newName: registry.example.com/cerberus  # where you pushed the image
+    newTag: "0.2.0"
+configMapGenerator:
+  - name: cerberus-central
+    literals:
+      - CERBERUS_CENTRAL=on
+      - CERBERUS_PUBLIC_URL=https://cerberus.example.com
+      - CERBERUS_SITE_SILENT_MINUTES=5
+      - CERBERUS_SYSLOG_UDP_PORT=0
+      - CERBERUS_SYSLOG_TCP_PORT=0

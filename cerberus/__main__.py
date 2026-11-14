@@ -11,6 +11,7 @@ from .config import Config
 from .connectors import ConnectorRegistry
 from .db import Database, segment_rows_for
 from .engine import Engine
+from .federation import Central, Forwarder
 from .notifiers import Notifier
 from .receiver import SyslogReceiver
 from .snmp_poller import SnmpPoller
@@ -39,7 +40,19 @@ async def amain() -> None:
     await receiver.start()
 
     engine.receiver = receiver
-    app = create_app(cfg, db, engine, notifier, poller)
+    tasks = []
+    forwarder = central = None
+    if cfg.central_url:
+        if len(cfg.central_token) < 24:
+            raise SystemExit("CERBERUS_CENTRAL_URL is set but CERBERUS_CENTRAL_TOKEN is missing or too short.")
+        forwarder = Forwarder(cfg, db, engine)
+        tasks.append(asyncio.create_task(forwarder.run()))
+    if cfg.central:
+        central = Central(cfg, db, engine)
+        await asyncio.to_thread(central.provision, list(cfg.site_tokens))
+        tasks.append(asyncio.create_task(central.run()))
+        log.info("acting as central console")
+    app = create_app(cfg, db, engine, notifier, poller, forwarder, central)
     server = uvicorn.Server(uvicorn.Config(
         app, host=cfg.bind, port=cfg.web_port, log_level="warning", access_log=False))
     log.info("Cerberus %s - dashboard on http://%s:%d", __version__, cfg.bind, cfg.web_port)
@@ -47,6 +60,10 @@ async def amain() -> None:
         await server.serve()  # returns on SIGINT / SIGTERM
     finally:
         await receiver.stop()
+        for task in tasks:
+            task.cancel()
+        if forwarder:
+            await forwarder.close()
         snmp_task.cancel()
         poller.client.close()
         await engine.stop()

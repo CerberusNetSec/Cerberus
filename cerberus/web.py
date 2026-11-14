@@ -19,6 +19,7 @@ from . import __version__
 from .config import Config
 from .db import Database, QueryTimeout
 from .engine import TOTAL, Engine
+from .federation import MAX_REPORT_BYTES, Central, Forwarder
 from .models import SEVERITIES
 from .models import clean_ip, is_internal
 from .notifiers import CHANNEL_TYPES, Notifier, public_channel, validate_channel
@@ -36,7 +37,7 @@ SESSION_TTL = 7 * 86400
 RISK_WEIGHT = {"info": 0, "low": 1, "medium": 3, "high": 7, "critical": 15}
 RANGES = {"1h": (3600, 60), "6h": (6 * 3600, 300), "24h": (86400, 900), "7d": (7 * 86400, 3600)}
 SEARCH_SECONDS = 10  # an event search running longer than this is cancelled
-OPEN_PATHS = {"/api/login", "/api/logout", "/api/me"}
+OPEN_PATHS = {"/api/login", "/api/logout", "/api/me", "/api/federation/report"}  # the last checks its own token
 
 
 def _hash(password: str, salt: bytes) -> bytes:
@@ -109,7 +110,8 @@ def _loads(text):
         return {}
 
 
-def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, poller: SnmpPoller) -> FastAPI:
+def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, poller: SnmpPoller,
+               forwarder: Forwarder | None = None, central: Central | None = None) -> FastAPI:
     app = FastAPI(title="Cerberus", docs_url=None, redoc_url=None, openapi_url=None)
     auth = Auth(cfg, db)
 
@@ -140,7 +142,8 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
     # --- auth ------------------------------------------------------------
     @app.get("/api/me")
     async def me(request: Request):
-        return {"signed_in": auth.valid(request), "auth": auth.enabled, "version": __version__}
+        return {"signed_in": auth.valid(request), "auth": auth.enabled, "version": __version__,
+                "central": central is not None, "site": cfg.site_name if forwarder else None}
 
     @app.post("/api/login")
     async def login(request: Request, body: dict = Body(...)):
@@ -247,7 +250,109 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
             "max_events": cfg.max_events,
             "retention_days": cfg.retention_days,
             "uptime": int(now - engine.started),
+            "federation": forwarder.status() if forwarder else None,
         }
+
+    # --- federation: the central console -------------------------------------
+    if central is not None:
+        @app.post("/api/federation/report")
+        async def federation_report(request: Request):
+            scheme, _, token = request.headers.get("authorization", "").partition(" ")
+            if scheme.lower() != "bearer" or not token:
+                raise _bad("missing site token", 401)
+            if int(request.headers.get("content-length") or 0) > MAX_REPORT_BYTES:
+                raise _bad("report too large", 413)
+            body = await request.body()
+            if len(body) > MAX_REPORT_BYTES:
+                raise _bad("report too large", 413)
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                raise _bad("report is not JSON")
+            address = request.client.host if request.client else ""
+            try:
+                reply, fresh = await asyncio.to_thread(central.receive, token, payload, address, time.time())
+            except PermissionError:
+                log.warning("site report with an unknown token from %s", address)
+                raise _bad("unknown site token", 401)
+            except ValueError as exc:
+                raise _bad(str(exc))
+            cutoff = time.time() - 86400
+            for alert in fresh:
+                if alert["created"] >= cutoff:  # a site catching up after a long outage does not page for old news
+                    notifier.notify({**alert, "title": f"{alert['site']}: {alert['title']}",
+                                     "device": f"{alert['device']} at {alert['site']}" if alert["device"] else alert["site"],
+                                     "details": _loads(alert["details"]), "link": f"#/sites?alert={alert['id']}"})
+            return reply
+
+        @app.get("/api/sites")
+        async def sites():
+            return {"sites": await asyncio.to_thread(central.sites), "silent_minutes": cfg.site_silent_minutes}
+
+        @app.post("/api/sites")
+        async def site_create(body: dict = Body(...)):
+            name = str(body.get("name", "")).strip()
+            if not name or len(name) > 64 or any(c.isspace() for c in name):
+                raise _bad("Give the site a name of up to 64 characters, without spaces.")
+            try:
+                site, token = await asyncio.to_thread(central.create_site, name)
+            except ValueError as exc:
+                raise _bad(str(exc))
+            return {"site": site, "token": token}
+
+        @app.post("/api/sites/{site_id}/token")
+        async def site_rotate(site_id: int):
+            try:
+                return {"token": await asyncio.to_thread(central.rotate, site_id)}
+            except ValueError as exc:
+                raise _bad(str(exc))
+
+        @app.delete("/api/sites/{site_id}")
+        async def site_delete(site_id: int):
+            try:
+                await asyncio.to_thread(central.delete, site_id)
+            except (ValueError, TypeError) as exc:
+                raise _bad(str(exc) if isinstance(exc, ValueError) else "unknown site", 400)
+            return {"ok": True}
+
+        @app.get("/api/site-alerts")
+        async def site_alerts(site: int = 0, status: str = "open", severity: str = "", q: str = "",
+                              limit: int = 200, id: int = 0):
+            where, params = [], []
+            if id:
+                where.append("a.id = ?")
+                params.append(id)
+            else:
+                if site:
+                    where.append("a.site_id = ?")
+                    params.append(site)
+                if status in ("open", "ack", "resolved"):
+                    where.append("a.status = ?")
+                    params.append(status)
+                elif status == "active":
+                    where.append("a.status != 'resolved'")
+                if severity in SEVERITIES:
+                    where.append("a.severity IN (%s)" % ",".join("?" * (len(SEVERITIES) - SEVERITIES.index(severity))))
+                    params += SEVERITIES[SEVERITIES.index(severity):]
+                if q:
+                    where.append("(a.title LIKE ? OR a.description LIKE ? OR a.src_ip LIKE ? OR a.device LIKE ?)")
+                    params += [f"%{q}%"] * 4
+            rows = await db.aq(
+                "SELECT a.*, s.name AS site FROM site_alerts a JOIN sites s ON s.id = a.site_id"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY a.last_seen DESC LIMIT ?", (*params, max(1, min(limit, 1000))))
+            for row in rows:
+                row["details"] = _loads(row["details"])
+                row["advice"] = advice(row)
+            return {"alerts": rows}
+
+        @app.post("/api/site-alerts/status")
+        async def site_alert_status(body: dict = Body(...)):
+            status = body.get("status")
+            if status not in ("open", "ack", "resolved"):
+                raise _bad("invalid status")
+            ids = [int(i) for i in body.get("ids", []) if str(i).isdigit()][:5000]
+            return {"updated": await asyncio.to_thread(central.set_status, ids, status)}
 
     # --- high-risk ports --------------------------------------------------
     async def _port_alerts(now: float) -> dict[int, list[dict]]:
@@ -382,7 +487,8 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
             ids = [int(i) for i in body.get("ids", []) if str(i).isdigit()][:5000]
         for start in range(0, len(ids), 500):
             chunk = ids[start:start + 500]
-            await db.ax(f"UPDATE alerts SET status=? WHERE id IN ({','.join('?' * len(chunk))})", (status, *chunk))
+            await db.ax(f"UPDATE alerts SET status=?, updated=? WHERE id IN ({','.join('?' * len(chunk))})",
+                        (status, time.time(), *chunk))
         engine.alerts.set_status(ids, status)
         return {"updated": len(ids)}
 

@@ -311,6 +311,18 @@ PLAYBOOKS: dict[str, dict] = {
             "Check the network path between the device and Cerberus (UDP/TCP 514).",
         ],
     },
+    "site_silent": {
+        "stage": "Network health", "technique": None,
+        "why": "While a site is not reporting, nothing it detects reaches this console. The site may be down, cut "
+               "off from the console, or have had its Cerberus stopped.",
+        "actions": [
+            "Check that the site's Cerberus container is running (`docker ps`, or its pod) and look at its log.",
+            "From the site, check it can reach this console's address over HTTPS; a changed firewall rule or "
+            "certificate is the usual cause.",
+            "If the site was rebuilt, check it still has its token (CERBERUS_CENTRAL_TOKEN).",
+            "Alerts raised at the site meanwhile are kept there and arrive here once it reconnects.",
+        ],
+    },
     "new_device": {
         "stage": "Network health", "technique": None,
         "why": "Something started sending logs here for the first time.",

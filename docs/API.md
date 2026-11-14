@@ -49,5 +49,19 @@ credentials, SNMP community strings) are never returned: they read back as
 | `POST /api/channels`, `PUT /api/channels/{id}`, `DELETE /api/channels/{id}` | Manage channels |
 | `POST /api/channels/{id}/test` | Send a test notification; `502` with the provider's error on failure |
 
+### Central console only
+
+These exist when the instance runs with `CERBERUS_CENTRAL=on`.
+
+| Method and path | Purpose |
+|---|---|
+| `POST /api/federation/report` | A site's report. Authenticated by `Authorization: Bearer <site token>`, not a session. Body: `{site, instance, version, sent, summary, alerts: [...]}` (at most 8 MB); reply: `{ok, site, status: [{id, status}], interval}` where `status` lists alerts acknowledged or resolved at the console that the site should apply |
+| `GET /api/sites` | Sites with state (`waiting`, `reporting`, `silent`), last report, health summary and open alerts by severity |
+| `POST /api/sites` | `{"name": "north"}` registers a site and returns its token, once |
+| `POST /api/sites/{id}/token` | Issue a new token; the old one stops working |
+| `DELETE /api/sites/{id}` | Remove a site and the alerts it reported (sites from `CERBERUS_SITE_TOKENS_FILE` cannot be removed here) |
+| `GET /api/site-alerts?site=&status=&severity=&q=&limit=&id=` | Alerts from all sites, newest first, with `site` and `advice` |
+| `POST /api/site-alerts/status` | `{"ids": [...], "status": "ack"}`; each site applies it with its next report |
+
 Timestamps are Unix seconds. Severities are `info`, `low`, `medium`, `high`,
 `critical`.

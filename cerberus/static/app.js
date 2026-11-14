@@ -212,6 +212,10 @@ pages.dashboard = {
       tile('Messages, last 24 h', compact(d.events_24h), `${compact(d.blocked_24h)} blocked connections`) +
       tile('Devices reporting', `${d.devices_active} <span class="muted">/ ${d.devices_total}</span>`, 'sent logs in the last 15 min') +
       tile('Dropped messages', num(d.dropped), esc(health(d))) +
+      (d.federation ? tile('Central console', d.federation.error
+        ? `<span class="error" style="font-size:inherit">Not reaching it</span>` : 'Reporting',
+        esc(d.federation.error ? `${d.federation.error}${d.federation.last_ok ? ` · last report ${ago(d.federation.last_ok)}` : ''}`
+          : d.federation.last_ok ? `as ${d.federation.site} · last report ${ago(d.federation.last_ok)}` : `as ${d.federation.site} · first report pending`)) : '') +
       tile('Searchable history', d.events_since ? span(Date.now() / 1000 - d.events_since) : '—', esc(
         `${compact(d.events_stored)} events stored · keeps ${compact(d.max_events)} or ${d.retention_days} days` +
         (d.traffic_sample === 0 ? ' · allowed traffic not stored' : d.traffic_sample > 1 ? ` · 1 in ${d.traffic_sample} allowed flows stored` : '')));
@@ -300,10 +304,9 @@ pages.alerts = {
         (a.status !== 'resolved' ? btn('resolved', 'Resolve') : btn('open', 'Reopen'));
       const g = a.advice || { actions: [] };
       const detail = s.open.has(a.id) ? `<tr class="detail"><td></td><td colspan="7">
-          ${g.why ? `<div class="advice"><p><b>Why it matters.</b> ${esc(g.why)}</p>
-            ${g.actions.length ? `<p><b>What to do</b></p><ol>${g.actions.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div>` : ''}
+          ${guidance(g)}
           <dl class="kv">
-          ${g.stage ? `<dt>Attack stage</dt><dd>${esc(g.stage)}${g.technique ? ` · <a href="${esc(g.technique.url)}" target="_blank" rel="noopener noreferrer">ATT&amp;CK ${esc(g.technique.id)} ${esc(g.technique.name)}</a>` : ''}</dd>` : ''}
+          ${stageLine(g)}
           <dt>Detector</dt><dd>${esc(a.detector)}</dd><dt>Status</dt><dd>${esc(a.status)}</dd>
           ${Object.entries(a.details || {}).map(([k, v]) =>
             `<dt>${esc(k.replace(/_/g, ' '))}</dt><dd class="mono">${esc(Array.isArray(v) ? v.join(', ') : v)}</dd>`).join('')}
@@ -475,6 +478,184 @@ pages.riskports = {
       }
     },
     'see-events'(el) { seeEvents(el); },
+  },
+};
+
+/* Why an alert matters and what to do: shared by the local and the site alert lists. */
+function guidance(g) {
+  return g.why ? `<div class="advice"><p><b>Why it matters.</b> ${esc(g.why)}</p>
+    ${g.actions.length ? `<p><b>What to do</b></p><ol>${g.actions.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div>` : '';
+}
+function stageLine(g) {
+  return g.stage ? `<dt>Attack stage</dt><dd>${esc(g.stage)}${g.technique ? ` · <a href="${esc(g.technique.url)}" target="_blank" rel="noopener noreferrer">ATT&amp;CK ${esc(g.technique.id)} ${esc(g.technique.name)}</a>` : ''}</dd>` : '';
+}
+
+/* --- sites (central console) --- */
+state.sites = { site: '', status: 'open', severity: '', q: '', open: new Set(), only: null };
+pages.sites = {
+  interval: 10000,
+  render() {
+    const s = state.sites;
+    const linked = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('alert'));
+    s.only = linked || null;
+    if (linked) s.open.add(linked);
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Sites</h1>
+        <p>Every site runs its own Cerberus against its own devices and reports here. Acknowledging or resolving a site's
+          alert here is passed back to that site.</p></div>
+        <button type="button" class="primary" data-act="add-site">Add a site</button></div>
+      <div id="site-token" hidden></div>
+      <div class="grid tiles" id="site-tiles"></div>
+      <div class="card table-wrap" style="margin-bottom:14px"><table>
+        <thead><tr><th>Site</th><th>Status</th><th class="num">Messages / s</th><th class="num">Devices</th>
+          <th>Open alerts</th><th>Health</th><th>Version</th><th></th></tr></thead>
+        <tbody id="site-rows"></tbody></table></div>
+      <h2>Alerts from all sites</h2>
+      <div class="filters">
+        <select id="sa-site" aria-label="Site"></select>
+        <select id="sa-status" aria-label="Status">
+          ${[['open', 'Open'], ['ack', 'Acknowledged'], ['active', 'Open + acknowledged'], ['resolved', 'Resolved'], ['all', 'All']]
+            .map(([v, l]) => `<option value="${v}" ${v === s.status ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select id="sa-sev" aria-label="Minimum severity"><option value="">Any severity</option>
+          ${SEVS.slice(1).map((v) => `<option value="${v}" ${v === s.severity ? 'selected' : ''}>${v} and above</option>`).join('')}</select>
+        <input id="sa-q" type="search" placeholder="Search title, IP, device" value="${esc(s.q)}">
+        ${s.only ? '<a href="#/sites">Showing one alert · show all</a>' : ''}
+        <button type="button" data-act="ack-shown">Acknowledge all shown</button>
+      </div>
+      <div class="card table-wrap"><table>
+        <thead><tr><th>Severity</th><th>Site</th><th>Alert</th><th>Source</th><th class="num">Count</th><th>Last seen</th><th></th></tr></thead>
+        <tbody id="sa-rows"></tbody></table></div>`;
+    const change = () => {
+      Object.assign(s, { site: $('#sa-site').value, status: $('#sa-status').value, severity: $('#sa-sev').value, q: $('#sa-q').value.trim() });
+      act(() => this.loadAlerts());
+    };
+    $$('.filters select').forEach((el) => el.addEventListener('change', change));
+    $('#sa-q').addEventListener('input', debounce(change, 300));
+  },
+  async refresh() {
+    const { sites, silent_minutes: silent } = await api('/sites');
+    this.sites = sites;
+    if (!$('#site-rows')) return;
+    const s = state.sites, total = (o) => SEVS.reduce((n, k) => n + (o[k] || 0), 0);
+    const open = {};
+    sites.forEach((x) => SEVS.forEach((k) => { open[k] = (open[k] || 0) + (x.open_alerts[k] || 0); }));
+    const tile = (label, value, sub) => `<div class="card tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+    const silentCount = sites.filter((x) => x.state === 'silent').length;
+    $('#site-tiles').innerHTML =
+      tile('Sites', num(sites.length), `${num(sites.filter((x) => x.state === 'reporting').length)} reporting`) +
+      tile('Not reporting', num(silentCount), silentCount ? `nothing for over ${silent} min` : 'all sites are in touch') +
+      tile('Open alerts, all sites', num(total(open)), esc(SEVS.slice().reverse().filter((k) => open[k]).map((k) => `${open[k]} ${k}`).join(' · ')) || 'nothing needs attention') +
+      tile('Messages / second, all sites', num(Math.round(sites.reduce((n, x) => n + (x.summary.rate || 0), 0))), 'sum of the sites\' last reports') +
+      tile('Devices reporting', num(sites.reduce((n, x) => n + (x.summary.devices_active || 0), 0)),
+        `of ${num(sites.reduce((n, x) => n + (x.summary.devices_total || 0), 0))} known across sites`);
+    const stateLine = (x) => x.state === 'waiting' ? '<span class="muted">Waiting for first report</span>'
+      : x.state === 'silent' ? `<span class="error">Silent since ${ago(x.last_seen)}</span>`
+      : `<span class="dot on"></span>Reported ${ago(x.last_seen)}`;
+    $('#site-rows').innerHTML = sites.length ? sites.map((x) => {
+      const m = x.summary, sevs = SEVS.slice().reverse().filter((k) => x.open_alerts[k]);
+      const health = [m.dropped ? `${compact(m.dropped)} dropped` : '', m.unwritten ? `${compact(m.unwritten)} not stored` : ''].filter(Boolean).join(' · ');
+      return `<tr>
+        <td><b>${esc(x.name)}</b>${x.managed ? ' <span class="tag" title="Set in CERBERUS_SITE_TOKENS_FILE">configured</span>' : ''}
+          ${x.address ? `<div class="muted mono">${esc(x.address)}</div>` : ''}</td>
+        <td class="nowrap">${stateLine(x)}</td>
+        <td class="num">${x.last_seen ? num(m.rate) : '—'}</td>
+        <td class="num">${x.last_seen ? `${num(m.devices_active)} <span class="muted">/ ${num(m.devices_total)}</span>` : '—'}</td>
+        <td>${sevs.length ? sevs.map((k) => `<a href="#/sites" data-act="filter-site" data-site="${x.id}" data-sev="${k}">${sevBadge(k)} ${x.open_alerts[k]}</a>`).join(' ') : '<span class="muted">None</span>'}</td>
+        <td>${health ? `<span class="error">${esc(health)}</span>` : x.last_seen ? '<span class="muted">Keeping up</span>' : ''}</td>
+        <td class="mono">${esc(x.version || '')}</td>
+        <td class="nowrap">${x.managed ? '' : `<button type="button" class="small" data-act="rotate" data-id="${x.id}" data-name="${esc(x.name)}">New token</button>
+          <button type="button" class="small danger" data-act="delete-site" data-id="${x.id}" data-name="${esc(x.name)}">Remove</button>`}</td></tr>`;
+    }).join('') : '<tr><td colspan="8" class="empty">No sites yet. Add one, then start Cerberus at that site with the settings shown.</td></tr>';
+    const picked = String(s.site);
+    $('#sa-site').innerHTML = '<option value="">All sites</option>' + sites.map((x) =>
+      `<option value="${x.id}" ${String(x.id) === picked ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+    await this.loadAlerts();
+  },
+  async loadAlerts() {
+    const s = state.sites;
+    const q = s.only ? new URLSearchParams({ id: s.only })
+      : new URLSearchParams({ site: s.site || 0, status: s.status === 'all' ? '' : s.status, severity: s.severity, q: s.q });
+    const { alerts } = await api('/site-alerts?' + q);
+    this.alerts = alerts;
+    const body = $('#sa-rows');
+    if (!body) return;
+    body.innerHTML = alerts.length ? alerts.map((a) => {
+      const btn = (status, label) => `<button type="button" class="small" data-act="site-status" data-id="${a.id}" data-status="${status}">${label}</button>`;
+      const buttons = (a.status === 'open' ? btn('ack', 'Acknowledge') : '') + (a.status !== 'resolved' ? btn('resolved', 'Resolve') : btn('open', 'Reopen'));
+      const g = a.advice || { actions: [] };
+      const detail = s.open.has(a.id) ? `<tr class="detail"><td></td><td colspan="6">${guidance(g)}<dl class="kv">${stageLine(g)}
+          <dt>Site</dt><dd>${esc(a.site)}</dd>${a.device ? `<dt>Reported by</dt><dd class="mono">${esc(a.device)}</dd>` : ''}
+          <dt>Status</dt><dd>${esc(a.status)}${a.pending ? ' <span class="muted">(waiting for the site to apply it)</span>' : ''}</dd>
+          <dt>First seen</dt><dd>${clock(a.created, true)}</dd>
+          ${Object.entries(a.details || {}).map(([k, v]) => `<dt>${esc(k.replace(/_/g, ' '))}</dt><dd class="mono">${esc(Array.isArray(v) ? v.join(', ') : v)}</dd>`).join('')}
+          <dt>Investigate</dt><dd class="muted">Events, devices and maps stay at the site: open that site's own dashboard.</dd>
+        </dl></td></tr>` : '';
+      return `<tr class="click ${a.status === 'resolved' ? 'resolved' : ''}" data-act="toggle" data-id="${a.id}">
+        <td>${sevBadge(a.severity)}</td><td class="nowrap"><b>${esc(a.site)}</b></td>
+        <td><div><b>${esc(a.title)}</b>${g.stage && g.stage !== 'Network health' ? ` <span class="tag">${esc(g.stage)}</span>` : ''}</div><div class="muted">${esc(a.description)}</div></td>
+        <td class="mono nowrap">${esc(a.src_ip || '—')}</td><td class="num">${num(a.count)}</td>
+        <td class="nowrap" title="${clock(a.last_seen, true)}">${ago(a.last_seen)}</td><td class="nowrap">${buttons}</td></tr>${detail}`;
+    }).join('') : `<tr><td colspan="7" class="empty">${this.sites && this.sites.length ? 'No alerts match.' : 'Alerts appear here once a site reports.'}</td></tr>`;
+  },
+  showToken(name, token, fresh) {
+    const box = $('#site-token');
+    const origin = location.origin;
+    box.innerHTML = `<div class="card token-card">
+      <h2>${fresh ? 'Site added' : 'New token'}: ${esc(name)}</h2>
+      <p>This token is shown only once. Give the site's Cerberus these settings (for example in its <span class="mono">.env</span>),
+        then restart it. ${fresh ? '' : 'The previous token stops working now.'}</p>
+      <pre class="mono" id="token-text">CERBERUS_SITE_NAME=${esc(name)}
+CERBERUS_CENTRAL_URL=${esc(origin)}
+CERBERUS_CENTRAL_TOKEN=${esc(token)}</pre>
+      <p class="muted">Use the address the site can reach this console on, over HTTPS in production. See deploy/README.md.</p>
+      <div class="actions"><button type="button" data-act="copy-token">Copy</button><button type="button" data-act="hide-token">Done</button></div></div>`;
+    box.hidden = false;
+  },
+  actions: {
+    async 'add-site'() {
+      const name = prompt('Name for the new site (letters, digits, dashes; no spaces), e.g. london-dc1');
+      if (!name) return;
+      const r = await api('/sites', 'POST', { name: name.trim() });
+      pages.sites.showToken(r.site.name, r.token, true);
+      await pages.sites.refresh();
+    },
+    async rotate(el) {
+      if (!confirm(`Issue a new token for ${el.dataset.name}? The site stops reporting until it is given the new one.`)) return;
+      const r = await api(`/sites/${el.dataset.id}/token`, 'POST');
+      pages.sites.showToken(el.dataset.name, r.token, false);
+    },
+    async 'delete-site'(el) {
+      if (!confirm(`Remove ${el.dataset.name} and every alert it has reported here? The site itself is not changed.`)) return;
+      await api(`/sites/${el.dataset.id}`, 'DELETE');
+      toast(`${el.dataset.name} removed`);
+      await pages.sites.refresh();
+    },
+    async 'copy-token'() {
+      await navigator.clipboard.writeText($('#token-text').textContent);
+      toast('Copied');
+    },
+    'hide-token'() { $('#site-token').hidden = true; $('#site-token').innerHTML = ''; },
+    'filter-site'(el) {
+      Object.assign(state.sites, { site: el.dataset.site, severity: el.dataset.sev, status: 'open', only: null });
+      return pages.sites.render() || pages.sites.refresh();
+    },
+    toggle(el) {
+      const id = Number(el.dataset.id), open = state.sites.open;
+      open.has(id) ? open.delete(id) : open.add(id);
+      return pages.sites.loadAlerts();
+    },
+    async 'site-status'(el) {
+      await api('/site-alerts/status', 'POST', { ids: [Number(el.dataset.id)], status: el.dataset.status });
+      toast('Saved; the site applies it with its next report');
+      await pages.sites.refresh();
+    },
+    async 'ack-shown'() {
+      const ids = (pages.sites.alerts || []).filter((a) => a.status === 'open').map((a) => a.id);
+      if (!ids.length) return toast('No open alerts shown');
+      if (!confirm(`Acknowledge ${ids.length} open alert${ids.length > 1 ? 's' : ''}?`)) return;
+      await api('/site-alerts/status', 'POST', { ids, status: 'ack' });
+      await pages.sites.refresh();
+    },
   },
 };
 
@@ -1320,6 +1501,8 @@ async function start() {
   $('#login').hidden = true;
   $('#shell').hidden = false;
   $('#logout').hidden = !me.auth;
+  $('#nav-sites').hidden = !me.central;
+  if (me.central && !location.hash) location.hash = '#/sites';  // a console opens on its sites
   route();
   if (current !== 'dashboard') api('/summary?range=1h').then((d) => setNavCount(SEVS.reduce((n, s) => n + (d.open_alerts[s] || 0), 0))).catch(() => {});
 }

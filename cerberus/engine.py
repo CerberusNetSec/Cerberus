@@ -126,17 +126,19 @@ class AlertManager:
 
     def drain(self) -> list[tuple[str, list]]:
         """SQL to persist new alerts and updates since the last flush."""
+        stamp = time.time()  # wall clock, so a site's report cursor only moves forward
         updates = []
         for cur in self.active.values():
             if cur.dirty:
                 cur.dirty = False
                 updates.append((cur.last_seen, cur.count, cur.severity, cur.description[:1000],
-                                json.dumps(cur.details)[:4000], cur.id))
+                                json.dumps(cur.details)[:4000], stamp, cur.id))
         new_rows, self.new_rows = self.new_rows, []
         return [
             ("INSERT OR REPLACE INTO alerts(id, created, last_seen, detector, severity, title, description, "
-             "entity, src_ip, device, count, status, details) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", new_rows),
-            ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=? WHERE id=?", updates),
+             "entity, src_ip, device, count, status, details, updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             [(*row, stamp) for row in new_rows]),
+            ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=?, updated=? WHERE id=?", updates),
         ]
 
     def set_status(self, ids: list[int], status: str) -> None:

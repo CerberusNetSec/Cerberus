@@ -301,3 +301,8 @@ td .small + .small { margin-left: 4px; }
 .rp-who li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--grid); }
 .rp-who .n { margin-left: auto; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .advice ul { margin: 0; padding-left: 4px; list-style: none; }
+
+/* --- sites (central console) ----------------------------------------------------------- */
+.token-card { margin-bottom: 14px; border-left: 3px solid var(--accent); }
+.token-card pre { background: var(--surface-2); padding: 10px 12px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+#site-rows a { text-decoration: none; color: inherit; margin-right: 6px; white-space: nowrap; }

@@ -1,0 +1,29 @@
+# Syslog from the site's devices: one address, TCP and UDP on 514.
+# externalTrafficPolicy: Local keeps each device's real source address, which is
+# how Cerberus tells devices apart (otherwise use CERBERUS_DEVICE_IDENTITY=hostname).
+# Restrict loadBalancerSourceRanges to your management networks.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cerberus-syslog
+  # annotations:  # e.g. an internal-only load balancer on your cloud
+  #   service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  # loadBalancerSourceRanges: [10.0.0.0/8]
+  selector: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: site}
+  ports:
+    - {name: syslog-tcp, port: 514, targetPort: syslog-tcp, protocol: TCP}
+    - {name: syslog-udp, port: 514, targetPort: syslog-udp, protocol: UDP}
+---
+# The site's own dashboard (events, devices, topology), inside the cluster.
+# Expose it with an Ingress or `kubectl port-forward svc/cerberus-site 8080`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cerberus-site
+spec:
+  selector: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: site}
+  ports:
+    - {name: http, port: 8080, targetPort: http}

@@ -1,0 +1,6 @@
+# HTTPS in front of the central console (see deploy/compose/Caddyfile for the
+# internal-CA variant). In Swarm the console is reached by its service name.
+{$CENTRAL_DOMAIN} {
+	reverse_proxy console:8080
+	header Strict-Transport-Security "max-age=31536000"
+}

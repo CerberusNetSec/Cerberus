@@ -3,6 +3,7 @@
 
     python tools/simulate.py                       # every scenario, to 127.0.0.1:514/udp
     python tools/simulate.py --port 5514 portscan bruteforce
+    python tools/simulate.py --tcp --port 5514         # over TCP (Docker Desktop drops external UDP)
     python tools/simulate.py --list
 
 All traffic comes from this machine, so every "device" shares one source IP.
@@ -281,6 +282,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=514)
     parser.add_argument("--delay", type=float, default=0.002, help="seconds between messages")
+    parser.add_argument("--tcp", action="store_true", help="send over TCP (octet-counted framing) instead of UDP")
     parser.add_argument("--list", action="store_true", help="list scenarios and exit")
     args = parser.parse_args()
     if args.list:
@@ -290,14 +292,24 @@ def main() -> None:
     unknown = [s for s in args.scenarios if s not in SCENARIOS]
     if unknown:
         parser.error(f"unknown scenario(s): {', '.join(unknown)}. Try --list.")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    if args.tcp:
+        sock = socket.create_connection((args.host, args.port), timeout=10)
+
+        def send(data: bytes) -> None:
+            sock.sendall(f"{len(data)} ".encode() + data)  # RFC 6587 octet counting
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        def send(data: bytes) -> None:
+            sock.sendto(data, (args.host, args.port))
     for name in args.scenarios or [s for s in SCENARIOS if s not in SLOW]:
         count = 0
         for line in SCENARIOS[name]():
-            sock.sendto(line.encode(), (args.host, args.port))
+            send(line.encode())
             count += 1
             time.sleep(args.delay)
         print(f"{name}: sent {count} messages")
+    sock.close()
 
 
 if __name__ == "__main__":

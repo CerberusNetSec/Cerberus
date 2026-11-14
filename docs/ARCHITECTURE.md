@@ -60,6 +60,7 @@ device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ engine.p
 | `db.py` | SQLite access and event segments |
 | `notifiers.py` | Channels and delivery |
 | `snmp.py`, `snmp_poller.py`, `topology.py` | SNMP v2c client, polling, map building |
+| `federation.py` | Site → central console reporting (`Forwarder`) and the console side (`Central`) |
 | `web.py`, `static/` | JSON API and the single-page UI (no build step) |
 
 ## Storage
@@ -76,7 +77,8 @@ connection, four readers).
 | `devices` | Log sources and their per-device settings (including SNMP community strings) |
 | `snmp_data` | Last SNMP poll result per device, as JSON |
 | `channels` | Notification channels (including their credentials) |
-| `settings` | Detector settings, ignore lists, SNMP settings, password hash, learned admin sources |
+| `settings` | Detector settings, ignore lists, SNMP settings, password hash, learned admin sources, the site's report cursor and instance id |
+| `sites`, `site_alerts` | Central console only: registered sites (token hashes, last report, health summary) and the alerts they reported |
 
 Held in memory only, and rebuilt after a restart: detector sliding windows, the
 per-device rate baselines (30 minutes to warm up), top blocked sources and
@@ -103,10 +105,22 @@ README) and use the Connectors page to test a sample line.
 **A new notification channel:** add its fields to `CHANNEL_TYPES` and a sender
 in `notifiers.py`; the UI form is generated from the field list.
 
+## Federation
+
+A site's `Forwarder` reads alerts whose `updated` time is past its cursor,
+posts them with a health summary to the console, and advances the cursor only
+when the console accepts the report, so delivery is at least once. The console
+stores them under (site, the site database's random instance id, alert id), so
+repeats are harmless and a site rebuilt from scratch cannot overwrite its old
+alerts. A status set at the console is kept as `pending` and returned in each
+reply until the site reports the alert back with that status. See
+[deploy/README.md](../deploy/README.md) and [CLUSTERING.md](CLUSTERING.md).
+
 ## Limits by design
 
 - One process: parsing and detection use one CPU core. See "Running at scale"
   in the README for measured rates.
 - Syslog input is unauthenticated plain text; SNMP is v2c. Both belong on a
   management network.
-- No clustering, replication or multi-user accounts.
+- No clustering, replication or multi-user accounts; many sites are handled by
+  federation, and clustering is planned in [CLUSTERING.md](CLUSTERING.md).

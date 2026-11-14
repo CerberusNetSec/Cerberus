@@ -7,7 +7,8 @@ Telegram or Pushbullet. It can also poll those devices over SNMP and draw the
 network topology they describe.
 
 More documentation: [architecture](docs/ARCHITECTURE.md) ·
-[HTTP API](docs/API.md) · [security](SECURITY.md) ·
+[HTTP API](docs/API.md) · [many sites](deploy/README.md) ·
+[scaling plan](docs/CLUSTERING.md) · [security](SECURITY.md) ·
 [contributing](CONTRIBUTING.md)
 
 ## Screenshots
@@ -21,6 +22,7 @@ every address and hostname in them is simulated.
 | [![Risk ports](docs/screenshots/risk-ports.png)](docs/screenshots/risk-ports.png) **Risk ports**: traffic and findings on RDP, SMB, Telnet, FTP, HTTP and others | [![Topology](docs/screenshots/topology.png)](docs/screenshots/topology.png) **Topology**: the map built from SNMP, with alert counts per device |
 | [![Alerts](docs/screenshots/alerts.png)](docs/screenshots/alerts.png) **Alerts** | [![Events](docs/screenshots/events.png)](docs/screenshots/events.png) **Events** |
 | [![Devices](docs/screenshots/devices.png)](docs/screenshots/devices.png) **Devices** | [![Detection](docs/screenshots/detection.png)](docs/screenshots/detection.png) **Detection settings** |
+| [![Sites](docs/screenshots/sites.png)](docs/screenshots/sites.png) **Sites** (central console): every site's health and alerts in one place | |
 
 ## Quick start
 
@@ -223,6 +225,16 @@ the devices that `tools/simulate.py` logs as (run Cerberus with
 the one it prints. `--rogue` adds an unexpected switch to trigger the alert.
 `--sites 30` serves a 302-device campus instead.
 
+## Many sites
+
+For more devices than one instance handles, run one Cerberus per site and
+connect them to a central console (`CERBERUS_CENTRAL=on`). Each site keeps
+collecting and analysing on its own; the console shows every site's alerts,
+sends the notifications, hands acknowledgements back to the sites, and alerts
+when a site stops reporting. Reference deployments for Docker Compose, Docker
+Swarm and Kubernetes, and the settings, are in [deploy/README.md](deploy/README.md).
+The plan for clustering beyond that is in [docs/CLUSTERING.md](docs/CLUSTERING.md).
+
 ## Running at scale
 
 Cerberus is one process and one SQLite file. That is enough for a few hundred
@@ -375,6 +387,9 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_SYSLOG_UDP_PORT` / `_TCP_PORT` | `5514` | Inside the container; `0` disables |
 | `CERBERUS_WEB_PORT` | `8080` | |
 | `CERBERUS_DATA_DIR` | `/data` | SQLite database and user connectors |
+| `CERBERUS_PASSWORD_FILE` | | Read the password from a file instead (Docker and Kubernetes secrets) |
+| `CERBERUS_CENTRAL_URL`, `CERBERUS_CENTRAL_TOKEN[_FILE]`, `CERBERUS_SITE_NAME`, `CERBERUS_CENTRAL_CA` | | Report to a central console (see [deploy/README.md](deploy/README.md)) |
+| `CERBERUS_CENTRAL`, `CERBERUS_SITE_TOKENS_FILE`, `CERBERUS_SITE_SILENT_MINUTES` | `off`, , `5` | Act as the central console |
 
 ## Security notes
 

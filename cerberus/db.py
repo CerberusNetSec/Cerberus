@@ -15,6 +15,7 @@ import queue
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 READERS = 4
@@ -87,6 +88,25 @@ CREATE TABLE IF NOT EXISTS port_minute (
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
+-- Central console only: the sites that report here, and their alerts.
+CREATE TABLE IF NOT EXISTS sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE, token_hash TEXT UNIQUE, managed INTEGER DEFAULT 0,
+    created REAL, last_seen REAL, silent INTEGER DEFAULT 0,
+    address TEXT, version TEXT, reported_name TEXT, instance TEXT, summary TEXT
+);
+CREATE TABLE IF NOT EXISTS site_alerts (
+    id INTEGER PRIMARY KEY,
+    site_id INTEGER NOT NULL, instance TEXT NOT NULL, alert_id INTEGER NOT NULL,
+    created REAL, last_seen REAL, received REAL,
+    detector TEXT, severity TEXT, title TEXT, description TEXT, entity TEXT,
+    src_ip TEXT, device TEXT, count INTEGER, details TEXT,
+    status TEXT DEFAULT 'open', pending TEXT,
+    UNIQUE (site_id, instance, alert_id)
+);
+CREATE INDEX IF NOT EXISTS site_alerts_last ON site_alerts(last_seen);
+CREATE INDEX IF NOT EXISTS site_alerts_status ON site_alerts(status, last_seen);
+
 CREATE TABLE IF NOT EXISTS snmp_data (
     device TEXT PRIMARY KEY,
     polled REAL, ok INTEGER, error TEXT, last_ok REAL, data TEXT
@@ -106,6 +126,7 @@ MIGRATIONS = [
     ("devices", "snmp_mode", "TEXT DEFAULT 'default'"),
     ("devices", "snmp_community", "TEXT DEFAULT ''"),
     ("devices", "snmp_host", "TEXT DEFAULT ''"),
+    ("alerts", "updated", "REAL DEFAULT 0"),  # when the row last changed; what a site reports from
 ]
 
 
@@ -131,6 +152,7 @@ class Database:
                 have = {row["name"] for row in self._w.execute(f"PRAGMA table_info({table})")}
                 if column not in have:
                     self._w.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            self._w.execute("CREATE INDEX IF NOT EXISTS alerts_updated ON alerts(updated, id)")
             self._adopt_legacy_events()
             self._w.commit()
             self._load_segments()
@@ -202,6 +224,17 @@ class Database:
             if timeout:
                 conn.set_progress_handler(None, 0)
             self._readers.put(conn)
+
+    @contextmanager
+    def transaction(self):
+        """The writer connection, inside one transaction (committed on success, rolled back on error)."""
+        with self._wlock:
+            try:
+                yield self._w
+                self._w.commit()
+            except Exception:
+                self._w.rollback()
+                raise
 
     def x(self, sql: str, params=()) -> int:
         """Run one write statement; returns lastrowid for inserts, else rowcount."""
@@ -323,6 +356,7 @@ class Database:
         self.x("DELETE FROM stats_minute WHERE minute < ?", (int(cutoff),))
         self.x("DELETE FROM port_minute WHERE minute < ?", (int(cutoff),))
         self.x("DELETE FROM alerts WHERE last_seen < ?", (now - alert_days * 86400,))
+        self.x("DELETE FROM site_alerts WHERE last_seen < ?", (now - alert_days * 86400,))
         return removed
 
     def close(self) -> None:

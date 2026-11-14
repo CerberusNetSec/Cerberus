@@ -1,0 +1,69 @@
+# A console and two sites on one machine, to try federation. Plain HTTP between
+# them, so for evaluation only.
+#
+#   python deploy/make-secrets.py north south
+#   docker compose -f deploy/compose/demo.yml up -d --build
+#   python tools/simulate.py --tcp --port 5141     # attacks at "north"
+#
+#   console   http://localhost:8090   (password: deploy/secrets/central_password.txt)
+#   north     http://localhost:8091   syslog TCP/UDP 5141
+#   south     http://localhost:8092   syslog TCP/UDP 5142
+name: cerberus-demo
+
+x-site: &site
+  image: ${CERBERUS_IMAGE:-cerberus:demo}
+  restart: unless-stopped
+  read_only: true
+  depends_on: [console]
+
+services:
+  console:
+    image: ${CERBERUS_IMAGE:-cerberus:demo}
+    build: ../..
+    restart: unless-stopped
+    read_only: true
+    ports: ["8090:8080"]
+    environment:
+      CERBERUS_CENTRAL: "on"
+      CERBERUS_PASSWORD_FILE: /run/secrets/central_password
+      CERBERUS_SITE_TOKENS_FILE: /run/secrets/site_tokens
+      CERBERUS_PUBLIC_URL: http://localhost:8090
+      CERBERUS_SYSLOG_UDP_PORT: "0"
+      CERBERUS_SYSLOG_TCP_PORT: "0"
+    secrets: [central_password, site_tokens]
+    volumes: [console-data:/data]
+
+  north:
+    <<: *site
+    ports: ["8091:8080", "5141:5514/tcp", "5141:5514/udp"]
+    environment:
+      CERBERUS_SITE_NAME: north
+      CERBERUS_CENTRAL_URL: http://console:8080
+      CERBERUS_CENTRAL_TOKEN_FILE: /run/secrets/north_token
+      CERBERUS_PASSWORD_FILE: /run/secrets/central_password
+      CERBERUS_DEVICE_IDENTITY: hostname
+    secrets: [north_token, central_password]
+    volumes: [north-data:/data]
+
+  south:
+    <<: *site
+    ports: ["8092:8080", "5142:5514/tcp", "5142:5514/udp"]
+    environment:
+      CERBERUS_SITE_NAME: south
+      CERBERUS_CENTRAL_URL: http://console:8080
+      CERBERUS_CENTRAL_TOKEN_FILE: /run/secrets/south_token
+      CERBERUS_PASSWORD_FILE: /run/secrets/central_password
+      CERBERUS_DEVICE_IDENTITY: hostname
+    secrets: [south_token, central_password]
+    volumes: [south-data:/data]
+
+secrets:
+  central_password: {file: ../secrets/central_password.txt}
+  site_tokens: {file: ../secrets/site_tokens.txt}
+  north_token: {file: ../secrets/north.token}
+  south_token: {file: ../secrets/south.token}
+
+volumes:
+  console-data:
+  north-data:
+  south-data:

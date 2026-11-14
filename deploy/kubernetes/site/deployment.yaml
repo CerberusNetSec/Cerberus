@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-site
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: site}
+spec:
+  replicas: 1  # one SQLite writer; do not scale
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: site}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: site}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: cerberus
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-site}
+          env:
+            - {name: CERBERUS_PASSWORD_FILE, value: /run/secrets/cerberus/password}
+            - {name: CERBERUS_CENTRAL_TOKEN_FILE, value: /run/secrets/cerberus/central-token}
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: syslog-tcp, containerPort: 5514, protocol: TCP}
+            - {name: syslog-udp, containerPort: 5514, protocol: UDP}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}  # parsing uses one core; the rest is headroom for the web UI and writes
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: secrets, mountPath: /run/secrets/cerberus, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: cerberus-site-data}
+        - name: secrets
+          secret: {secretName: cerberus-site, defaultMode: 0440}  # group-readable: fsGroup gives the pod that group

@@ -29,7 +29,12 @@ response time and no bounty.
 - **Alerts contain addresses, usernames and rule names** from your network, and
   notifications send them to third-party services (your mail server, Telegram,
   Pushbullet). Choose channels accordingly.
-- The container runs as an unprivileged user and needs no capabilities.
+- **Site tokens are bearer credentials.** Anyone holding one can post alerts as
+  that site to the central console. Serve the console over HTTPS only, keep
+  token files out of version control, and rotate a token that may have leaked.
+  The console stores only a hash of each token.
+- The container runs as an unprivileged user, with a read-only root filesystem,
+  and needs no capabilities.
 
 ## Never commit
 

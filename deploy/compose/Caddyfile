@@ -1,0 +1,11 @@
+# HTTPS in front of the central console.
+#
+# With a public DNS name pointing at this host, Caddy obtains a certificate
+# automatically. On an internal network without one, add a `tls internal` line
+# inside the block: Caddy then issues its own certificate, and each site must
+# trust Caddy's root (copy /data/caddy/pki/authorities/local/root.crt out of the
+# caddy-data volume to the site and set CERBERUS_CENTRAL_CA to its path).
+{$CENTRAL_DOMAIN} {
+	reverse_proxy cerberus:8080
+	header Strict-Transport-Security "max-age=31536000"
+}

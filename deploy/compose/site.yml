@@ -1,0 +1,41 @@
+# One site: collects syslog from this site's devices and reports to the console.
+#
+#   CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
+#     docker compose -f deploy/compose/site.yml up -d --build
+#
+# Needs deploy/secrets/<site>.token and <site>_password.txt from make-secrets.py
+# (copy just those two files to the site's host). See deploy/README.md.
+name: cerberus-site
+
+services:
+  cerberus:
+    image: ${CERBERUS_IMAGE:-cerberus:latest}
+    build: ../..
+    restart: unless-stopped
+    read_only: true
+    ports:
+      - "514:5514/tcp"   # syslog. On Docker Desktop for Windows/macOS send TCP: external UDP may not arrive.
+      - "514:5514/udp"
+      - "8080:8080"      # this site's own dashboard: events, devices, topology
+    environment:
+      CERBERUS_SITE_NAME: ${CERBERUS_SITE_NAME:?set CERBERUS_SITE_NAME, the name the console knows this site by}
+      CERBERUS_CENTRAL_URL: ${CERBERUS_CENTRAL_URL:?set CERBERUS_CENTRAL_URL, e.g. https://cerberus.example.com}
+      CERBERUS_CENTRAL_TOKEN_FILE: /run/secrets/central_token
+      CERBERUS_PASSWORD_FILE: /run/secrets/site_password
+      # Only for a console behind a private CA: mount the CA file and point at it.
+      CERBERUS_CENTRAL_CA: ${CERBERUS_CENTRAL_CA:-}
+      CERBERUS_DEVICE_IDENTITY: ${CERBERUS_DEVICE_IDENTITY:-ip}
+      CERBERUS_PUBLIC_URL: ${CERBERUS_PUBLIC_URL:-}
+      TZ: ${TZ:-UTC}
+    secrets: [central_token, site_password]
+    volumes:
+      - site-data:/data
+
+secrets:
+  central_token:
+    file: ../secrets/${CERBERUS_SITE_NAME}.token
+  site_password:
+    file: ../secrets/${CERBERUS_SITE_NAME}_password.txt
+
+volumes:
+  site-data:

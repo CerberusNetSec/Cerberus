@@ -204,7 +204,8 @@ class Notifier:
         if guide["actions"]:
             lines += ["", "What to do:"] + [f"{i}. {step}" for i, step in enumerate(guide["actions"][:4], 1)]
         if self.public_url:
-            lines += ["", f"{self.public_url}/#/alerts?id={alert['id']}" if alert.get("id") else f"{self.public_url}/#/alerts"]
+            link = alert.get("link") or (f"#/alerts?id={alert['id']}" if alert.get("id") else "#/alerts")
+            lines += ["", f"{self.public_url}/{link}"]
         return subject, "\n".join(lines)
 
     def _allow(self, channel_id: int, now: float) -> bool:

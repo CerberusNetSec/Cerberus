@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cerberus-central-data
+spec:
+  accessModes: [ReadWriteOnce]
+  # storageClassName: fast-ssd   # SQLite wants local or block storage, not NFS
+  resources:
+    requests:
+      storage: 10Gi

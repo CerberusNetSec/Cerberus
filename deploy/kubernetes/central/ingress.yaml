@@ -1,0 +1,26 @@
+# HTTPS for the dashboard and for site reports. Assumes an ingress controller
+# and a TLS secret (from cert-manager or your own CA); adjust the class, host
+# and annotations to your cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cerberus-central
+  annotations:
+    # A site catching up after an outage sends reports of up to a few MB.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    # cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [cerberus.example.com]
+      secretName: cerberus-central-tls
+  rules:
+    - host: cerberus.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cerberus-central
+                port: {name: http}

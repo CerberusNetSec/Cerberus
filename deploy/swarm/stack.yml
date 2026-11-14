@@ -1,0 +1,134 @@
+# Docker Swarm: the central console and two example sites in one stack.
+#
+# Every Cerberus keeps its state in SQLite on a local volume, so each service
+# runs one replica pinned to one node by a label:
+#
+#   docker node update --label-add cerberus=central <console-node>
+#   docker node update --label-add cerberus-site=north <node-at-north>
+#   docker node update --label-add cerberus-site=south <node-at-south>
+#
+#   python deploy/make-secrets.py north south
+#   docker secret create cerberus_central_password deploy/secrets/central_password.txt
+#   docker secret create cerberus_site_tokens      deploy/secrets/site_tokens.txt
+#   docker secret create cerberus_north_token      deploy/secrets/north.token
+#   docker secret create cerberus_north_password   deploy/secrets/north_password.txt
+#   docker secret create cerberus_south_token      deploy/secrets/south.token
+#   docker secret create cerberus_south_password   deploy/secrets/south_password.txt
+#
+#   CERBERUS_IMAGE=registry.example.com/cerberus:0.2.0 CENTRAL_DOMAIN=cerberus.example.com \
+#     docker stack deploy -c deploy/swarm/stack.yml cerberus
+#
+# To add a site, copy the `north` service, change its name, label and secrets,
+# run make-secrets.py with the new name, update the cerberus_site_tokens secret
+# (secrets are immutable: create a new one and point the console at it) and redeploy.
+# See deploy/README.md.
+
+x-cerberus: &cerberus
+  image: ${CERBERUS_IMAGE:?set CERBERUS_IMAGE to an image every node can pull}
+  read_only: true
+  stop_grace_period: 30s
+
+x-single: &single
+  replicas: 1
+  # One writer per database: never run old and new side by side during an update.
+  update_config: {order: stop-first, failure_action: rollback}
+  restart_policy: {condition: any, delay: 5s}
+
+services:
+  console:
+    <<: *cerberus
+    environment:
+      CERBERUS_CENTRAL: "on"
+      CERBERUS_PASSWORD_FILE: /run/secrets/central_password
+      CERBERUS_SITE_TOKENS_FILE: /run/secrets/site_tokens
+      CERBERUS_PUBLIC_URL: https://${CENTRAL_DOMAIN:?set CENTRAL_DOMAIN}
+      CERBERUS_SYSLOG_UDP_PORT: "0"
+      CERBERUS_SYSLOG_TCP_PORT: "0"
+    secrets:
+      - {source: cerberus_central_password, target: central_password, uid: "10001", mode: 0400}
+      - {source: cerberus_site_tokens, target: site_tokens, uid: "10001", mode: 0400}
+    volumes: [console-data:/data]
+    networks: [console]
+    deploy:
+      <<: *single
+      placement: {constraints: [node.labels.cerberus == central]}
+      resources: {limits: {cpus: "1", memory: 1G}, reservations: {memory: 256M}}
+
+  proxy:
+    image: caddy:2.8
+    environment:
+      CENTRAL_DOMAIN: ${CENTRAL_DOMAIN}
+    configs:
+      - {source: caddyfile, target: /etc/caddy/Caddyfile}
+    volumes: [caddy-data:/data]
+    ports:
+      - {target: 80, published: 80, mode: host}
+      - {target: 443, published: 443, mode: host}
+    networks: [console]
+    deploy:
+      <<: *single
+      placement: {constraints: [node.labels.cerberus == central]}
+
+  north:
+    <<: *cerberus
+    environment:
+      CERBERUS_SITE_NAME: north
+      CERBERUS_CENTRAL_URL: https://${CENTRAL_DOMAIN}
+      CERBERUS_CENTRAL_TOKEN_FILE: /run/secrets/central_token
+      CERBERUS_PASSWORD_FILE: /run/secrets/site_password
+    secrets:
+      - {source: cerberus_north_token, target: central_token, uid: "10001", mode: 0400}
+      - {source: cerberus_north_password, target: site_password, uid: "10001", mode: 0400}
+    # mode: host keeps each device's real source address. The routing mesh
+    # (the default) would show every device as the mesh's own address.
+    ports:
+      - {target: 5514, published: 514, protocol: tcp, mode: host}
+      - {target: 5514, published: 514, protocol: udp, mode: host}
+      - {target: 8080, published: 8080, protocol: tcp, mode: host}
+    volumes: [north-data:/data]
+    deploy:
+      <<: *single
+      placement: {constraints: [node.labels.cerberus-site == north]}
+      resources: {limits: {cpus: "2", memory: 2G}, reservations: {cpus: "0.5", memory: 512M}}
+
+  south:
+    <<: *cerberus
+    environment:
+      CERBERUS_SITE_NAME: south
+      CERBERUS_CENTRAL_URL: https://${CENTRAL_DOMAIN}
+      CERBERUS_CENTRAL_TOKEN_FILE: /run/secrets/central_token
+      CERBERUS_PASSWORD_FILE: /run/secrets/site_password
+    secrets:
+      - {source: cerberus_south_token, target: central_token, uid: "10001", mode: 0400}
+      - {source: cerberus_south_password, target: site_password, uid: "10001", mode: 0400}
+    ports:
+      - {target: 5514, published: 514, protocol: tcp, mode: host}
+      - {target: 5514, published: 514, protocol: udp, mode: host}
+      - {target: 8080, published: 8080, protocol: tcp, mode: host}
+    volumes: [south-data:/data]
+    deploy:
+      <<: *single
+      placement: {constraints: [node.labels.cerberus-site == south]}
+      resources: {limits: {cpus: "2", memory: 2G}, reservations: {cpus: "0.5", memory: 512M}}
+
+networks:
+  console:
+    driver: overlay
+
+configs:
+  caddyfile:
+    file: ./Caddyfile
+
+secrets:
+  cerberus_central_password: {external: true}
+  cerberus_site_tokens: {external: true}
+  cerberus_north_token: {external: true}
+  cerberus_north_password: {external: true}
+  cerberus_south_token: {external: true}
+  cerberus_south_password: {external: true}
+
+volumes:
+  console-data:
+  caddy-data:
+  north-data:
+  south-data:

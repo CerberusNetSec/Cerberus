@@ -22,6 +22,7 @@ python tools/simulate.py --port 5514                   # sample attacks and ordi
 | `python tools/simulate.py [scenario ...]` | Sends fake syslog over UDP. `--list` shows the scenarios |
 | `python tools/snmp_sim.py [--rogue] [--sites N]` | Fake SNMP agents for the topology feature |
 | `python tools/loadtest.py [--devices N --messages N]` | In-process throughput, storage and query timings |
+| `python deploy/make-secrets.py <site> ...` and `docker compose -f deploy/compose/demo.yml up -d --build` | A central console and two sites on one machine |
 
 ## Expectations for a change
 

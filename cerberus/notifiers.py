@@ -188,7 +188,7 @@ class Notifier:
         self._tasks: set = set()
 
     async def reload(self) -> None:
-        self.channels = await self.db.aq("SELECT * FROM channels ORDER BY id")
+        self.channels = await asyncio.to_thread(self.db.channels)
 
     def format(self, alert: dict) -> tuple[str, str]:
         subject = f"[Cerberus {alert['severity'].upper()}] {alert['title']}"
@@ -270,10 +270,7 @@ class Notifier:
                     if secret:
                         error = error.replace(secret, "***")
                 log.warning("notify via %s failed (attempt %d): %s", ch["name"], attempt + 1, error)
-        await self.db.ax(
-            "UPDATE channels SET last_ts=?, last_ok=?, last_error=? WHERE id=?",
-            (time.time(), 0 if error else 1, error, ch["id"]),
-        )
+        await asyncio.to_thread(self.db.channel_result, ch["id"], time.time(), not error, error)
         return error
 
     async def _deliver_slot(self, ch, subject, body) -> None:

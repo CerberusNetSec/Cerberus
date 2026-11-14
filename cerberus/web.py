@@ -17,8 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .config import Config
-from .db import Database, QueryTimeout
-from .engine import TOTAL, Engine
+from .engine import Engine
 from .federation import MAX_REPORT_BYTES, Central, Forwarder
 from .models import SEVERITIES
 from .models import clean_ip, is_internal
@@ -27,6 +26,7 @@ from .playbooks import STAGES, advice, detector_stage
 from .riskports import CATALOG, CLEARTEXT, DIRECTIONS, WEB, flags, service_name
 from .snmp_poller import MASK as SNMP_MASK
 from .snmp_poller import SnmpPoller, parse_target
+from .storage import QueryTimeout, Store
 from .topology import build_topology
 
 log = logging.getLogger("cerberus.web")
@@ -45,7 +45,7 @@ def _hash(password: str, salt: bytes) -> bytes:
 
 
 class Auth:
-    def __init__(self, cfg: Config, db: Database):
+    def __init__(self, cfg: Config, db: Store):
         self.enabled = cfg.auth_enabled
         self.sessions: dict[str, float] = {}
         self.failures: dict[str, deque] = {}
@@ -110,7 +110,12 @@ def _loads(text):
         return {}
 
 
-def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, poller: SnmpPoller,
+def _run(fn, *args, **kwargs):
+    """A storage call, in a worker thread: storage may block."""
+    return asyncio.to_thread(fn, *args, **kwargs)
+
+
+def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, poller: SnmpPoller,
                forwarder: Forwarder | None = None, central: Central | None = None) -> FastAPI:
     app = FastAPI(title="Cerberus", docs_url=None, redoc_url=None, openapi_url=None)
     auth = Auth(cfg, db)
@@ -172,10 +177,7 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
         span, bucket = RANGES.get(range, RANGES["24h"])
         now = time.time()
         start = int((now - span) // bucket) * bucket
-        rows = await db.aq(
-            "SELECT (minute / ?) * ? AS t, SUM(events) AS e, SUM(blocked) AS b FROM stats_minute "
-            "WHERE minute >= ? AND device = ? GROUP BY t", (bucket, bucket, start, TOTAL))
-        found = {r["t"]: r for r in rows}
+        found = {r["t"]: r for r in await _run(db.traffic_series, start, bucket)}
         series = []
         t = start
         while t < now:
@@ -186,20 +188,15 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
             series.append({"t": t, "events": round((row["e"] if row else 0) / minutes, 1),
                            "blocked": round((row["b"] if row else 0) / minutes, 1)})
             t += bucket
-        day = await db.aq("SELECT SUM(events) AS e, SUM(blocked) AS b FROM stats_minute WHERE minute >= ? AND device = ?",
-                          (int(now - 86400), TOTAL))
-        counts = await db.aq("SELECT severity, COUNT(*) AS n FROM alerts WHERE status='open' GROUP BY severity")
-        recent = await db.aq(
-            "SELECT id, created, last_seen, severity, title, description, status, count FROM alerts "
-            "ORDER BY last_seen DESC LIMIT 8")
+        day_events, day_blocked = await _run(db.traffic_totals, int(now - 86400))
+        counts = await _run(db.alert_counts_open)
+        recent = await _run(db.alerts_recent, 8)
         sources, ports = engine.top_blocked()
         devices = list(engine.devices.values())
 
         # Who needs attention first: unresolved alerts from the last 24 hours, scored per
         # host (the alert's source address, or the reporting device when there is none).
-        active = await db.aq(
-            "SELECT detector, severity, title, src_ip, device FROM alerts "
-            "WHERE status != 'resolved' AND last_seen >= ? ORDER BY last_seen DESC LIMIT 2000", (now - 86400,))
+        active = await _run(db.alerts_unresolved_since, now - 86400, 2000)
         hosts: dict[str, dict] = {}
         stages: dict[str, int] = {}
         for row in active:
@@ -228,9 +225,9 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
             "series": series,
             "bucket_minutes": bucket // 60,
             "rate": round(engine.rate(), 1),
-            "events_24h": day[0]["e"] or 0,
-            "blocked_24h": day[0]["b"] or 0,
-            "open_alerts": {r["severity"]: r["n"] for r in counts},
+            "events_24h": day_events,
+            "blocked_24h": day_blocked,
+            "open_alerts": counts,
             "recent_alerts": recent,
             "top_sources": sources,
             "top_ports": ports,
@@ -311,36 +308,15 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
         async def site_delete(site_id: int):
             try:
                 await asyncio.to_thread(central.delete, site_id)
-            except (ValueError, TypeError) as exc:
+            except (ValueError, LookupError) as exc:
                 raise _bad(str(exc) if isinstance(exc, ValueError) else "unknown site", 400)
             return {"ok": True}
 
         @app.get("/api/site-alerts")
         async def site_alerts(site: int = 0, status: str = "open", severity: str = "", q: str = "",
                               limit: int = 200, id: int = 0):
-            where, params = [], []
-            if id:
-                where.append("a.id = ?")
-                params.append(id)
-            else:
-                if site:
-                    where.append("a.site_id = ?")
-                    params.append(site)
-                if status in ("open", "ack", "resolved"):
-                    where.append("a.status = ?")
-                    params.append(status)
-                elif status == "active":
-                    where.append("a.status != 'resolved'")
-                if severity in SEVERITIES:
-                    where.append("a.severity IN (%s)" % ",".join("?" * (len(SEVERITIES) - SEVERITIES.index(severity))))
-                    params += SEVERITIES[SEVERITIES.index(severity):]
-                if q:
-                    where.append("(a.title LIKE ? OR a.description LIKE ? OR a.src_ip LIKE ? OR a.device LIKE ?)")
-                    params += [f"%{q}%"] * 4
-            rows = await db.aq(
-                "SELECT a.*, s.name AS site FROM site_alerts a JOIN sites s ON s.id = a.site_id"
-                + (" WHERE " + " AND ".join(where) if where else "")
-                + " ORDER BY a.last_seen DESC LIMIT ?", (*params, max(1, min(limit, 1000))))
+            rows = await _run(db.site_alerts_find, site_id=site, status=status, severity=severity, text=q,
+                              limit=max(1, min(limit, 1000)), alert_id=id)
             for row in rows:
                 row["details"] = _loads(row["details"])
                 row["advice"] = advice(row)
@@ -357,14 +333,11 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
     # --- high-risk ports --------------------------------------------------
     async def _port_alerts(now: float) -> dict[int, list[dict]]:
         """Unresolved alerts from the last day that name a port, by port."""
-        rows = await db.aq(
-            "SELECT id, severity, title, last_seen, src_ip, details FROM alerts "
-            "WHERE status != 'resolved' AND last_seen >= ? ORDER BY last_seen DESC LIMIT 2000", (now - 86400,))
         out: dict[int, list[dict]] = {}
-        for row in rows:
-            port = _loads(row.pop("details")).get("port")
+        for row in await _run(db.alerts_unresolved_since, now - 86400, 2000):
+            port = _loads(row["details"]).get("port")
             if isinstance(port, int):
-                out.setdefault(port, []).append(row)
+                out.setdefault(port, []).append({k: row[k] for k in ("id", "severity", "title", "last_seen", "src_ip")})
         return out
 
     @app.get("/api/riskports")
@@ -373,9 +346,7 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
         span, bucket = RANGES.get(range, RANGES["24h"])
         now = time.time()
         start = int((now - span) // bucket) * bucket
-        rows = await db.aq(
-            "SELECT (minute / ?) * ? AS t, port, direction, SUM(allowed) AS a, SUM(blocked) AS b FROM port_minute "
-            "WHERE minute >= ? GROUP BY t, port, direction", (bucket, bucket, start))
+        rows = await _run(db.port_series, start, bucket)
         totals: dict[int, dict[str, list[int]]] = {}
         series: dict[int, dict[int, list[int]]] = {}
         for row in rows:
@@ -440,23 +411,8 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
     # --- alerts ----------------------------------------------------------
     @app.get("/api/alerts")
     async def alerts(status: str = "open", severity: str = "", q: str = "", limit: int = 200, id: int = 0):
-        where, params = [], []
-        if id:
-            where.append("id = ?")
-            params.append(id)
-        elif status in ("open", "ack", "resolved"):
-            where.append("status = ?")
-            params.append(status)
-        elif status == "active":
-            where.append("status != 'resolved'")
-        if severity in SEVERITIES:
-            where.append("severity IN (%s)" % ",".join("?" * (len(SEVERITIES) - SEVERITIES.index(severity))))
-            params += SEVERITIES[SEVERITIES.index(severity):]
-        if q:
-            where.append("(title LIKE ? OR description LIKE ? OR src_ip LIKE ? OR device LIKE ?)")
-            params += [f"%{q}%"] * 4
-        sql = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "")
-        rows = await db.aq(sql + " ORDER BY last_seen DESC LIMIT ?", (*params, max(1, min(limit, 1000))))
+        rows = await _run(db.alerts_find, status=status, severity=severity, text=q,
+                          limit=max(1, min(limit, 1000)), alert_id=id)
         for row in rows:
             row["details"] = _loads(row["details"])
             row["advice"] = advice(row)
@@ -482,13 +438,10 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
         if status not in ("open", "ack", "resolved"):
             raise _bad("invalid status")
         if body.get("all_open"):
-            ids = [r["id"] for r in await db.aq("SELECT id FROM alerts WHERE status = 'open'")]
+            ids = await _run(db.alert_ids_open)
         else:
             ids = [int(i) for i in body.get("ids", []) if str(i).isdigit()][:5000]
-        for start in range(0, len(ids), 500):
-            chunk = ids[start:start + 500]
-            await db.ax(f"UPDATE alerts SET status=?, updated=? WHERE id IN ({','.join('?' * len(chunk))})",
-                        (status, time.time(), *chunk))
+        await _run(db.set_alert_status, ids, status, time.time())
         engine.alerts.set_status(ids, status)
         return {"updated": len(ids)}
 
@@ -497,23 +450,10 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
     async def events(hours: float = 24, device: str = "", type: str = "", action: str = "", ip: str = "",
                      port: str = "", q: str = "", before: int = 0, limit: int = 200):
         since = time.time() - max(0.1, min(hours, 24 * 365)) * 3600
-        where, params = [], []
-        for column, value in (("device", device), ("event_type", type), ("action", action)):
-            if value:
-                where.append(f"{column} = ?")
-                params.append(value)
-        if ip:
-            where.append("(src_ip = ? OR dst_ip = ?)")
-            params += [ip, ip]
-        if port.isdigit():
-            where.append("dst_port = ?")
-            params.append(int(port))
-        if q:
-            where.append("message LIKE ?")
-            params.append(f"%{q}%")
         try:
-            rows = await asyncio.to_thread(db.search_events, where, params, since, max(0, before),
-                                           max(1, min(limit, 1000)), SEARCH_SECONDS)
+            rows = await _run(db.search_events, since, max(0, before), max(1, min(limit, 1000)), SEARCH_SECONDS,
+                              device=device, event_type=type, action=action, ip=ip,
+                              port=int(port) if port.isdigit() else None, text=q)
         except QueryTimeout:
             raise _bad(f"That search was stopped after {SEARCH_SECONDS} seconds. Choose a shorter time range, "
                        "or add a device, address or port so it has less to read.", 504)
@@ -554,8 +494,7 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
         dev.name = str(body.get("name", dev.name)).strip()[:80]
         dev.connector_pin = pin
         dev.snmp_mode, dev.snmp_host = mode, host
-        await db.ax("UPDATE devices SET name=?, connector_pin=?, snmp_mode=?, snmp_community=?, snmp_host=? WHERE id=?",
-                    (dev.name, pin, mode, dev.snmp_community, host, dev.id))
+        await _run(db.update_device, dev.id, dev.name, pin, mode, dev.snmp_community, host)
         if changed and poller.target(dev)[0]:
             asyncio.create_task(poller.poll(dev))
         return {**dev.as_dict(), "snmp": poller.status(dev)}
@@ -565,17 +504,13 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
         device_id = str(body.get("id", ""))
         engine.forget_device(device_id)
         poller.forget(device_id)
-        await db.ax("DELETE FROM devices WHERE id=?", (device_id,))
-        await db.ax("DELETE FROM snmp_data WHERE device=?", (device_id,))
+        await _run(db.forget_device, device_id)
         return {"ok": True}
 
     # --- SNMP and topology -------------------------------------------------
     @app.get("/api/topology")
     async def topology():
-        rows = await db.aq("SELECT device, severity, COUNT(*) AS n FROM alerts WHERE status='open' GROUP BY device, severity")
-        counts: dict[str, dict] = {}
-        for row in rows:
-            counts.setdefault(row["device"] or "", {})[row["severity"]] = row["n"]
+        counts = await _run(db.alert_counts_open_by_device)
         devices = [d.as_dict() for d in engine.devices.values()]
         # Off the event loop: on a big network this takes long enough to delay log intake.
         graph = await asyncio.to_thread(build_topology, devices, dict(poller.records), counts)
@@ -671,14 +606,14 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
                 for k, v in CHANNEL_TYPES.items()}
 
     async def _channel(channel_id: int) -> dict:
-        rows = await db.aq("SELECT * FROM channels WHERE id=?", (channel_id,))
-        if not rows:
+        row = await _run(db.channel, channel_id)
+        if row is None:
             raise _bad("unknown channel", 404)
-        return rows[0]
+        return row
 
     @app.get("/api/channels")
     async def channels():
-        rows = await db.aq("SELECT * FROM channels ORDER BY id")
+        rows = await _run(db.channels)
         return {"channels": [public_channel(r) for r in rows], "types": _types(), "severities": SEVERITIES}
 
     @app.post("/api/channels")
@@ -687,9 +622,7 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
             row = validate_channel(body)
         except ValueError as exc:
             raise _bad(str(exc))
-        new_id = await db.ax(
-            "INSERT INTO channels(type, name, enabled, min_severity, config) VALUES(?,?,?,?,?)",
-            (row["type"], row["name"], row["enabled"], row["min_severity"], row["config"]))
+        new_id = await _run(db.add_channel, row)
         await notifier.reload()
         return public_channel(await _channel(new_id))
 
@@ -700,14 +633,13 @@ def create_app(cfg: Config, db: Database, engine: Engine, notifier: Notifier, po
             row = validate_channel(body, existing)
         except ValueError as exc:
             raise _bad(str(exc))
-        await db.ax("UPDATE channels SET name=?, enabled=?, min_severity=?, config=? WHERE id=?",
-                    (row["name"], row["enabled"], row["min_severity"], row["config"], channel_id))
+        await _run(db.update_channel, channel_id, row)
         await notifier.reload()
         return public_channel(await _channel(channel_id))
 
     @app.delete("/api/channels/{channel_id}")
     async def channel_delete(channel_id: int):
-        await db.ax("DELETE FROM channels WHERE id=?", (channel_id,))
+        await _run(db.delete_channel, channel_id)
         await notifier.reload()
         return {"ok": True}
 

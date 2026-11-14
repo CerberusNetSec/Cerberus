@@ -47,14 +47,12 @@ def new_token() -> str:
 
 def site_summary(engine, db, now: float) -> dict:
     """What the console shows about a site at a glance."""
-    day = db.q("SELECT SUM(events) AS e, SUM(blocked) AS b FROM stats_minute WHERE minute >= ? AND device = '*'",
-               (int(now - 86400),))[0]
-    open_alerts = {r["severity"]: r["n"] for r in db.q(
-        "SELECT severity, COUNT(*) AS n FROM alerts WHERE status = 'open' GROUP BY severity")}
+    day_events, day_blocked = db.traffic_totals(int(now - 86400))
+    open_alerts = db.alert_counts_open()
     devices = list(engine.devices.values())
     return {
         "rate": round(engine.rate(), 1),
-        "events_24h": day["e"] or 0, "blocked_24h": day["b"] or 0,
+        "events_24h": day_events, "blocked_24h": day_blocked,
         "devices_total": len(devices), "devices_active": sum(1 for d in devices if now - d.last_seen < 900),
         "open_alerts": open_alerts,
         "dropped": engine.dropped, "unwritten": engine.unwritten, "queue": engine.queue.qsize(),
@@ -102,10 +100,7 @@ class Forwarder:
         return self.client
 
     def _changes(self) -> list[dict]:
-        rows = self.db.q(
-            "SELECT id, created, last_seen, updated, detector, severity, title, description, entity, src_ip, device, "
-            "count, status, details FROM alerts WHERE updated > ? OR (updated = ? AND id > ?) "
-            "ORDER BY updated, id LIMIT ?", (self.cursor[0], self.cursor[0], self.cursor[1], BATCH + 1))
+        rows = self.db.alert_changes_since(self.cursor[0], self.cursor[1], BATCH + 1)
         for row in rows:
             try:
                 row["details"] = json.loads(row["details"] or "{}")
@@ -144,11 +139,7 @@ class Forwarder:
             if isinstance(item, dict) and item.get("status") in STATUSES and isinstance(item.get("id"), int):
                 by_status.setdefault(item["status"], []).append(item["id"])
         for status, ids in by_status.items():
-            stamp = time.time()
-            for start in range(0, len(ids), 500):
-                chunk = ids[start:start + 500]
-                await self.db.ax(f"UPDATE alerts SET status = ?, updated = ? WHERE id IN ({','.join('?' * len(chunk))})",
-                                 (status, stamp, *chunk))
+            await asyncio.to_thread(self.db.set_alert_status, ids, status, time.time())
             self.engine.alerts.set_status(ids, status)
             log.info("console set %d alert(s) to %s", len(ids), status)
 
@@ -205,53 +196,34 @@ class Central:
     # --- site registry ------------------------------------------------------------
     def provision(self, entries: list[tuple[str, str]]) -> None:
         """Sites declared in configuration (CERBERUS_SITE_TOKENS_FILE): created or re-keyed on start."""
-        with self.db.transaction() as conn:
-            for name, token in entries:
-                digest = token_hash(token)
-                conn.execute("UPDATE sites SET token_hash = NULL, managed = 0 WHERE token_hash = ? AND name != ?",
-                             (digest, name))
-                if conn.execute("UPDATE sites SET token_hash = ?, managed = 1 WHERE name = ?", (digest, name)).rowcount == 0:
-                    conn.execute("INSERT INTO sites(name, token_hash, created, managed) VALUES(?,?,?,1)",
-                                 (name, digest, time.time()))
+        self.db.sites_provision([(name, token_hash(token)) for name, token in entries], time.time())
         if entries:
             log.info("sites from configuration: %s", ", ".join(name for name, _ in entries))
 
     def create_site(self, name: str) -> tuple[dict, str]:
         token = new_token()
-        with self.db.transaction() as conn:
-            if conn.execute("SELECT 1 FROM sites WHERE name = ?", (name,)).fetchone():
-                raise ValueError("A site with that name already exists.")
-            cur = conn.execute("INSERT INTO sites(name, token_hash, created) VALUES(?,?,?)",
-                               (name, token_hash(token), time.time()))
-        return self.site(cur.lastrowid), token
+        site_id = self.db.site_create(name, token_hash(token), time.time())
+        return self.site(site_id), token
 
     def rotate(self, site_id: int) -> str:
         token = new_token()
-        if self.db.x("UPDATE sites SET token_hash = ? WHERE id = ? AND managed = 0", (token_hash(token), site_id)) == 0:
+        if not self.db.site_rotate(site_id, token_hash(token)):
             raise ValueError("Unknown site, or one whose token is set in configuration.")
         return token
 
     def delete(self, site_id: int) -> None:
-        with self.db.transaction() as conn:
-            if conn.execute("SELECT managed FROM sites WHERE id = ?", (site_id,)).fetchone()[0]:
-                raise ValueError("This site is set in configuration; remove it there instead.")
-            conn.execute("DELETE FROM site_alerts WHERE site_id = ?", (site_id,))
-            conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+        self.db.site_delete(site_id)
 
     def site(self, site_id: int) -> dict:
-        rows = self.db.q("SELECT * FROM sites WHERE id = ?", (site_id,))
-        if not rows:
+        row = self.db.site(site_id)
+        if row is None:
             raise KeyError(site_id)
-        return self._public(rows[0], time.time())
+        return self._public(row, time.time())
 
     def sites(self) -> list[dict]:
         now = time.time()
-        counts: dict[int, dict] = {}
-        for row in self.db.q("SELECT site_id, severity, COUNT(*) AS n FROM site_alerts WHERE status = 'open' "
-                             "GROUP BY site_id, severity"):
-            counts.setdefault(row["site_id"], {})[row["severity"]] = row["n"]
-        return [{**self._public(row, now), "open_alerts": counts.get(row["id"], {})}
-                for row in self.db.q("SELECT * FROM sites ORDER BY name")]
+        counts = self.db.site_alert_open_counts()
+        return [{**self._public(row, now), "open_alerts": counts.get(row["id"], {})} for row in self.db.sites_all()]
 
     def _public(self, row: dict, now: float) -> dict:
         seen = row.get("last_seen")
@@ -274,45 +246,15 @@ class Central:
         instance = _text(payload.get("instance"), 64)
         if not instance:
             raise ValueError("report has no instance id")
-        fresh: list[dict] = []
-        with self.db.transaction() as conn:
-            site = conn.execute("SELECT id, name FROM sites WHERE token_hash = ?", (token_hash(token),)).fetchone()
-            if site is None:
-                raise PermissionError("unknown site token")
-            site_id, site_name = site["id"], site["name"]
-            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-            conn.execute("UPDATE sites SET last_seen = ?, address = ?, version = ?, reported_name = ?, instance = ?, "
-                         "summary = ?, silent = 0 WHERE id = ?",
-                         (now, address[:64], _text(payload.get("version"), 32), _text(payload.get("site"), 120),
-                          instance, json.dumps(summary)[:20000], site_id))
-            for alert in payload.get("alerts", [])[:BATCH * 2]:
-                row = self._clean(alert)
-                if row is None:
-                    continue
-                found = conn.execute("SELECT id, pending FROM site_alerts WHERE site_id = ? AND instance = ? AND alert_id = ?",
-                                     (site_id, instance, row["alert_id"])).fetchone()
-                fields = (row["created"], row["last_seen"], now, row["detector"], row["severity"], row["title"],
-                          row["description"], row["entity"], row["src_ip"], row["device"], row["count"], row["details"])
-                if found is None:
-                    cur = conn.execute(
-                        "INSERT INTO site_alerts(site_id, instance, alert_id, created, last_seen, received, detector, "
-                        "severity, title, description, entity, src_ip, device, count, details, status) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (site_id, instance, row["alert_id"], *fields, row["status"]))
-                    if row["status"] == "open":
-                        fresh.append({**row, "id": cur.lastrowid, "site": site_name})
-                    continue
-                status, pending = row["status"], found["pending"]
-                if pending:
-                    # Set here and not yet applied at the site: keep ours until the site reports it back.
-                    status, pending = (status, None) if status == pending else (pending, pending)
-                conn.execute(
-                    "UPDATE site_alerts SET created = ?, last_seen = ?, received = ?, detector = ?, severity = ?, "
-                    "title = ?, description = ?, entity = ?, src_ip = ?, device = ?, count = ?, details = ?, "
-                    "status = ?, pending = ? WHERE id = ?", (*fields, status, pending, found["id"]))
-            pending = [{"id": r["alert_id"], "status": r["pending"]} for r in conn.execute(
-                "SELECT alert_id, pending FROM site_alerts WHERE site_id = ? AND instance = ? AND pending IS NOT NULL "
-                "LIMIT 5000", (site_id, instance))]
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        meta = {"address": address[:64], "version": _text(payload.get("version"), 32),
+                "reported_name": _text(payload.get("site"), 120), "summary": json.dumps(summary)[:20000]}
+        alerts = [row for row in (self._clean(a) for a in payload.get("alerts", [])[:BATCH * 2]) if row is not None]
+        result = self.db.site_report(token_hash(token), instance, meta, alerts, now)
+        if result is None:
+            raise PermissionError("unknown site token")
+        _site_id, site_name, fresh, pending = result
+        fresh = [{**row, "site": site_name} for row in fresh]
         return {"ok": True, "site": site_name, "status": pending, "interval": REPORT_SECONDS}, fresh
 
     @staticmethod
@@ -334,21 +276,13 @@ class Central:
 
     def set_status(self, ids: list[int], status: str) -> int:
         """Acknowledge or resolve site alerts here; each site picks the change up with its next report."""
-        changed = 0
-        for start in range(0, len(ids), 500):
-            chunk = ids[start:start + 500]
-            changed += self.db.x(
-                f"UPDATE site_alerts SET status = ?, pending = ? WHERE status != ? AND id IN ({','.join('?' * len(chunk))})",
-                (status, status, status, *chunk))
-        return changed
+        return self.db.site_alerts_set_status(ids, status)
 
     # --- watching for silence ------------------------------------------------------------
     def check(self, now: float) -> list[Candidate]:
         """Sites that have stopped reporting, as alerts for the console itself."""
         out = []
-        for row in self.db.q("SELECT id, name, last_seen FROM sites WHERE silent = 0 AND last_seen IS NOT NULL "
-                             "AND last_seen < ?", (now - self.silent_after,)):
-            self.db.x("UPDATE sites SET silent = 1 WHERE id = ?", (row["id"],))
+        for row in self.db.sites_newly_silent(now - self.silent_after):
             minutes = int((now - row["last_seen"]) // 60)
             out.append(Candidate(
                 "site_silent", f"site|{row['name']}", "high", f"Site stopped reporting: {row['name']}",

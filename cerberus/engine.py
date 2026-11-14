@@ -21,6 +21,7 @@ from .detectors import NewDevice, RateAnomaly, build_detectors
 from .models import Candidate, Event, sev_rank
 from .notifiers import Notifier
 from .state import decode, encode
+from .storage import TOTAL, Batch
 from .syslog_parser import parse_syslog
 
 log = logging.getLogger("cerberus.engine")
@@ -29,7 +30,6 @@ QUEUE_SIZE = 50_000
 TOP_KEYS_PER_MINUTE = 20_000
 MAX_DEVICES = 5000
 MAX_PENDING_EVENTS = 200_000  # events waiting to be written; beyond this the disk is not keeping up
-TOTAL = "*"  # stats_minute row holding the sum over all devices, so charts read one row per minute
 STATE_KEY = "engine_state"  # settings row holding the detectors' working state
 STATE_VERSION = 1
 STATE_SAVE_SECONDS = 300
@@ -88,11 +88,8 @@ class AlertManager:
         self.new_rows: list[tuple] = []
 
     def load(self, now: float | None = None) -> None:
-        self.next_id = (self.db.q("SELECT MAX(id) AS m FROM alerts")[0]["m"] or 0) + 1
-        rows = self.db.q(
-            "SELECT * FROM alerts WHERE status != 'resolved' AND last_seen > ?",
-            ((time.time() if now is None else now) - self.cooldown,),
-        )
+        self.next_id = self.db.alert_next_id()
+        rows = self.db.alerts_active_since((time.time() if now is None else now) - self.cooldown)
         for row in rows:
             self.active[f"{row['detector']}|{row['entity']}"] = _Active(
                 row["id"], row["severity"], row["last_seen"], row["count"], row["status"],
@@ -128,8 +125,8 @@ class AlertManager:
                 "description": c.description, "device": c.device, "src_ip": c.src_ip,
                 "detector": c.detector, "details": c.details}
 
-    def drain(self) -> list[tuple[str, list]]:
-        """SQL to persist new alerts and updates since the last flush."""
+    def drain(self) -> tuple[list[tuple], list[tuple]]:
+        """New alerts and changed alerts since the last flush, as Batch rows."""
         stamp = time.time()  # wall clock, so a site's report cursor only moves forward
         updates = []
         for cur in self.active.values():
@@ -138,12 +135,7 @@ class AlertManager:
                 updates.append((cur.last_seen, cur.count, cur.severity, cur.description[:1000],
                                 json.dumps(cur.details)[:4000], stamp, cur.id))
         new_rows, self.new_rows = self.new_rows, []
-        return [
-            ("INSERT OR REPLACE INTO alerts(id, created, last_seen, detector, severity, title, description, "
-             "entity, src_ip, device, count, status, details, updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-             [(*row, stamp) for row in new_rows]),
-            ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=?, updated=? WHERE id=?", updates),
-        ]
+        return [(*row, stamp) for row in new_rows], updates
 
     def set_status(self, ids: list[int], status: str) -> None:
         wanted = set(ids)
@@ -202,25 +194,19 @@ class Engine:
     # --- lifecycle -------------------------------------------------------
     def load(self, now: float | None = None) -> None:
         now = time.time() if now is None else now
-        for row in self.db.q("SELECT * FROM devices"):
+        for row in self.db.devices_all():
             self.devices[row["id"]] = Device(**{k: ("" if v is None else v) for k, v in row.items()})
         self.installed = self.db.get_setting("installed")
         if not self.installed:
             self.installed = time.time()
             self.db.set_setting("installed", self.installed)
-        if not self.db.get_setting("stats_totals"):
-            # Databases from before the all-devices row existed: fill it in once.
-            self.db.x("INSERT OR IGNORE INTO stats_minute(minute, device, events, blocked) "
-                      "SELECT minute, ?, SUM(events), SUM(blocked) FROM stats_minute WHERE device != ? GROUP BY minute",
-                      (TOTAL, TOTAL))
-            self.db.set_setting("stats_totals", True)
+        self.db.ensure_stats_totals()  # databases from before the all-devices counter row
         self.apply_settings(self.db.get_setting("detectors", {}), self.db.get_setting("general", {}))
         restored = self.restore(self.db.get_setting(STATE_KEY) or {}, now)
         if "admin_access" not in restored:
             self.admin_access.restore_legacy(self.db.get_setting("admin_sources", {}))
         if "risk_ports" not in restored:
-            self.risk_ports.restore_rows(self.db.q("SELECT * FROM port_minute WHERE minute >= ? ORDER BY minute",
-                                                   (int(now - 27 * 3600),)), now)
+            self.risk_ports.restore_rows(self.db.port_minutes_since(int(now - 27 * 3600)), now)
         self.alerts.load(now)
 
     def apply_settings(self, detectors: dict, general: dict) -> None:
@@ -471,22 +457,16 @@ class Engine:
         for minute, v in totals.items():
             stats[(minute, TOTAL)] = v
         started = time.perf_counter()
-        statements = [
-            ("INSERT INTO stats_minute(minute, device, events, blocked) VALUES(?,?,?,?) "
-             "ON CONFLICT(minute, device) DO UPDATE SET events=events+excluded.events, "
-             "blocked=blocked+excluded.blocked",
-             [(m, dev, v[0], v[1]) for (m, dev), v in stats.items()]),
-            ("INSERT INTO devices(id, ip, hostname, connector_seen, first_seen, last_seen, events) "
-             "VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ip=excluded.ip, hostname=excluded.hostname, "
-             "connector_seen=excluded.connector_seen, last_seen=excluded.last_seen, events=excluded.events",
-             [(d.id, d.ip, d.hostname, d.connector_seen, d.first_seen, d.last_seen, d.events) for d in devices]),
-            ("INSERT INTO port_minute(minute, port, direction, allowed, blocked) VALUES(?,?,?,?,?) "
-             "ON CONFLICT(minute, port, direction) DO UPDATE SET allowed=allowed+excluded.allowed, "
-             "blocked=blocked+excluded.blocked", self.risk_ports.drain()),
-            *self.alerts.drain(),
-        ]
-        if events or any(rows for _, rows in statements):
-            await asyncio.to_thread(self.db.write, events, statements)
+        new_alerts, alert_updates = self.alerts.drain()
+        batch = Batch(
+            events=events,
+            stats=[(m, dev, v[0], v[1]) for (m, dev), v in stats.items()],
+            devices=[(d.id, d.ip, d.hostname, d.connector_seen, d.first_seen, d.last_seen, d.events) for d in devices],
+            ports=self.risk_ports.drain(),
+            new_alerts=new_alerts, alert_updates=alert_updates,
+        )
+        if batch:
+            await asyncio.to_thread(self.db.write_batch, batch)
             self.flush_seconds = time.perf_counter() - started
 
     async def _flush_loop(self) -> None:

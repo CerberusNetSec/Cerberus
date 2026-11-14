@@ -232,7 +232,7 @@ class SnmpPoller:
     # --- settings ----------------------------------------------------------
     def load(self) -> None:
         self.apply_settings(self.db.get_setting("snmp", {}), save=False)
-        for row in self.db.q("SELECT * FROM snmp_data"):
+        for row in self.db.snmp_records():
             try:
                 data = json.loads(row["data"]) if row["data"] else None
             except ValueError:
@@ -327,12 +327,9 @@ class SnmpPoller:
                         self._report_changes(dev, previous, data)
                     record.update(polled=now, ok=True, error="", last_ok=now, data=data, fails=0)
                 self.records[dev.id] = record
-                await self.db.ax(
-                    "INSERT INTO snmp_data(device, polled, ok, error, last_ok, data) VALUES(?,?,?,?,?,?) "
-                    "ON CONFLICT(device) DO UPDATE SET polled=excluded.polled, ok=excluded.ok, error=excluded.error, "
-                    "last_ok=excluded.last_ok, data=excluded.data",
-                    (dev.id, record["polled"], int(record["ok"]), record["error"], record["last_ok"],
-                     json.dumps(record["data"]) if record["data"] else None))
+                await asyncio.to_thread(
+                    self.db.save_snmp_record, dev.id, record["polled"], record["ok"], record["error"],
+                    record["last_ok"], json.dumps(record["data"]) if record["data"] else None)
         finally:
             self._busy.discard(dev.id)
 

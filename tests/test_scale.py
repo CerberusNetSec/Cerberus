@@ -110,7 +110,7 @@ def test_traffic_sampling_thins_storage_not_detection(tmp_path):
     kinds = {a[0] for a in alerts(engine)}
     assert {"lateral_movement", "port_scan"} <= kinds  # lateral movement is made of *allowed* traffic
     count = {"allow": 0, "block": 0}
-    for row in db.search_events(["event_type = 'traffic'"], limit=10**6):
+    for row in db.search_events(event_type="traffic", limit=10**6):
         count[row["action"]] += 1
     allowed = sum(1 for line in lines if "pass" in line or "allow" in line or "accept" in line)
     assert abs(count["allow"] - allowed / 10) <= 2 and engine.unstored == allowed - count["allow"]
@@ -121,7 +121,7 @@ def test_traffic_sampling_thins_storage_not_detection(tmp_path):
     for i, line in enumerate(simulate.baseline(50)):
         engine._process(line.encode(), "10.255.0.1", now + i)
     asyncio.run(engine._flush())
-    assert db.search_events(["action = 'allow'"]) == [] and db.events_stored() > 0
+    assert db.search_events(action="allow") == [] and db.events_stored() > 0
     db.close()
 
 
@@ -182,10 +182,10 @@ def test_events_are_stored_in_segments_and_read_back_in_order(tmp_path):
     older = db.search_events(before=page[-1]["id"], limit=500)
     assert [r["id"] for r in older] == list(range(4800, 4300, -1))
     # Filters, across every segment.
-    ssh = db.search_events(["dst_port = ?"], [22], limit=10**6)
+    ssh = db.search_events(port=22, limit=10**6)
     assert len(ssh) == 5300 // 5 and all(r["dst_port"] == 22 for r in ssh)
     assert [r["id"] for r in ssh] == sorted((r["id"] for r in ssh), reverse=True)
-    one = db.search_events(["(src_ip = ? OR dst_ip = ?)"], ["10.0.0.7", "10.0.0.7"], limit=10**6)
+    one = db.search_events(ip="10.0.0.7", limit=10**6)
     assert len(one) == 5300 // 50
     # A time range: only events at or after it, and old segments are not even opened.
     recent = db.search_events(since=1000.0 + 5000, limit=10**6)
@@ -258,7 +258,7 @@ def test_database_from_before_segments_keeps_its_events(tmp_path):
         db.close()
     db = Database(tmp_path / "old.db", segment_rows=100)
     db.write([event(2000.0, 3)])
-    found = db.search_events(["src_ip = ?"], ["10.0.0.9"])
+    found = db.search_events(ip="10.0.0.9")
     assert len(found) == 40 and found[0]["message"] == "old39"
     assert [r["id"] for r in db.search_events(limit=3)] == [41, 40, 39]
     db.close()

@@ -47,8 +47,8 @@ def segment_rows_for(max_events: int) -> int:
     return max(5_000, min(SEGMENT_ROWS, max_events // 8))
 
 
-class QueryTimeout(Exception):
-    """A read ran past its deadline and was cancelled."""
+from .models import SEVERITIES  # noqa: E402
+from .storage import TOTAL, Batch, QueryTimeout, Store  # noqa: E402,F401  (QueryTimeout: re-exported)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS event_segments (
@@ -130,7 +130,7 @@ MIGRATIONS = [
 ]
 
 
-class Database:
+class Database(Store):
     def __init__(self, path: Path, segment_rows: int = SEGMENT_ROWS):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.segment_rows = segment_rows
@@ -280,8 +280,8 @@ class Database:
                 self._next_id += len(events)
                 seg["rows"] += len(events)
 
-    def search_events(self, where: list[str] = (), params: list = (), since: float = 0, before: int = 0,
-                      limit: int = 200, timeout: float = 0) -> list[dict]:
+    def _search(self, where: list[str] = (), params: list = (), since: float = 0, before: int = 0,
+                limit: int = 200, timeout: float = 0) -> list[dict]:
         """Newest-first events matching the SQL conditions, at or after `since`, with id
         below `before` if given. Segments are read newest to oldest and reading stops as
         soon as the page is full or the time range is left behind."""
@@ -358,6 +358,308 @@ class Database:
         self.x("DELETE FROM alerts WHERE last_seen < ?", (now - alert_days * 86400,))
         self.x("DELETE FROM site_alerts WHERE last_seen < ?", (now - alert_days * 86400,))
         return removed
+
+    # =====================================================================
+    # The storage contract (cerberus/storage.py), on SQLite.
+    # =====================================================================
+
+    # --- the pipeline's writes --------------------------------------------
+    def write_batch(self, batch: Batch) -> None:
+        self.write(batch.events, [
+            ("INSERT INTO stats_minute(minute, device, events, blocked) VALUES(?,?,?,?) "
+             "ON CONFLICT(minute, device) DO UPDATE SET events=events+excluded.events, "
+             "blocked=blocked+excluded.blocked", batch.stats),
+            ("INSERT INTO devices(id, ip, hostname, connector_seen, first_seen, last_seen, events) "
+             "VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ip=excluded.ip, hostname=excluded.hostname, "
+             "connector_seen=excluded.connector_seen, last_seen=excluded.last_seen, events=excluded.events",
+             batch.devices),
+            ("INSERT INTO port_minute(minute, port, direction, allowed, blocked) VALUES(?,?,?,?,?) "
+             "ON CONFLICT(minute, port, direction) DO UPDATE SET allowed=allowed+excluded.allowed, "
+             "blocked=blocked+excluded.blocked", batch.ports),
+            ("INSERT OR REPLACE INTO alerts(id, created, last_seen, detector, severity, title, description, "
+             "entity, src_ip, device, count, status, details, updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             batch.new_alerts),
+            ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=?, updated=? WHERE id=?",
+             batch.alert_updates),
+        ])
+
+    # --- events ---------------------------------------------------------------
+    def search_events(self, since: float = 0, before: int = 0, limit: int = 200, timeout: float = 0, *,
+                      device: str = "", event_type: str = "", action: str = "", ip: str = "",
+                      port: int | None = None, text: str = "") -> list[dict]:
+        where, params = [], []
+        for column, value in (("device", device), ("event_type", event_type), ("action", action)):
+            if value:
+                where.append(f"{column} = ?")
+                params.append(value)
+        if ip:
+            where.append("(src_ip = ? OR dst_ip = ?)")
+            params += [ip, ip]
+        if port is not None:
+            where.append("dst_port = ?")
+            params.append(port)
+        if text:
+            where.append("message LIKE ?")
+            params.append(f"%{text}%")
+        return self._search(where, params, since, before, limit, timeout)
+
+    # --- per-minute counters ----------------------------------------------------
+    def traffic_series(self, start: int, bucket: int) -> list[dict]:
+        return self.q("SELECT (minute / ?) * ? AS t, SUM(events) AS e, SUM(blocked) AS b FROM stats_minute "
+                      "WHERE minute >= ? AND device = ? GROUP BY t", (bucket, bucket, start, TOTAL))
+
+    def traffic_totals(self, since: int) -> tuple[int, int]:
+        row = self.q("SELECT SUM(events) AS e, SUM(blocked) AS b FROM stats_minute WHERE minute >= ? AND device = ?",
+                     (since, TOTAL))[0]
+        return row["e"] or 0, row["b"] or 0
+
+    def ensure_stats_totals(self) -> None:
+        if self.get_setting("stats_totals"):
+            return
+        self.x("INSERT OR IGNORE INTO stats_minute(minute, device, events, blocked) "
+               "SELECT minute, ?, SUM(events), SUM(blocked) FROM stats_minute WHERE device != ? GROUP BY minute",
+               (TOTAL, TOTAL))
+        self.set_setting("stats_totals", True)
+
+    def port_series(self, start: int, bucket: int) -> list[dict]:
+        return self.q("SELECT (minute / ?) * ? AS t, port, direction, SUM(allowed) AS a, SUM(blocked) AS b "
+                      "FROM port_minute WHERE minute >= ? GROUP BY t, port, direction", (bucket, bucket, start))
+
+    def port_minutes_since(self, minute: int) -> list[dict]:
+        return self.q("SELECT * FROM port_minute WHERE minute >= ? ORDER BY minute", (minute,))
+
+    # --- alerts -------------------------------------------------------------------
+    def alert_next_id(self) -> int:
+        return (self.q("SELECT MAX(id) AS m FROM alerts")[0]["m"] or 0) + 1
+
+    def alerts_active_since(self, last_seen: float) -> list[dict]:
+        return self.q("SELECT * FROM alerts WHERE status != 'resolved' AND last_seen > ?", (last_seen,))
+
+    @staticmethod
+    def _alert_filters(prefix: str, status: str, severity: str, text: str) -> tuple[list[str], list]:
+        where, params = [], []
+        if status in ("open", "ack", "resolved"):
+            where.append(f"{prefix}status = ?")
+            params.append(status)
+        elif status == "active":
+            where.append(f"{prefix}status != 'resolved'")
+        if severity in SEVERITIES:
+            wanted = SEVERITIES[SEVERITIES.index(severity):]
+            where.append(f"{prefix}severity IN ({','.join('?' * len(wanted))})")
+            params += wanted
+        if text:
+            where.append(f"({prefix}title LIKE ? OR {prefix}description LIKE ? OR {prefix}src_ip LIKE ? "
+                         f"OR {prefix}device LIKE ?)")
+            params += [f"%{text}%"] * 4
+        return where, params
+
+    def alerts_find(self, *, status: str = "", severity: str = "", text: str = "", limit: int = 200,
+                    alert_id: int = 0) -> list[dict]:
+        if alert_id:
+            where, params = ["id = ?"], [alert_id]
+            more, extra = self._alert_filters("", "", severity, text)
+            where, params = where + more, params + extra
+        else:
+            where, params = self._alert_filters("", status, severity, text)
+        sql = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "")
+        return self.q(sql + " ORDER BY last_seen DESC LIMIT ?", (*params, limit))
+
+    def alerts_recent(self, limit: int) -> list[dict]:
+        return self.q("SELECT id, created, last_seen, severity, title, description, status, count FROM alerts "
+                      "ORDER BY last_seen DESC LIMIT ?", (limit,))
+
+    def alerts_unresolved_since(self, last_seen: float, limit: int) -> list[dict]:
+        return self.q("SELECT id, detector, severity, title, last_seen, src_ip, device, details FROM alerts "
+                      "WHERE status != 'resolved' AND last_seen >= ? ORDER BY last_seen DESC LIMIT ?",
+                      (last_seen, limit))
+
+    def alert_counts_open(self) -> dict[str, int]:
+        return {r["severity"]: r["n"] for r in self.q(
+            "SELECT severity, COUNT(*) AS n FROM alerts WHERE status = 'open' GROUP BY severity")}
+
+    def alert_counts_open_by_device(self) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        for row in self.q("SELECT device, severity, COUNT(*) AS n FROM alerts WHERE status = 'open' "
+                          "GROUP BY device, severity"):
+            out.setdefault(row["device"] or "", {})[row["severity"]] = row["n"]
+        return out
+
+    def alert_ids_open(self) -> list[int]:
+        return [r["id"] for r in self.q("SELECT id FROM alerts WHERE status = 'open'")]
+
+    def set_alert_status(self, ids: list[int], status: str, stamp: float) -> None:
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            self.x(f"UPDATE alerts SET status = ?, updated = ? WHERE id IN ({','.join('?' * len(chunk))})",
+                   (status, stamp, *chunk))
+
+    def alert_changes_since(self, updated: float, alert_id: int, limit: int) -> list[dict]:
+        return self.q(
+            "SELECT id, created, last_seen, updated, detector, severity, title, description, entity, src_ip, device, "
+            "count, status, details FROM alerts WHERE updated > ? OR (updated = ? AND id > ?) "
+            "ORDER BY updated, id LIMIT ?", (updated, updated, alert_id, limit))
+
+    # --- devices ----------------------------------------------------------------------
+    def devices_all(self) -> list[dict]:
+        return self.q("SELECT * FROM devices")
+
+    def update_device(self, device_id: str, name: str, connector_pin: str, snmp_mode: str,
+                      snmp_community: str, snmp_host: str) -> None:
+        self.x("UPDATE devices SET name=?, connector_pin=?, snmp_mode=?, snmp_community=?, snmp_host=? WHERE id=?",
+               (name, connector_pin, snmp_mode, snmp_community, snmp_host, device_id))
+
+    def forget_device(self, device_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
+            conn.execute("DELETE FROM snmp_data WHERE device=?", (device_id,))
+
+    # --- notification channels ----------------------------------------------------------
+    def channels(self) -> list[dict]:
+        return self.q("SELECT * FROM channels ORDER BY id")
+
+    def channel(self, channel_id: int) -> dict | None:
+        rows = self.q("SELECT * FROM channels WHERE id=?", (channel_id,))
+        return rows[0] if rows else None
+
+    def add_channel(self, row: dict) -> int:
+        return self.x("INSERT INTO channels(type, name, enabled, min_severity, config) VALUES(?,?,?,?,?)",
+                      (row["type"], row["name"], row["enabled"], row["min_severity"], row["config"]))
+
+    def update_channel(self, channel_id: int, row: dict) -> None:
+        self.x("UPDATE channels SET name=?, enabled=?, min_severity=?, config=? WHERE id=?",
+               (row["name"], row["enabled"], row["min_severity"], row["config"], channel_id))
+
+    def delete_channel(self, channel_id: int) -> None:
+        self.x("DELETE FROM channels WHERE id=?", (channel_id,))
+
+    def channel_result(self, channel_id: int, when: float, ok: bool, error: str | None) -> None:
+        self.x("UPDATE channels SET last_ts=?, last_ok=?, last_error=? WHERE id=?",
+               (when, 1 if ok else 0, error, channel_id))
+
+    # --- SNMP --------------------------------------------------------------------------------
+    def snmp_records(self) -> list[dict]:
+        return self.q("SELECT * FROM snmp_data")
+
+    def save_snmp_record(self, device: str, polled: float, ok: bool, error: str, last_ok: float | None,
+                         data: str | None) -> None:
+        self.x("INSERT INTO snmp_data(device, polled, ok, error, last_ok, data) VALUES(?,?,?,?,?,?) "
+               "ON CONFLICT(device) DO UPDATE SET polled=excluded.polled, ok=excluded.ok, error=excluded.error, "
+               "last_ok=excluded.last_ok, data=excluded.data", (device, polled, int(ok), error, last_ok, data))
+
+    # --- central console: sites and their alerts -----------------------------------------------
+    def sites_provision(self, entries: list[tuple[str, str]], now: float) -> None:
+        with self.transaction() as conn:
+            for name, digest in entries:
+                conn.execute("UPDATE sites SET token_hash = NULL, managed = 0 WHERE token_hash = ? AND name != ?",
+                             (digest, name))
+                if conn.execute("UPDATE sites SET token_hash = ?, managed = 1 WHERE name = ?", (digest, name)).rowcount == 0:
+                    conn.execute("INSERT INTO sites(name, token_hash, created, managed) VALUES(?,?,?,1)",
+                                 (name, digest, now))
+
+    def site_create(self, name: str, token_hash: str, now: float) -> int:
+        with self.transaction() as conn:
+            if conn.execute("SELECT 1 FROM sites WHERE name = ?", (name,)).fetchone():
+                raise ValueError("A site with that name already exists.")
+            return conn.execute("INSERT INTO sites(name, token_hash, created) VALUES(?,?,?)",
+                                (name, token_hash, now)).lastrowid
+
+    def site_rotate(self, site_id: int, token_hash: str) -> bool:
+        return self.x("UPDATE sites SET token_hash = ? WHERE id = ? AND managed = 0", (token_hash, site_id)) > 0
+
+    def site_delete(self, site_id: int) -> None:
+        with self.transaction() as conn:
+            row = conn.execute("SELECT managed FROM sites WHERE id = ?", (site_id,)).fetchone()
+            if row is None:
+                raise LookupError(site_id)
+            if row[0]:
+                raise ValueError("This site is set in configuration; remove it there instead.")
+            conn.execute("DELETE FROM site_alerts WHERE site_id = ?", (site_id,))
+            conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+
+    def site(self, site_id: int) -> dict | None:
+        rows = self.q("SELECT * FROM sites WHERE id = ?", (site_id,))
+        return rows[0] if rows else None
+
+    def sites_all(self) -> list[dict]:
+        return self.q("SELECT * FROM sites ORDER BY name")
+
+    def site_alert_open_counts(self) -> dict[int, dict[str, int]]:
+        out: dict[int, dict[str, int]] = {}
+        for row in self.q("SELECT site_id, severity, COUNT(*) AS n FROM site_alerts WHERE status = 'open' "
+                          "GROUP BY site_id, severity"):
+            out.setdefault(row["site_id"], {})[row["severity"]] = row["n"]
+        return out
+
+    def site_report(self, token_hash: str, instance: str, meta: dict, alerts: list[dict],
+                    now: float) -> tuple[int, str, list[dict], list[dict]] | None:
+        fresh: list[dict] = []
+        with self.transaction() as conn:
+            site = conn.execute("SELECT id, name FROM sites WHERE token_hash = ?", (token_hash,)).fetchone()
+            if site is None:
+                return None
+            site_id, site_name = site["id"], site["name"]
+            conn.execute("UPDATE sites SET last_seen = ?, address = ?, version = ?, reported_name = ?, instance = ?, "
+                         "summary = ?, silent = 0 WHERE id = ?",
+                         (now, meta["address"], meta["version"], meta["reported_name"], instance, meta["summary"],
+                          site_id))
+            for row in alerts:
+                found = conn.execute("SELECT id, pending FROM site_alerts WHERE site_id = ? AND instance = ? "
+                                     "AND alert_id = ?", (site_id, instance, row["alert_id"])).fetchone()
+                fields = (row["created"], row["last_seen"], now, row["detector"], row["severity"], row["title"],
+                          row["description"], row["entity"], row["src_ip"], row["device"], row["count"], row["details"])
+                if found is None:
+                    cur = conn.execute(
+                        "INSERT INTO site_alerts(site_id, instance, alert_id, created, last_seen, received, detector, "
+                        "severity, title, description, entity, src_ip, device, count, details, status) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (site_id, instance, row["alert_id"], *fields, row["status"]))
+                    if row["status"] == "open":
+                        fresh.append({**row, "id": cur.lastrowid})
+                    continue
+                status, pending = row["status"], found["pending"]
+                if pending:
+                    # Set at the console and not yet applied at the site: keep the console's
+                    # choice until the site reports it back.
+                    status, pending = (status, None) if status == pending else (pending, pending)
+                conn.execute(
+                    "UPDATE site_alerts SET created = ?, last_seen = ?, received = ?, detector = ?, severity = ?, "
+                    "title = ?, description = ?, entity = ?, src_ip = ?, device = ?, count = ?, details = ?, "
+                    "status = ?, pending = ? WHERE id = ?", (*fields, status, pending, found["id"]))
+            pending = [{"id": r["alert_id"], "status": r["pending"]} for r in conn.execute(
+                "SELECT alert_id, pending FROM site_alerts WHERE site_id = ? AND instance = ? AND pending IS NOT NULL "
+                "LIMIT 5000", (site_id, instance))]
+        return site_id, site_name, fresh, pending
+
+    def site_alerts_find(self, *, site_id: int = 0, status: str = "", severity: str = "", text: str = "",
+                         limit: int = 200, alert_id: int = 0) -> list[dict]:
+        if alert_id:
+            where, params = ["a.id = ?"], [alert_id]
+        else:
+            where, params = self._alert_filters("a.", status, severity, text)
+            if site_id:
+                where.insert(0, "a.site_id = ?")
+                params.insert(0, site_id)
+        return self.q("SELECT a.*, s.name AS site FROM site_alerts a JOIN sites s ON s.id = a.site_id"
+                      + (" WHERE " + " AND ".join(where) if where else "")
+                      + " ORDER BY a.last_seen DESC LIMIT ?", (*params, limit))
+
+    def site_alerts_set_status(self, ids: list[int], status: str) -> int:
+        changed = 0
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            changed += self.x(
+                f"UPDATE site_alerts SET status = ?, pending = ? WHERE status != ? AND id IN ({','.join('?' * len(chunk))})",
+                (status, status, status, *chunk))
+        return changed
+
+    def sites_newly_silent(self, cutoff: float) -> list[dict]:
+        with self.transaction() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT id, name, last_seen FROM sites WHERE silent = 0 AND last_seen IS NOT NULL AND last_seen < ?",
+                (cutoff,))]
+            for row in rows:
+                conn.execute("UPDATE sites SET silent = 1 WHERE id = ?", (row["id"],))
+        return rows
 
     def close(self) -> None:
         with self._wlock:

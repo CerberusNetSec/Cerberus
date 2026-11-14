@@ -150,20 +150,20 @@ async def run(args) -> int:
     print(f"devices       {len(engine.devices):>10,}   alerts raised {alerts:,}   parse errors {engine.parse_errors}")
 
     searches = {
-        "events, newest 200": ([], []),
-        "events for one device": (["device = ?"], [devices[-1][2]]),
-        "events for one address": (["(src_ip = ? OR dst_ip = ?)"], ["10.0.3.77", "10.0.3.77"]),
-        "events on a rare port": (["dst_port = ?"], [5061]),
-        "events, text search (no match)": (["message LIKE ?"], ["%no-such-text%"]),
+        "events, newest 200": {},
+        "events for one device": {"device": devices[-1][2]},
+        "events for one address": {"ip": "10.0.3.77"},
+        "events on a rare port": {"port": 5061},
+        "events, text search (no match)": {"text": "no-such-text"},
     }
     print("\nquery times over everything stored")
     t0 = time.perf_counter()
     db.q("SELECT (minute / 900) * 900 AS t, SUM(events) AS e, SUM(blocked) AS b FROM stats_minute "
          "WHERE minute >= 0 AND device = '*' GROUP BY t")
     print(f"  {'dashboard chart':<32}{1000 * (time.perf_counter() - t0):>8.0f} ms")
-    for name, (where, params) in searches.items():
+    for name, filters in searches.items():
         t0 = time.perf_counter()
-        rows = db.search_events(where, params)
+        rows = db.search_events(**filters)
         print(f"  {name:<32}{1000 * (time.perf_counter() - t0):>8.0f} ms   ({len(rows)} rows)")
 
     if profiler:

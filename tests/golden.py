@@ -27,8 +27,25 @@ START = 1_800_000_000.0  # simulated clock; far from "now" so nothing depends on
 TICK = 10.0
 
 
+def freeze(simulate) -> None:
+    """The simulator writes the wall-clock time into log text; freeze it, in UTC,
+    so the timeline is the same on any machine in any time zone."""
+    import datetime as _dt
+
+    class Frozen(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2027, 1, 15, 12, 0, 0, tzinfo=_dt.timezone.utc)
+
+        def astimezone(self, tz=None):
+            return self
+
+    simulate.datetime = Frozen
+
+
 def timeline(simulate) -> list[tuple[float, str]]:
     """(seconds after START, syslog line), in order."""
+    freeze(simulate)
     random.seed(20261114)
     out: list[tuple[float, str]] = []
     t = 0.0
@@ -80,20 +97,6 @@ def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = (), wir
     from cerberus.engine import Engine
     from cerberus.notifiers import Notifier
     from tools import simulate
-
-    # The simulator writes the wall-clock time into log text; freeze it, in UTC,
-    # so the run is the same on any machine in any time zone.
-    import datetime as _dt
-
-    class Frozen(_dt.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2027, 1, 15, 12, 0, 0, tzinfo=_dt.timezone.utc)
-
-        def astimezone(self, tz=None):
-            return self
-
-    simulate.datetime = Frozen
 
     cfg = Config.from_env()
     cfg.data_dir, cfg.device_identity = data_dir, "hostname"

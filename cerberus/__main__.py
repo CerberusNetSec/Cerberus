@@ -9,7 +9,7 @@ import uvicorn
 from . import __version__
 from .config import Config
 from .connectors import ConnectorRegistry
-from .db import Database, segment_rows_for
+from .backends import open_store
 from .engine import Engine
 from .federation import Central, Forwarder
 from .notifiers import Notifier
@@ -26,7 +26,7 @@ async def amain() -> None:
     user_connectors = cfg.data_dir / "connectors"
     user_connectors.mkdir(exist_ok=True)
 
-    db = Database(cfg.data_dir / "cerberus.db", segment_rows_for(cfg.max_events))
+    db = open_store(cfg)
     notifier = Notifier(db, cfg.public_url)
     engine = Engine(cfg, db, ConnectorRegistry(user_connectors), notifier)
     receiver = SyslogReceiver(engine.submit, cfg.bind, cfg.syslog_udp_port, cfg.syslog_tcp_port,

@@ -65,6 +65,9 @@ class Config:
     central: bool = False  # act as the central console
     site_tokens: tuple = ()
     site_silent_minutes: int = 5
+    # Clustered storage: both set, or neither (SQLite in data_dir).
+    postgres_url: str = ""
+    clickhouse_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -92,4 +95,6 @@ class Config:
             central=env("CERBERUS_CENTRAL", "off").lower() in ("on", "1", "true", "yes"),
             site_tokens=tuple(_site_tokens()),
             site_silent_minutes=_int("CERBERUS_SITE_SILENT_MINUTES", 5),
+            postgres_url=_secret("CERBERUS_POSTGRES_URL"),
+            clickhouse_url=_secret("CERBERUS_CLICKHOUSE_URL"),
         )

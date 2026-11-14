@@ -466,15 +466,15 @@ class Database(Store):
         else:
             where, params = self._alert_filters("", status, severity, text)
         sql = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "")
-        return self.q(sql + " ORDER BY last_seen DESC LIMIT ?", (*params, limit))
+        return self.q(sql + " ORDER BY last_seen DESC, id DESC LIMIT ?", (*params, limit))
 
     def alerts_recent(self, limit: int) -> list[dict]:
         return self.q("SELECT id, created, last_seen, severity, title, description, status, count FROM alerts "
-                      "ORDER BY last_seen DESC LIMIT ?", (limit,))
+                      "ORDER BY last_seen DESC, id DESC LIMIT ?", (limit,))
 
     def alerts_unresolved_since(self, last_seen: float, limit: int) -> list[dict]:
         return self.q("SELECT id, detector, severity, title, last_seen, src_ip, device, details FROM alerts "
-                      "WHERE status != 'resolved' AND last_seen >= ? ORDER BY last_seen DESC LIMIT ?",
+                      "WHERE status != 'resolved' AND last_seen >= ? ORDER BY last_seen DESC, id DESC LIMIT ?",
                       (last_seen, limit))
 
     def alert_counts_open(self) -> dict[str, int]:
@@ -489,7 +489,7 @@ class Database(Store):
         return out
 
     def alert_ids_open(self) -> list[int]:
-        return [r["id"] for r in self.q("SELECT id FROM alerts WHERE status = 'open'")]
+        return [r["id"] for r in self.q("SELECT id FROM alerts WHERE status = 'open' ORDER BY id")]
 
     def set_alert_status(self, ids: list[int], status: str, stamp: float) -> None:
         for start in range(0, len(ids), 500):
@@ -505,7 +505,7 @@ class Database(Store):
 
     # --- devices ----------------------------------------------------------------------
     def devices_all(self) -> list[dict]:
-        return self.q("SELECT * FROM devices")
+        return self.q("SELECT * FROM devices ORDER BY first_seen, id")
 
     def update_device(self, device_id: str, name: str, connector_pin: str, snmp_mode: str,
                       snmp_community: str, snmp_host: str) -> None:
@@ -549,6 +549,13 @@ class Database(Store):
         self.x("INSERT INTO snmp_data(device, polled, ok, error, last_ok, data) VALUES(?,?,?,?,?,?) "
                "ON CONFLICT(device) DO UPDATE SET polled=excluded.polled, ok=excluded.ok, error=excluded.error, "
                "last_ok=excluded.last_ok, data=excluded.data", (device, polled, int(ok), error, last_ok, data))
+
+    # --- migration ----------------------------------------------------------------------------------
+    def import_table(self, table: str, rows: list[dict]) -> None:
+        columns = self.IMPORTABLE[table]
+        with self.transaction() as conn:
+            conn.executemany(f"INSERT INTO {table}({', '.join(columns)}) VALUES({', '.join('?' * len(columns))})",
+                             [tuple(row.get(c) for c in columns) for row in rows])
 
     # --- dashboard sessions ----------------------------------------------------------------------
     def session_add(self, token_hash: str, expires: float) -> None:
@@ -642,7 +649,7 @@ class Database(Store):
                     "status = ?, pending = ? WHERE id = ?", (*fields, status, pending, found["id"]))
             pending = [{"id": r["alert_id"], "status": r["pending"]} for r in conn.execute(
                 "SELECT alert_id, pending FROM site_alerts WHERE site_id = ? AND instance = ? AND pending IS NOT NULL "
-                "LIMIT 5000", (site_id, instance))]
+                "ORDER BY id LIMIT 5000", (site_id, instance))]
         return site_id, site_name, fresh, pending
 
     def site_alerts_find(self, *, site_id: int = 0, status: str = "", severity: str = "", text: str = "",
@@ -656,7 +663,7 @@ class Database(Store):
                 params.insert(0, site_id)
         return self.q("SELECT a.*, s.name AS site FROM site_alerts a JOIN sites s ON s.id = a.site_id"
                       + (" WHERE " + " AND ".join(where) if where else "")
-                      + " ORDER BY a.last_seen DESC LIMIT ?", (*params, limit))
+                      + " ORDER BY a.last_seen DESC, a.id DESC LIMIT ?", (*params, limit))
 
     def site_alerts_set_status(self, ids: list[int], status: str) -> int:
         changed = 0
@@ -670,8 +677,8 @@ class Database(Store):
     def sites_newly_silent(self, cutoff: float) -> list[dict]:
         with self.transaction() as conn:
             rows = [dict(r) for r in conn.execute(
-                "SELECT id, name, last_seen FROM sites WHERE silent = 0 AND last_seen IS NOT NULL AND last_seen < ?",
-                (cutoff,))]
+                "SELECT id, name, last_seen FROM sites WHERE silent = 0 AND last_seen IS NOT NULL AND last_seen < ? "
+                "ORDER BY id", (cutoff,))]
             for row in rows:
                 conn.execute("UPDATE sites SET silent = 1 WHERE id = ?", (row["id"],))
         return rows

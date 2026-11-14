@@ -10,6 +10,7 @@ thread. Rows are plain dicts.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 TOTAL = "*"  # stats_minute row holding the sum over all devices, so charts read one row per minute
@@ -48,8 +49,43 @@ def _todo(*_args, **_kwargs):
 class Store:
     """The operations a storage backend provides. See cerberus/db.py for the SQLite one."""
 
+    # Relational tables import_table() accepts, with their columns. Events and counters are
+    # not here: they move with write_batch().
+    IMPORTABLE = {
+        "settings": ("key", "value"),
+        "devices": ("id", "ip", "hostname", "name", "connector_pin", "connector_seen", "first_seen", "last_seen",
+                    "events", "snmp_mode", "snmp_community", "snmp_host"),
+        "alerts": ("id", "created", "last_seen", "detector", "severity", "title", "description", "entity", "src_ip",
+                   "device", "count", "status", "details", "updated"),
+        "channels": ("id", "type", "name", "enabled", "min_severity", "config", "last_ts", "last_ok", "last_error"),
+        "snmp_data": ("device", "polled", "ok", "error", "last_ok", "data"),
+        "sessions": ("token_hash", "expires"),
+        "sites": ("id", "name", "token_hash", "managed", "created", "last_seen", "silent", "address", "version",
+                  "reported_name", "instance", "summary"),
+        "site_alerts": ("id", "site_id", "instance", "alert_id", "created", "last_seen", "received", "detector",
+                        "severity", "title", "description", "entity", "src_ip", "device", "count", "details",
+                        "status", "pending"),
+    }
+
+    def import_table(self, table: str, rows: list[dict]) -> None:
+        """Migration only: insert rows exactly as given, ids included, into an empty table."""
+        raise NotImplementedError
+
     # --- settings: small JSON values by key ---------------------------------------------
-    get_setting = set_setting = _todo
+    def get_setting(self, key: str, default=None):
+        raise NotImplementedError
+
+    def set_setting(self, key: str, value) -> None:
+        raise NotImplementedError
+
+    async def aget_setting(self, key: str, default=None):
+        return await asyncio.to_thread(self.get_setting, key, default)
+
+    async def aset_setting(self, key: str, value) -> None:
+        await asyncio.to_thread(self.set_setting, key, value)
+
+    def close(self) -> None:
+        raise NotImplementedError
 
     # --- the pipeline's writes ----------------------------------------------------------
     def write_batch(self, batch: Batch) -> None:

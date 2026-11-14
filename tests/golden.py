@@ -84,11 +84,14 @@ def timeline(simulate) -> list[tuple[float, str]]:
     return out
 
 
-def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = (), wire: bool = False) -> dict:
+def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = (), wire: bool = False,
+        store=None, summary=None) -> dict:
     """restarts: fractions of the way through the timeline at which to save the
     engine's state, shut it down and start a new one on the same database.
     wire: pass every event between the parse and the later stages, and every alert
-    candidate to the alert stage, through JSON, as a message bus between processes would."""
+    candidate to the alert stage, through JSON, as a message bus between processes would.
+    store: a function opening the storage to use (default: SQLite in data_dir); with it,
+    the result is summary(store) rather than a summary of the SQLite file."""
     if code is not None:
         sys.path.insert(0, str(code))
     from cerberus.config import Config
@@ -102,7 +105,7 @@ def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = (), wir
     cfg.data_dir, cfg.device_identity = data_dir, "hostname"
 
     def start(now: float | None):
-        db = Database(data_dir / "cerberus.db")
+        db = store() if store else Database(data_dir / "cerberus.db")
         engine = Engine(cfg, db, ConnectorRegistry(), Notifier(db))
         engine.load() if now is None else engine.load(now)
         engine.installed = START - 86400  # long installed: new-device alerts are live
@@ -154,6 +157,11 @@ def run(code: Path | None, data_dir: Path, restarts: tuple[float, ...] = (), wir
     tick(next_tick)
     loop.run_until_complete(engine._flush())
     loop.close()
+    if store:
+        try:
+            return (summary or summarise_store)(db)
+        finally:
+            db.close()
     db.close()
     return summarise(data_dir / "cerberus.db")
 
@@ -189,6 +197,31 @@ def summarise(path: Path) -> dict:
     }
     conn.close()
     return out
+
+
+def summarise_store(store) -> dict:
+    """The same kinds of facts as summarise(), read through the storage contract, so any
+    backend can be compared with any other."""
+    columns = ["id", "created", "last_seen", "detector", "severity", "title", "description", "entity",
+               "src_ip", "device", "count", "status", "details"]
+    alerts = sorted(({c: a[c] for c in columns} for a in store.alerts_find(limit=10**6)), key=lambda a: a["id"])
+    events = list(reversed(store.search_events(limit=10**7)))
+    event_columns = ["id", "ts", "device", "hostname", "connector", "app", "sev", "event_type", "action", "src_ip",
+                     "dst_ip", "src_port", "dst_port", "proto", "bytes", "user", "interface", "message", "extra"]
+    h = hashlib.sha256()
+    for row in events:
+        h.update(json.dumps([row[c] for c in event_columns], default=str).encode())
+    devices = sorted(([d[c] for c in ("id", "ip", "hostname", "connector_seen", "first_seen", "last_seen", "events")]
+                      for d in store.devices_all()))
+    return {
+        "alerts": alerts,
+        "events": {"rows": len(events), "sha256": h.hexdigest(), "stored": store.events_stored(),
+                   "oldest": store.oldest_event_ts()},
+        "traffic": sorted([r["t"], r["e"], r["b"]] for r in store.traffic_series(0, 60)),
+        "ports": sorted([r["t"], r["port"], r["direction"], r["a"], r["b"]] for r in store.port_series(0, 60)),
+        "devices": devices,
+        "settings": sorted((store.get_setting("detectors") or {}).keys()),
+    }
 
 
 def main() -> int:

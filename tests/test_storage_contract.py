@@ -13,29 +13,47 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cerberus.db import Database  # noqa: E402
+from cerberus.pg import PostgresStore  # noqa: E402
 from cerberus.storage import Store  # noqa: E402
 
 PACKAGE = Path(__file__).resolve().parent.parent / "cerberus"
-BACKENDS = {"db.py"}  # modules allowed to speak SQL
+BACKENDS = {"db.py", "pg.py", "ch.py"}  # modules allowed to speak SQL
 SQL = re.compile(r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA)\s", re.I)
 LOW_LEVEL = {"q", "aq", "x", "ax", "batch", "abatch", "write", "transaction", "_search"}
 
 
 def contract_methods() -> list[str]:
-    return sorted(name for name, value in vars(Store).items() if callable(value) and not name.startswith("__"))
+    """The operations a backend must implement (the async helpers are provided by Store)."""
+    return sorted(name for name, value in vars(Store).items()
+                  if callable(value) and not name.startswith("__") and not inspect.iscoroutinefunction(value))
 
 
-def test_sqlite_backend_implements_every_operation():
-    missing = [name for name in contract_methods()
-               if getattr(Database, name) is getattr(Store, name)]
-    assert missing == []
-    # Same keyword names as the contract, so callers can rely on them.
-    for name in contract_methods():
-        declared = inspect.signature(getattr(Store, name))
-        if list(declared.parameters) == ["_args", "_kwargs"]:
-            continue  # declared without a signature
-        implemented = inspect.signature(getattr(Database, name))
-        assert list(implemented.parameters) == list(declared.parameters), name
+def test_every_backend_implements_every_operation():
+    for backend in (Database, PostgresStore):
+        missing = [name for name in contract_methods() if getattr(backend, name) is getattr(Store, name)]
+        assert missing == [], backend.__name__
+        # Same parameter names as the contract, so callers can rely on them.
+        for name in contract_methods():
+            declared = inspect.signature(getattr(Store, name))
+            if list(declared.parameters) == ["_args", "_kwargs"]:
+                continue  # declared without a signature
+            implemented = inspect.signature(getattr(backend, name))
+            assert list(implemented.parameters) == list(declared.parameters), (backend.__name__, name)
+
+
+def test_callers_use_only_the_contract():
+    """Every storage method the application calls is part of the contract, so it works
+    on every backend."""
+    allowed = {name for name in dir(Store) if not name.startswith("__")}
+    used = set()
+    for path in sorted(PACKAGE.rglob("*.py")):
+        if path.name in BACKENDS:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, (ast.Name, ast.Attribute))
+                    and ast.unparse(node.value).split(".")[-1] == "db"):
+                used.add((path.name, node.attr))
+    assert sorted(f"{f}: db.{a}" for f, a in used if a not in allowed) == []
 
 
 def test_no_sql_or_connection_calls_outside_the_backend():

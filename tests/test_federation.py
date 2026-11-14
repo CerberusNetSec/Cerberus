@@ -86,7 +86,7 @@ class Site:
         return asyncio.run(once())
 
     def statuses(self) -> dict[int, str]:
-        return {r["id"]: r["status"] for r in self.db.q("SELECT id, status FROM alerts")}
+        return {r["id"]: r["status"] for r in self.db.alerts_find(limit=10**6)}
 
 
 def test_sites_report_alerts_and_health(tmp_path):
@@ -144,8 +144,8 @@ def test_acknowledging_at_the_console_reaches_the_site(tmp_path):
     assert site.statuses()[scan["alert_id"]] == "ack"
     assert console.alerts(id=scan["id"])[0]["status"] == "ack"
     site.report()  # the site reports the change back; nothing is pending any more
-    row = console.db.q("SELECT status, pending FROM site_alerts WHERE id = ?", (scan["id"],))[0]
-    assert row == {"status": "ack", "pending": None}
+    row = console.db.site_alerts_find(alert_id=scan["id"])[0]
+    assert (row["status"], row["pending"]) == ("ack", None)
     # Resolving works the same way, and the site's alert manager forgets it.
     console.http.post("/api/site-alerts/status", json={"ids": [scan["id"]], "status": "resolved"})
     site.report()
@@ -153,7 +153,7 @@ def test_acknowledging_at_the_console_reaches_the_site(tmp_path):
     assert all(a.id != scan["alert_id"] for a in site.engine.alerts.active.values())
     # A status changed at the site travels up.
     rdp = next(a for a in console.alerts() if a["detector"] == "exposed_service")
-    site.db.x("UPDATE alerts SET status = 'ack', updated = ? WHERE id = ?", (time.time(), rdp["alert_id"]))
+    site.db.set_alert_status([rdp["alert_id"]], "ack", time.time())
     site.report()
     assert console.alerts(id=rdp["id"])[0]["status"] == "ack"
 

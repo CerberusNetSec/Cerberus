@@ -11,3 +11,4 @@ __pycache__/
 *.db-shm
 *.log
 deploy/secrets/
+docker-compose.override.yml

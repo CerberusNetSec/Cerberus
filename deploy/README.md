@@ -8,7 +8,7 @@ Four reference deployments, all built from the same image
 | **Standalone** | [`docker-compose.yml`](../docker-compose.yml) at the repo root | One network, one host. Start here |
 | **Compose** | [`compose/`](compose/) | A central console and several sites, one Docker host each |
 | **Swarm** | [`swarm/`](swarm/) | A console and its sites as one stack across Swarm nodes |
-| **Kubernetes** | [`kubernetes/`](kubernetes/) | Standalone, site and console layers for clusters |
+| **Kubernetes** | [`kubernetes/`](kubernetes/) | Standalone, site, console, collector and processor layers for clusters |
 
 One instance handles a few hundred devices (see "Running at scale" in the main
 README). Beyond that, run **one Cerberus per site** and connect the sites to a
@@ -34,10 +34,10 @@ firewall cluster).
 Version tags are published by CI for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/wrcrooks/cerberus:0.4.0
+docker pull ghcr.io/wrcrooks/cerberus:0.5.0
 ```
 
-To build your own, `docker build -t registry.example.com/cerberus:0.4.0 .`,
+To build your own, `docker build -t registry.example.com/cerberus:0.5.0 .`,
 push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
 `kubernetes/base/kustomization.yaml`.
 
@@ -127,7 +127,7 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.4.0` to use the published image
+Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.5.0` to use the published image
 instead of building locally. Compose (without Swarm) bind-mounts secret files,
 so they must be readable by the container's user (uid 10001); `make-secrets.py`
 writes them mode 0644.
@@ -184,6 +184,44 @@ Run PostgreSQL and ClickHouse with replication and backups as your platform
 does (managed services, operators); the Compose file's single containers are
 for trying it.
 
+## Scale-out ingest (collectors and a processor)
+
+See "Scale-out ingest" in the main README for what it is. Needs clustered
+storage and a Kafka-compatible bus.
+
+- **Compose:** `compose/scale-out.yml` runs HAProxy, any number of collectors
+  (`--scale collector=N`), Redpanda, the processor and both databases on one
+  host:
+
+  ```sh
+  python deploy/make-secrets.py --storage
+  docker compose -f deploy/compose/scale-out.yml up -d --build --scale collector=3
+  ```
+
+  HAProxy (`compose/haproxy.cfg`) spreads TCP connections over the collectors,
+  takes failed ones out of rotation, and passes each device's address with
+  PROXY protocol v2; collectors trust that header only from HAProxy's fixed
+  address. Terminate syslog-over-TLS at HAProxy (see the config). UDP is not
+  balanced here: send TCP. To spread the services over hosts, run the same
+  services with `CERBERUS_KAFKA_BOOTSTRAP` and the database URLs pointing at
+  shared servers.
+- **Kubernetes:** apply `kubernetes/processor` (which includes clustered
+  storage) and `kubernetes/collector`, after setting the bus address in both
+  `kustomization.yaml` files. Collectors are a StatefulSet (stable names, one
+  spool volume each) behind a `LoadBalancer` with `externalTrafficPolicy:
+  Local`, which keeps device addresses for TCP and UDP, so no PROXY protocol
+  is needed. Run the bus with an operator (Strimzi, Redpanda) or a managed
+  service.
+- **Swarm:** run collectors as a replicated service with `mode: host` ports
+  (one per node, so each node's devices keep their addresses) and the
+  processor as one replica; the same variables apply.
+
+Topics are created on first start if the cluster allows it
+(`CERBERUS_KAFKA_PARTITIONS`, default 12; `CERBERUS_KAFKA_REPLICATION`,
+default 1 - set 3 on a real cluster). `CERBERUS_KAFKA_SECURITY=SSL` with
+`CERBERUS_KAFKA_CA` encrypts traffic to the bus; SASL authentication is not
+supported yet.
+
 ## Kubernetes
 
 Kustomize, in layers over one [`base`](kubernetes/base):
@@ -239,11 +277,11 @@ same cluster as the console can use
 | Compose | `compose/demo.yml` on Docker Desktop: both sites reported; an acknowledgement at the console reached the site; a site caught up fully after the console was stopped and restarted |
 | Swarm | `swarm/stack.yml` on a three-node swarm (Docker-in-Docker): services placed by label, both sites reported over the overlay, traffic between nodes confirmed ESP-encrypted, console reached through Caddy's HTTPS, site saw devices' real source addresses |
 | Kubernetes | `standalone`, `site` and `central` on k3s 1.31: all rolled out as non-root with read-only filesystems; the site reported to the console; syslog through the LoadBalancer kept the sender's real address |
-
-| Clustered storage | `compose/clustered-storage.yml` on Docker Desktop with PostgreSQL 16 and ClickHouse 24.8: every attack scenario over TCP, alerts, event search and risk ports through the API, then a restart with the session and detector state intact. The Kubernetes component is checked by rendering only |
+| Clustered storage | `compose/clustered-storage.yml` on Docker Desktop with PostgreSQL 16 and ClickHouse 24.8: every attack scenario over TCP, alerts, event search and risk ports through the API, then a restart with the session and detector state intact. On Kubernetes, as part of the processor layer below |
+| Scale-out, Compose | `compose/scale-out.yml` with three collectors: senders with their own addresses through HAProxy (PROXY v2) kept those addresses; connections spread over collectors; with the bus stopped, a collector spooled 465 events and sent them when it returned, and the processor stored every event exactly once (475 resent copies ignored) |
+| Scale-out, Kubernetes | `collector` and `processor` layers on k3s 1.31 with Redpanda, PostgreSQL and ClickHouse in the cluster: three collectors (StatefulSet, own spool volumes), TCP and UDP through the LoadBalancer kept each sender pod's address, the processor stored every event and saw all three collectors' heartbeats |
 
 Not yet tested: Swarm across real hosts on separate networks, Kubernetes on a
 managed cloud load balancer, the console's Ingress with an ingress
-controller (k3s ran without one), and the clustered-storage component on a
-running cluster. CI checks on every push that all four
+controller (k3s ran without one), and a collector outage on Kubernetes. CI checks on every push that all four
 deployments' files are valid.

@@ -18,7 +18,8 @@ from cerberus.storage import Store  # noqa: E402
 
 PACKAGE = Path(__file__).resolve().parent.parent / "cerberus"
 BACKENDS = {"db.py", "pg.py", "ch.py"}  # modules allowed to speak SQL
-SQL = re.compile(r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA)\s", re.I)
+SQL = re.compile(r"^\s*(SELECT\s.+\sFROM\s|INSERT\s+(OR\s+\w+\s+)?INTO\s|UPDATE\s+\w+\s+SET\s|DELETE\s+FROM\s|"
+                 r"(CREATE|DROP)\s+(TABLE|INDEX|DATABASE)\s|ALTER\s+TABLE\s|PRAGMA\s)", re.I | re.S)
 LOW_LEVEL = {"q", "aq", "x", "ax", "batch", "abatch", "write", "transaction", "_search"}
 
 

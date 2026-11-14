@@ -311,6 +311,17 @@ PLAYBOOKS: dict[str, dict] = {
             "Check the network path between the device and Cerberus (UDP/TCP 514).",
         ],
     },
+    "collector_silent": {
+        "stage": "Network health", "technique": None,
+        "why": "A collector receives syslog and passes it on for analysis. While one is down, logs sent to it "
+               "are lost or delayed, unless the load balancer in front moves its devices to another collector.",
+        "actions": [
+            "Check the collector's container or pod and its log; restart it if it has stopped.",
+            "Check that the load balancer's health check has taken it out of rotation.",
+            "If it is running but not reporting, check it can reach the message bus: its /status page shows "
+            "spooled events and the last bus error.",
+        ],
+    },
     "site_silent": {
         "stage": "Network health", "technique": None,
         "why": "While a site is not reporting, nothing it detects reaches this console. The site may be down, cut "

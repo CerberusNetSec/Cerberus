@@ -1,0 +1,32 @@
+# Collectors: receive syslog, parse it, publish to the message bus. Scale by
+# replicas. Pair with processor/ and a Kafka-compatible bus (Strimzi, Redpanda,
+# a managed service).
+#
+#   kubectl create namespace cerberus
+#   kubectl -n cerberus create secret generic cerberus-storage \
+#     --from-literal=postgres-url=... --from-literal=clickhouse-url=...   # optional here: device pins
+#   kubectl apply -k deploy/kubernetes/collector
+#
+# Set the bus address below. The LoadBalancer keeps devices' source addresses
+# (externalTrafficPolicy: Local) and spreads TCP connections and UDP flows over
+# the collector pods, so no PROXY protocol is needed in Kubernetes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+labels:
+  - pairs: {app.kubernetes.io/part-of: cerberus}
+    includeSelectors: false
+resources:
+  - statefulset.yaml
+  - service.yaml
+images:
+  - name: cerberus
+    newName: ghcr.io/wrcrooks/cerberus
+    newTag: "0.5.0"
+configMapGenerator:
+  - name: cerberus-collector
+    literals:
+      - CERBERUS_MODE=collector
+      - CERBERUS_KAFKA_BOOTSTRAP=cerberus-kafka-bootstrap.kafka.svc:9092
+      - CERBERUS_DEVICE_IDENTITY=ip
+      - CERBERUS_SPOOL_MB=4096

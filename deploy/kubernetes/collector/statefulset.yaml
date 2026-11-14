@@ -1,0 +1,73 @@
+# A StatefulSet so each collector keeps its name (cerberus-collector-0, -1, ...)
+# and its own spool volume: events spooled while the bus was unreachable are
+# still there, and are sent, when the pod is replaced.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cerberus-collector
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: collector}
+spec:
+  serviceName: cerberus-collector
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: collector}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: collector}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30  # time to send or spool what is queued
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: collector}
+      containers:
+        - name: collector
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-collector}
+          env:
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            # Optional: with shared storage, collectors follow the connector each device is pinned to.
+            - name: CERBERUS_POSTGRES_URL
+              valueFrom: {secretKeyRef: {name: cerberus-storage, key: postgres-url, optional: true}}
+            - name: CERBERUS_CLICKHOUSE_URL
+              valueFrom: {secretKeyRef: {name: cerberus-storage, key: clickhouse-url, optional: true}}
+          ports:
+            - {name: status, containerPort: 8080}
+            - {name: syslog-tcp, containerPort: 5514, protocol: TCP}
+            - {name: syslog-udp, containerPort: 5514, protocol: UDP}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: "1", memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}  # parsing uses one core; add replicas rather than CPU
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: spool, mountPath: /data}
+  volumeClaimTemplates:
+    - metadata:
+        name: spool
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi  # at least CERBERUS_SPOOL_MB

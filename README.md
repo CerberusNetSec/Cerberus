@@ -264,6 +264,40 @@ Expiry with ClickHouse drops whole hours of events, so the total can exceed
 `CERBERUS_MAX_EVENTS` by up to an hour's worth. A batch is written to
 ClickHouse and then PostgreSQL as two writes, not one transaction.
 
+## Scale-out ingest
+
+One process parses about 15,000 messages a second, and parsing is most of the
+work. For more, run several **collectors** (`CERBERUS_MODE=collector`) that
+receive and parse syslog and publish the events to a Kafka-compatible bus, and
+one **processor** (`CERBERUS_MODE=processor`) that records, detects, alerts
+and serves the dashboard. Clustered storage is required.
+
+- **Collectors are stateless and interchangeable.** Put them behind a load
+  balancer: Kubernetes keeps device addresses with
+  `externalTrafficPolicy: Local` (TCP and UDP); HAProxy passes them over TCP
+  with PROXY protocol, which collectors accept only from the addresses in
+  `CERBERUS_PROXY_PROTOCOL_FROM`.
+- **Nothing is lost if the bus goes down.** A collector spools events to its
+  own folder on disk and sends them, in order, when the bus is back; the
+  folder of a collector that is replaced is picked up by another. Every event
+  carries a unique id, and the processor ignores copies, so events sent twice
+  around an outage are stored once.
+- **The processor commits its place on the bus only after storing.** If it
+  crashes, it re-reads at most the last second or so of events (at least
+  once).
+- **Health:** collectors send a heartbeat every 15 seconds; the processor's
+  dashboard shows them and raises "Collector stopped reporting" when one goes
+  quiet. Each collector's own counters are at `:8080/status`.
+- **Syslog over TLS** (RFC 5425) is available in every mode
+  (`CERBERUS_SYSLOG_TLS_PORT`, usually 6514), optionally requiring device
+  certificates.
+
+Reference deployments: `deploy/compose/scale-out.yml` (HAProxy, collectors,
+Redpanda, processor, both databases) and the Kubernetes `collector` and
+`processor` layers; see [deploy/README.md](deploy/README.md). Detection still
+runs in the one processor; dividing it between several is the next phase of
+[docs/CLUSTERING.md](docs/CLUSTERING.md).
+
 ## Many sites
 
 For more devices than one instance handles, run one Cerberus per site and
@@ -432,6 +466,11 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_CENTRAL_URL`, `CERBERUS_CENTRAL_TOKEN[_FILE]`, `CERBERUS_SITE_NAME`, `CERBERUS_CENTRAL_CA` | | Report to a central console (see [deploy/README.md](deploy/README.md)) |
 | `CERBERUS_CENTRAL`, `CERBERUS_SITE_TOKENS_FILE`, `CERBERUS_SITE_SILENT_MINUTES` | `off`, , `5` | Act as the central console |
 | `CERBERUS_POSTGRES_URL`, `CERBERUS_CLICKHOUSE_URL` (or `_FILE`) | | Store data in PostgreSQL and ClickHouse instead of SQLite; set both (see [Clustered storage](#clustered-storage)) |
+| `CERBERUS_MODE` | `all` | `collector` or `processor` for [scale-out ingest](#scale-out-ingest) |
+| `CERBERUS_KAFKA_BOOTSTRAP`, `_TOPIC`, `_GROUP`, `_PARTITIONS`, `_REPLICATION`, `_SECURITY` (`SSL`), `_CA` | | The message bus between collectors and the processor |
+| `CERBERUS_COLLECTOR_NAME`, `CERBERUS_SPOOL_MB`, `CERBERUS_COLLECTOR_SILENT_SECONDS` | hostname, `1024`, `90` | Collector identity, spool size while the bus is unreachable, and when the processor calls a collector silent |
+| `CERBERUS_SYSLOG_TLS_PORT`, `_TLS_CERT`, `_TLS_KEY`, `_TLS_CLIENT_CA` | `0` | Syslog over TLS (RFC 5425), optionally requiring device certificates |
+| `CERBERUS_PROXY_PROTOCOL_FROM` | | Load balancer addresses whose TCP connections start with a PROXY protocol header carrying the device's address |
 
 ## Security notes
 

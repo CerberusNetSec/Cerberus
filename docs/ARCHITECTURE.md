@@ -57,7 +57,7 @@ stages and requires identical results.
 
 | File | Role |
 |---|---|
-| `__main__.py` | Starts everything in one event loop |
+| `__main__.py` | Starts everything in one event loop, in the configured mode (`all`, `collector`, `processor`) |
 | `config.py` | Environment variables |
 | `receiver.py` | Syslog listeners |
 | `syslog_parser.py` | Syslog envelope |
@@ -75,6 +75,7 @@ stages and requires identical results.
 | `notifiers.py` | Channels and delivery |
 | `snmp.py`, `snmp_poller.py`, `topology.py` | SNMP v2c client, polling, map building |
 | `federation.py` | Site → central console reporting (`Forwarder`) and the console side (`Central`) |
+| `bus.py`, `collector.py` | Scale-out: publishing to and consuming from the message bus, the collector's spool, copy detection, heartbeats; the collector process |
 | `web.py`, `static/` | JSON API and the single-page UI (no build step) |
 
 ## Storage
@@ -164,11 +165,34 @@ alerts. A status set at the console is kept as `pending` and returned in each
 reply until the site reports the alert back with that status. See
 [deploy/README.md](../deploy/README.md) and [CLUSTERING.md](CLUSTERING.md).
 
+## Scale-out ingest
+
+In `collector` mode a process runs only the receive and parse stages: each
+parsed `Event` is published to the bus topic (`CERBERUS_KAFKA_TOPIC`), keyed by
+device so each device's events stay in order, with a unique id (the collector's
+run id and a sequence number). In `processor` mode the engine has no receiver;
+`Engine._consume` reads batches from the bus and runs record, detect and alert
+on each event, dropping any whose id it has already seen (`bus.Deduplicator`).
+`_flush` takes the bus position before swapping its buffers and commits it
+only after the batch is stored, so a crash re-reads at most about a second of
+events.
+
+A collector that cannot reach the bus appends to its spool
+(`spool/<name>/*.jsonl`, locked while it runs) and sends the spool, oldest
+first, once the bus answers; new events queue behind the spool so order holds.
+A spool folder whose lock nobody holds belongs to a collector that has gone,
+and a running collector adopts it.
+
+`tests/test_bus.py` runs the reference traffic through a collector, a real
+broker and the processor (also with the processor restarted midway, and with
+a share of events sent twice) and requires exactly what the single process
+stores.
+
 ## Limits by design
 
-- One process: parsing and detection use one CPU core. See "Running at scale"
-  in the README for measured rates.
+- Detection runs in one process (one CPU core). Parsing can be spread over
+  collectors; dividing detection is phase 4 of [CLUSTERING.md](CLUSTERING.md).
 - Syslog input is unauthenticated plain text; SNMP is v2c. Both belong on a
   management network.
-- No clustering, replication or multi-user accounts; many sites are handled by
-  federation, and clustering is planned in [CLUSTERING.md](CLUSTERING.md).
+- No multi-user accounts. Many sites are handled by federation; high
+  availability of the processor is phase 5 of [CLUSTERING.md](CLUSTERING.md).

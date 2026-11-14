@@ -84,7 +84,9 @@ class PostgresStore(Store):
         self._conns = [psycopg.connect(url, autocommit=True, row_factory=dict_row) for _ in range(POOL)]
         for conn in self._conns:
             self._pool.put(conn)
-        with self._conn() as conn:
+        with self._tx() as conn:
+            # Several processes (collectors, processor) may start at once: one creates the tables.
+            conn.execute("SELECT pg_advisory_xact_lock(7243829041)")
             conn.execute(SCHEMA)
 
     # --- plumbing -------------------------------------------------------------------------

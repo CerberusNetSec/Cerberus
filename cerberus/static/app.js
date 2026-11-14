@@ -42,6 +42,20 @@ function health(d) {
   if (d.refused_devices) notes.push('device limit reached, new sources ignored');
   return notes.join(' · ') || 'none since start · keeping up';
 }
+/* Processor mode: how the collectors in front of it are doing. */
+function collectorsTile(d, tile) {
+  const all = d.collectors, up = all.filter((c) => c.state === 'reporting');
+  const spooling = all.filter((c) => c.bus_down || c.spool_bytes > 0);
+  const dropped = all.reduce((n, c) => n + (c.dropped || 0) + (c.spool_dropped || 0), 0);
+  const notes = [];
+  if (all.length > up.length) notes.push(`silent: ${all.filter((c) => c.state !== 'reporting').map((c) => c.name).join(', ')}`);
+  if (spooling.length) notes.push(`${spooling.length} spooling while the bus is unreachable`);
+  if (dropped) notes.push(`${compact(dropped)} messages dropped`);
+  if (d.duplicates) notes.push(`${compact(d.duplicates)} resent copies ignored`);
+  const value = all.length ? `${up.length} <span class="muted">/ ${all.length}</span>` : '—';
+  return tile('Collectors reporting', all.length > up.length ? `<span class="error" style="font-size:inherit">${value}</span>` : value,
+    esc(notes.join(' · ') || (all.length ? 'all forwarding to the bus' : 'waiting for the first heartbeat')));
+}
 const pad = (n) => String(n).padStart(2, '0');
 function clock(ts, withDate) {
   const d = new Date(ts * 1000);
@@ -216,6 +230,7 @@ pages.dashboard = {
         ? `<span class="error" style="font-size:inherit">Not reaching it</span>` : 'Reporting',
         esc(d.federation.error ? `${d.federation.error}${d.federation.last_ok ? ` · last report ${ago(d.federation.last_ok)}` : ''}`
           : d.federation.last_ok ? `as ${d.federation.site} · last report ${ago(d.federation.last_ok)}` : `as ${d.federation.site} · first report pending`)) : '') +
+      (d.collectors ? collectorsTile(d, tile) : '') +
       tile('Searchable history', d.events_since ? span(Date.now() / 1000 - d.events_since) : '—', esc(
         `${compact(d.events_stored)} events stored · keeps ${compact(d.max_events)} or ${d.retention_days} days` +
         (d.traffic_sample === 0 ? ' · allowed traffic not stored' : d.traffic_sample > 1 ? ` · 1 in ${d.traffic_sample} allowed flows stored` : '')));

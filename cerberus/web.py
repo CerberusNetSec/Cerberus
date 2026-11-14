@@ -136,7 +136,7 @@ def _run(fn, *args, **kwargs):
 
 
 def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, poller: SnmpPoller,
-               forwarder: Forwarder | None = None, central: Central | None = None) -> FastAPI:
+               forwarder: Forwarder | None = None, central: Central | None = None, heartbeats=None) -> FastAPI:
     app = FastAPI(title="Cerberus", docs_url=None, redoc_url=None, openapi_url=None)
     auth = Auth(cfg, db)
 
@@ -268,6 +268,12 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
             "retention_days": cfg.retention_days,
             "uptime": int(now - engine.started),
             "federation": forwarder.status() if forwarder else None,
+            "duplicates": engine.dedup.duplicates if engine.dedup else None,
+            "collectors": [
+                {**{k: v for k, v in status.items() if k not in ("bus_error",)},
+                 "state": "silent" if now - status.get("received_at", now) > cfg.collector_silent_seconds else "reporting"}
+                for status in sorted(heartbeats.latest.values(), key=lambda s: str(s.get("name")))
+            ] if heartbeats else None,
         }
 
     # --- federation: the central console -------------------------------------

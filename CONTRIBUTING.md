@@ -34,6 +34,15 @@ CERBERUS_TEST_CLICKHOUSE_URL=http://cerberus:devtest@127.0.0.1:18123/cerberus \
 Each test creates and drops its own databases. CI runs them with service
 containers.
 
+`tests/test_bus.py` needs a Kafka-compatible broker:
+
+```sh
+docker run -d --name cerberus-dev-kafka -p 127.0.0.1:19092:19092 redpandadata/redpanda:v24.2.7 \
+  redpanda start --mode dev-container --smp 1 --memory 512M \
+  --kafka-addr external://0.0.0.0:19092 --advertise-kafka-addr external://127.0.0.1:19092
+CERBERUS_TEST_KAFKA_BOOTSTRAP=127.0.0.1:19092 .venv/bin/python -m pytest tests/test_bus.py
+```
+
 ## Tools
 
 | Command | What it does |

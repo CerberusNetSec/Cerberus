@@ -41,6 +41,25 @@ _SOURCE_KEYED = {"port_scan", "host_sweep", "deny_flood", "brute_force", "large_
 _DEST_KEYED = {"exposed_service", "risky_egress", "beaconing", "large_transfer"}
 
 
+def parse_message(cfg: Config, connectors: ConnectorRegistry, devices: dict, data: bytes | str, source_ip: str,
+                  ts: float, pin: str | None = None) -> Event:
+    """Syslog bytes to a normalised Event. devices maps device id to anything with
+    connector_pin and connector_seen (a device pinned to a connector, and the connector
+    its last message matched); pin overrides both."""
+    parsed = parse_syslog(data)
+    device_id = source_ip
+    if cfg.device_identity == "hostname" and parsed["hostname"]:
+        device_id = parsed["hostname"]
+    hint = ""
+    if pin is None:
+        dev = devices.get(device_id)
+        pin, hint = (dev.connector_pin, dev.connector_seen) if dev else ("", "")
+    ev = connectors.build_event(parsed, ts, device_id, source_ip, pin, hint)
+    if cfg.device_identity == "hostname" and ev.hostname and ev.device != ev.hostname:
+        ev.device = ev.hostname  # the connector found a hostname the envelope did not have
+    return ev
+
+
 @dataclass
 class Device:
     id: str
@@ -190,6 +209,9 @@ class Engine:
         self._rate: deque = deque(maxlen=7)
         self._tasks: list[asyncio.Task] = []
         self.receiver = None  # set by __main__, for the health figures on the dashboard
+        self.source = None  # processor mode: a bus.EventSource; events come from collectors
+        self.dedup = None  # processor mode: a bus.Deduplicator
+        self._committed: dict = {}
 
     # --- lifecycle -------------------------------------------------------
     def load(self, now: float | None = None) -> None:
@@ -286,8 +308,36 @@ class Engine:
 
     async def start(self) -> None:
         await asyncio.to_thread(self.load)
-        for coro in (self._pipeline(), self._flush_loop(), self._tick_loop(), self._prune_loop()):
+        intake = self._consume() if self.source else self._pipeline()
+        for coro in (intake, self._flush_loop(), self._tick_loop(), self._prune_loop()):
             self._tasks.append(asyncio.create_task(coro))
+
+    async def _consume(self) -> None:
+        """Processor mode: parsed events from the collectors, through the bus."""
+        while True:
+            try:
+                records = await self.source.batch()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("reading from the message bus failed")
+                await asyncio.sleep(2)
+                continue
+            for record in records:
+                try:
+                    body = json.loads(record.value)
+                    uid = body.get("_uid")
+                    if uid and self.dedup is not None and not self.dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
+                        continue  # a copy of an event already processed
+                    self.received += 1
+                    ev = Event.from_dict(body)
+                    if self.record(ev, ev.ts):
+                        self.detect(ev, ev.ts)
+                except Exception:
+                    self.parse_errors += 1
+                    if self.parse_errors <= 20:
+                        log.exception("failed to process an event from the bus")
+            await asyncio.sleep(0)
 
     async def stop(self) -> None:
         for task in self._tasks:
@@ -342,15 +392,7 @@ class Engine:
         return hit
 
     def build_event(self, data: bytes | str, source_ip: str, ts: float, pin: str | None = None) -> Event:
-        parsed = parse_syslog(data)
-        device_id = source_ip
-        if self.cfg.device_identity == "hostname" and parsed["hostname"]:
-            device_id = parsed["hostname"]
-        hint = ""
-        if pin is None:
-            dev = self.devices.get(device_id)
-            pin, hint = (dev.connector_pin, dev.connector_seen) if dev else ("", "")
-        return self.connectors.build_event(parsed, ts, device_id, source_ip, pin, hint)
+        return parse_message(self.cfg, self.connectors, self.devices, data, source_ip, ts, pin)
 
     # --- the per-message pipeline -----------------------------------------
     # Three stages, kept apart so that clustering can run them in different
@@ -365,10 +407,7 @@ class Engine:
     def parse(self, data: bytes | str, source_ip: str, ts: float) -> Event:
         """Stage 1: syslog bytes to a normalised Event."""
         self.received += 1
-        ev = self.build_event(data, source_ip, ts)
-        if self.cfg.device_identity == "hostname" and ev.hostname and ev.device != ev.hostname:
-            ev.device = ev.hostname  # the connector found a hostname the envelope did not have
-        return ev
+        return parse_message(self.cfg, self.connectors, self.devices, data, source_ip, ts)
 
     def record(self, ev: Event, ts: float) -> bool:
         """Stage 2: the device registry, per-minute counters and the storage buffer.
@@ -444,6 +483,9 @@ class Engine:
 
     # --- background loops ------------------------------------------------
     async def _flush(self) -> None:
+        # The bus position that matches what is about to be written: nothing below
+        # awaits before the buffers are swapped, so no event slips between the two.
+        offsets = self.source.snapshot() if self.source else {}
         events, self._events = self._events, []
         stats, self._stats = self._stats, {}
         devices = [d for d in self.devices.values() if d.dirty]
@@ -468,6 +510,10 @@ class Engine:
         if batch:
             await asyncio.to_thread(self.db.write_batch, batch)
             self.flush_seconds = time.perf_counter() - started
+        if offsets and offsets != self._committed:
+            # Only now that the events are stored may the bus forget them.
+            await self.source.commit(offsets)
+            self._committed = offsets
 
     async def _flush_loop(self) -> None:
         while True:

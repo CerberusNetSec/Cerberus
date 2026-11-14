@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from urllib.parse import unquote, urlparse
 
 from .storage import TOTAL, QueryTimeout
@@ -65,7 +66,14 @@ class ClickHouseEvents:
         self.url = url
         self._local = threading.local()  # one HTTP client per thread: the client is not thread-safe
         for statement in SCHEMA:
-            self.client.command(statement)
+            for attempt in range(5):
+                try:
+                    self.client.command(statement)
+                    break
+                except Exception as exc:  # another process creating the same table at the same moment
+                    if attempt == 4 or "already exists" not in str(exc).lower():
+                        raise
+                    time.sleep(0.5)
         self._id_lock = threading.Lock()
         self._next_id = int(self.client.command("SELECT max(id) FROM events") or 0) + 1
 

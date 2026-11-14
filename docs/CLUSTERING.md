@@ -1,6 +1,6 @@
 # Scaling Cerberus to thousands of log sources
 
-Status: **stage 1 (federation) released in 0.2.0; stage 2 phase 1 (seams) in 0.3.0; phase 2 (shared storage) in 0.4.0.**
+Status: **stage 1 (federation) in 0.2.0; stage 2 phase 1 (seams) in 0.3.0, phase 2 (shared storage) in 0.4.0, phase 3 (scale-out ingest) in 0.5.0.**
 
 ## Goal
 
@@ -101,10 +101,25 @@ Estimates assume one experienced engineer and are rough.
      phase 4 is where that happens.
    - Event ids are assigned by the one Cerberus process writing; several
      collectors writing at once (phase 3) need ids that cannot collide.
-3. **Scale-out ingest (2–3 weeks).** Collector role, publishing to Kafka, TLS
-   syslog, spooling to disk when Kafka is unreachable, load-balancer
-   reference configurations, and event ids that several writers can assign
-   without colliding.
+3. **Scale-out ingest. Done.** `CERBERUS_MODE=collector` and `processor`
+   (`collector.py`, `bus.py`); a Kafka-compatible bus; collectors spool to
+   their own locked folder on disk while the bus is unreachable, and adopt the
+   spools of collectors that have gone; every event carries a unique id and
+   the processor ignores copies; the processor commits its bus position only
+   after storing; collector heartbeats and a "collector stopped reporting"
+   alert; syslog over TLS (RFC 5425) with optional device certificates; PROXY
+   protocol v1/v2 from trusted load balancers. Reference deployments:
+   `compose/scale-out.yml` (with HAProxy) and the Kubernetes `collector` and
+   `processor` layers. Proved by `tests/test_bus.py` against a real broker in
+   CI (the reference traffic through collector, bus and processor stores
+   exactly what one process stores, also with the processor restarted midway
+   and with events sent twice), and by live runs on Compose (a bus outage:
+   every event stored exactly once) and k3s.
+   - Event ids are still assigned by the one process writing events (the
+     processor), so several writers are not needed yet; they become necessary
+     only if storage writing is divided in phase 4.
+   - The processor's copy detection is in memory: a processor restart can
+     store up to about a second of events twice (at least once).
 4. **Sharded detection and alerting (4–6 weeks).** Keyed streams, the
    detection worker role, idempotent alert upserts, correlation on the alert
    stream, a notification outbox so each alert is sent exactly once, splitting

@@ -23,6 +23,18 @@ def _secret(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _networks(text: str) -> list[str]:
+    """Comma- or space-separated IPs/CIDRs; anything else is a configuration error."""
+    import ipaddress
+    out = []
+    for item in text.replace(",", " ").split():
+        try:
+            out.append(str(ipaddress.ip_network(item, strict=False)))
+        except ValueError:
+            raise ValueError(f"not an IP address or network: {item!r}") from None
+    return out
+
+
 def _site_tokens() -> list[tuple[str, str]]:
     """Sites declared for a central console: lines of "name token" in CERBERUS_SITE_TOKENS_FILE."""
     path = os.environ.get("CERBERUS_SITE_TOKENS_FILE")
@@ -68,6 +80,24 @@ class Config:
     # Clustered storage: both set, or neither (SQLite in data_dir).
     postgres_url: str = ""
     clickhouse_url: str = ""
+    # Scale-out: "all" (one process does everything), "collector" or "processor".
+    mode: str = "all"
+    kafka_bootstrap: str = ""
+    kafka_topic: str = "cerberus.events"
+    kafka_group: str = "cerberus-processor"
+    kafka_partitions: int = 12
+    kafka_replication: int = 1
+    kafka_security: str = "PLAINTEXT"  # or SSL
+    kafka_ca: str = ""
+    collector_name: str = ""
+    spool_mb: int = 1024
+    collector_silent_seconds: int = 90
+    # Ingest options for any mode that receives syslog.
+    syslog_tls_port: int = 0
+    syslog_tls_cert: str = ""
+    syslog_tls_key: str = ""
+    syslog_tls_client_ca: str = ""
+    proxy_protocol_from: tuple = ()
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -97,4 +127,20 @@ class Config:
             site_silent_minutes=_int("CERBERUS_SITE_SILENT_MINUTES", 5),
             postgres_url=_secret("CERBERUS_POSTGRES_URL"),
             clickhouse_url=_secret("CERBERUS_CLICKHOUSE_URL"),
+            mode=env("CERBERUS_MODE", "all").lower() if env("CERBERUS_MODE", "all").lower() in ("all", "collector", "processor") else "all",
+            kafka_bootstrap=env("CERBERUS_KAFKA_BOOTSTRAP", ""),
+            kafka_topic=env("CERBERUS_KAFKA_TOPIC", "cerberus.events"),
+            kafka_group=env("CERBERUS_KAFKA_GROUP", "cerberus-processor"),
+            kafka_partitions=max(1, _int("CERBERUS_KAFKA_PARTITIONS", 12)),
+            kafka_replication=max(1, _int("CERBERUS_KAFKA_REPLICATION", 1)),
+            kafka_security="SSL" if env("CERBERUS_KAFKA_SECURITY", "").upper() == "SSL" else "PLAINTEXT",
+            kafka_ca=env("CERBERUS_KAFKA_CA", ""),
+            collector_name=env("CERBERUS_COLLECTOR_NAME", "") or socket.gethostname(),
+            spool_mb=max(10, _int("CERBERUS_SPOOL_MB", 1024)),
+            collector_silent_seconds=max(30, _int("CERBERUS_COLLECTOR_SILENT_SECONDS", 90)),
+            syslog_tls_port=_int("CERBERUS_SYSLOG_TLS_PORT", 0),
+            syslog_tls_cert=env("CERBERUS_SYSLOG_TLS_CERT", ""),
+            syslog_tls_key=env("CERBERUS_SYSLOG_TLS_KEY", ""),
+            syslog_tls_client_ca=env("CERBERUS_SYSLOG_TLS_CLIENT_CA", ""),
+            proxy_protocol_from=tuple(_networks(env("CERBERUS_PROXY_PROTOCOL_FROM", ""))),
         )

@@ -1,0 +1,25 @@
+# Syslog in: one address for every device, TCP and UDP on 514, spread over the
+# collectors. Restrict loadBalancerSourceRanges to your management networks.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cerberus-syslog
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local  # devices' own source addresses reach the collectors
+  # loadBalancerSourceRanges: [10.0.0.0/8]
+  selector: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: collector}
+  ports:
+    - {name: syslog-tcp, port: 514, targetPort: syslog-tcp, protocol: TCP}
+    - {name: syslog-udp, port: 514, targetPort: syslog-udp, protocol: UDP}
+---
+# Gives the StatefulSet's pods their stable names.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cerberus-collector
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: collector}
+  ports:
+    - {name: status, port: 8080, targetPort: status}

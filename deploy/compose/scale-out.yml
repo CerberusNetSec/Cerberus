@@ -1,0 +1,134 @@
+# Scale-out on one host: HAProxy in front of several collectors, a Kafka-compatible
+# bus (Redpanda), one processor (detection, alerts, the dashboard), PostgreSQL and
+# ClickHouse. A template for spreading the same services over several hosts.
+#
+#   python deploy/make-secrets.py --storage
+#   docker compose -f deploy/compose/scale-out.yml up -d --build --scale collector=3
+#
+# Dashboard: http://localhost:8080 (password: deploy/secrets/storage_password.txt).
+# Syslog: TCP 514 into HAProxy, which spreads connections over the collectors and
+# tells them each device's real address with a PROXY protocol v2 header. For TLS,
+# terminate it at HAProxy (see haproxy.cfg). UDP is not load-balanced here: send
+# TCP, or point UDP devices at collectors directly (Kubernetes does balance UDP;
+# see deploy/README.md).
+name: cerberus-scale
+
+x-cerberus: &cerberus
+  image: ${CERBERUS_IMAGE:-cerberus:latest}
+  restart: unless-stopped
+  read_only: true
+  secrets: [postgres_url, clickhouse_url]
+
+x-bus: &bus
+  CERBERUS_KAFKA_BOOTSTRAP: redpanda:9092
+  CERBERUS_POSTGRES_URL_FILE: /run/secrets/postgres_url
+  CERBERUS_CLICKHOUSE_URL_FILE: /run/secrets/clickhouse_url
+  CERBERUS_DEVICE_IDENTITY: ${CERBERUS_DEVICE_IDENTITY:-ip}
+  TZ: ${TZ:-UTC}
+
+services:
+  haproxy:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    depends_on: [collector]
+    ports:
+      - "514:514/tcp"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      ingest: {ipv4_address: 172.29.10.10}
+
+  collector:
+    <<: *cerberus
+    build: ../..
+    depends_on:
+      redpanda: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+    environment:
+      <<: *bus
+      CERBERUS_MODE: collector
+      CERBERUS_SYSLOG_UDP_PORT: "0"
+      CERBERUS_PROXY_PROTOCOL_FROM: 172.29.10.10  # only HAProxy may say who a device is
+    volumes: [spool:/data]  # events wait here while the bus is unreachable
+    networks: [ingest, backend]
+
+  processor:
+    <<: *cerberus
+    depends_on:
+      redpanda: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+    environment:
+      <<: *bus
+      CERBERUS_MODE: processor
+      CERBERUS_PASSWORD_FILE: /run/secrets/dashboard_password
+      CERBERUS_MAX_EVENTS: ${CERBERUS_MAX_EVENTS:-50000000}
+      CERBERUS_RETENTION_DAYS: ${CERBERUS_RETENTION_DAYS:-30}
+    secrets: [postgres_url, clickhouse_url, dashboard_password]
+    ports: ["8080:8080"]
+    tmpfs: ["/data:uid=10001,gid=10001"]
+    networks: [backend]
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    restart: unless-stopped
+    command: >-
+      redpanda start --mode dev-container --smp 1 --memory 1G
+      --kafka-addr internal://0.0.0.0:9092 --advertise-kafka-addr internal://redpanda:9092
+    volumes: [redpanda-data:/var/lib/redpanda/data]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      retries: 30
+    networks: [backend]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cerberus
+      POSTGRES_DB: cerberus
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "cerberus"]
+      interval: 5s
+      retries: 30
+    networks: [backend]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: cerberus
+      CLICKHOUSE_DB: cerberus
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/clickhouse_password
+    secrets: [clickhouse_password]
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    volumes: [clickhouse-data:/var/lib/clickhouse]
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user cerberus --password \"$$(cat /run/secrets/clickhouse_password)\" --query 'SELECT 1'"]
+      interval: 5s
+      retries: 30
+    networks: [backend]
+
+networks:
+  ingest:
+    ipam:
+      config: [{subnet: 172.29.10.0/24}]
+  backend:
+
+secrets:
+  dashboard_password: {file: ../secrets/storage_password.txt}
+  postgres_password: {file: ../secrets/storage_postgres_password.txt}
+  clickhouse_password: {file: ../secrets/storage_clickhouse_password.txt}
+  postgres_url: {file: ../secrets/storage_postgres_url.txt}
+  clickhouse_url: {file: ../secrets/storage_clickhouse_url.txt}
+
+volumes:
+  spool:
+  redpanda-data:
+  postgres-data:
+  clickhouse-data:

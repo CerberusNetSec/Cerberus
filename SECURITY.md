@@ -12,9 +12,17 @@ response time and no bounty.
 
 ## What to know before deploying
 
-- **Syslog is unauthenticated and unencrypted.** Anyone who can reach the
+- **Plain syslog is unauthenticated and unencrypted.** Anyone who can reach the
   syslog port can inject log lines, and so create alerts or new "devices".
-  Expose it only to your management network. There is no TLS listener.
+  Expose it only to your management network, or use syslog over TLS
+  (`CERBERUS_SYSLOG_TLS_PORT`), with `CERBERUS_SYSLOG_TLS_CLIENT_CA` to accept
+  only devices holding a certificate your CA issued.
+- **PROXY protocol** headers are trusted only from the addresses in
+  `CERBERUS_PROXY_PROTOCOL_FROM`; list only your load balancers, or any sender
+  could claim any device address.
+- **The message bus (scale-out)** carries every parsed event. Use
+  `CERBERUS_KAFKA_SECURITY=SSL`, restrict who can reach it, and note that SASL
+  authentication is not supported yet.
 - **The dashboard is plain HTTP.** Put it behind a TLS reverse proxy if it is
   reachable from anywhere you do not fully trust. It has one shared password
   and no user accounts.

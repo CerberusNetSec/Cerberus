@@ -1,0 +1,33 @@
+# The processor: reads events from the bus and does recording, detection,
+# alerting, notifications and the dashboard. One replica (detection is not yet
+# divided between several; see docs/CLUSTERING.md phase 4). Needs clustered
+# storage, which this layer includes.
+#
+#   kubectl -n cerberus create secret generic cerberus --from-literal=password='choose-one'
+#   kubectl -n cerberus create secret generic cerberus-storage \
+#     --from-literal=postgres-url=... --from-literal=clickhouse-url=...
+#   kubectl apply -k deploy/kubernetes/processor
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+resources:
+  - ../base
+components:
+  - ../components/clustered-storage
+configMapGenerator:
+  - name: cerberus
+    behavior: merge
+    literals:
+      - CERBERUS_MODE=processor
+      - CERBERUS_KAFKA_BOOTSTRAP=cerberus-kafka-bootstrap.kafka.svc:9092
+      - CERBERUS_SYSLOG_UDP_PORT=0
+      - CERBERUS_SYSLOG_TCP_PORT=0
+patches:
+  # Syslog goes to the collectors, not here.
+  - target: {kind: Service, name: cerberus-syslog}
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: cerberus-syslog

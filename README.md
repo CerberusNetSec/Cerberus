@@ -10,6 +10,18 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
 [HTTP API](docs/API.md) · [security](SECURITY.md) ·
 [contributing](CONTRIBUTING.md)
 
+## Screenshots
+
+Taken from a demo instance fed by `tools/simulate.py` and `tools/snmp_sim.py`;
+every address and hostname in them is simulated.
+
+| | |
+|---|---|
+| [![Dashboard](docs/screenshots/dashboard.png)](docs/screenshots/dashboard.png) **Dashboard**: message rate, hosts ranked by risk, alerts by attack stage | [![Alert guidance](docs/screenshots/alert-guidance.png)](docs/screenshots/alert-guidance.png) **Alert**: why it matters and what to do |
+| [![Risk ports](docs/screenshots/risk-ports.png)](docs/screenshots/risk-ports.png) **Risk ports**: traffic and findings on RDP, SMB, Telnet, FTP, HTTP and others | [![Topology](docs/screenshots/topology.png)](docs/screenshots/topology.png) **Topology**: the map built from SNMP, with alert counts per device |
+| [![Alerts](docs/screenshots/alerts.png)](docs/screenshots/alerts.png) **Alerts** | [![Events](docs/screenshots/events.png)](docs/screenshots/events.png) **Events** |
+| [![Devices](docs/screenshots/devices.png)](docs/screenshots/devices.png) **Devices** | [![Detection](docs/screenshots/detection.png)](docs/screenshots/detection.png) **Detection settings** |
+
 ## Quick start
 
 ```sh
@@ -42,6 +54,13 @@ to identify devices by the hostname in the syslog header. See the comments in
 `docker-compose.yml`.
 
 ## Pointing devices at it
+
+**On Docker Desktop for Windows, use TCP.** UDP syslog from other machines may
+never reach the container even with the port published and Windows Firewall
+open (seen with OPNsense: nothing arrived over UDP, TCP worked at once). If the
+dashboard's "Messages / second" stays at zero, switch the device's syslog
+transport to TCP on port 514 before looking anywhere else. On a Linux host UDP
+works as normal.
 
 | Device | Where | Notes |
 |---|---|---|

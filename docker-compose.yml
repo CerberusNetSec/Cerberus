@@ -5,7 +5,7 @@ services:
     container_name: cerberus
     restart: unless-stopped
     ports:
-      - "514:5514/udp"   # syslog from your devices
+      - "514:5514/udp"   # syslog from your devices (on Docker Desktop for Windows, send TCP: external UDP may not arrive)
       - "514:5514/tcp"
       - "8080:8080"      # dashboard
       # SNMP polling is outbound (to UDP 161 on your devices) and needs no port here.

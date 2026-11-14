@@ -28,7 +28,7 @@
 # at it) and redeploy. See deploy/README.md.
 
 x-cerberus: &cerberus
-  image: ${CERBERUS_IMAGE:-ghcr.io/wrcrooks/cerberus:0.2.0}
+  image: ${CERBERUS_IMAGE:-ghcr.io/wrcrooks/cerberus:0.3.0}
   read_only: true
   stop_grace_period: 30s
 

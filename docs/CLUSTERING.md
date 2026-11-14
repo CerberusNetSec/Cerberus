@@ -1,6 +1,6 @@
 # Scaling Cerberus to thousands of log sources
 
-Status: **stage 1 (federation) released in 0.2.0; stage 2 phase 1 (seams) done.**
+Status: **stage 1 (federation) released in 0.2.0; stage 2 phase 1 (seams) released in 0.3.0; phase 2 in progress.**
 
 ## Goal
 

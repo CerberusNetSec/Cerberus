@@ -78,12 +78,12 @@ jobs:
       - name: Kubernetes
         run: |
           for k in standalone site central; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
-          # Each layer with the clustered-storage component.
+          # Each layer with the clustered-storage component, through a throwaway overlay.
           for k in standalone site central; do
-            mkdir -p /tmp/k/$k
-            printf 'resources: [%s]\ncomponents: [%s]\n' "$PWD/deploy/kubernetes/$k" \
-              "$PWD/deploy/kubernetes/components/clustered-storage" > /tmp/k/$k/kustomization.yaml
-            kubectl kustomize --load-restrictor LoadRestrictionsNone /tmp/k/$k | grep -q CERBERUS_CLICKHOUSE_URL_FILE
+            mkdir -p deploy/kubernetes/ci-$k
+            echo "resources: [../$k]" > deploy/kubernetes/ci-$k/kustomization.yaml
+            echo "components: [../components/clustered-storage]" >> deploy/kubernetes/ci-$k/kustomization.yaml
+            kubectl kustomize deploy/kubernetes/ci-$k | grep -q CERBERUS_CLICKHOUSE_URL_FILE
           done
       - name: Compose with clustered storage
         run: |

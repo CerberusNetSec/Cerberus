@@ -26,6 +26,10 @@ every address and hostname in them is simulated.
 
 ## Quick start
 
+This is the standalone deployment: one instance on one Docker host. For Docker
+Swarm, Kubernetes, or several sites reporting to a central console, see
+[deploy/README.md](deploy/README.md).
+
 ```sh
 # optional: choose the dashboard password and the URL used in notification links
 cp .env.example .env        # then edit it
@@ -231,8 +235,10 @@ For more devices than one instance handles, run one Cerberus per site and
 connect them to a central console (`CERBERUS_CENTRAL=on`). Each site keeps
 collecting and analysing on its own; the console shows every site's alerts,
 sends the notifications, hands acknowledgements back to the sites, and alerts
-when a site stops reporting. Reference deployments for Docker Compose, Docker
-Swarm and Kubernetes, and the settings, are in [deploy/README.md](deploy/README.md).
+when a site stops reporting. The four reference deployments (standalone,
+Compose, Swarm and Kubernetes) and the settings are in
+[deploy/README.md](deploy/README.md). A published image is at
+`ghcr.io/wrcrooks/cerberus`.
 The plan for clustering beyond that is in [docs/CLUSTERING.md](docs/CLUSTERING.md).
 
 ## Running at scale

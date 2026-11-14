@@ -24,6 +24,12 @@ python tools/simulate.py --port 5514                   # sample attacks and ordi
 | `python tools/loadtest.py [--devices N --messages N]` | In-process throughput, storage and query timings |
 | `python deploy/make-secrets.py <site> ...` and `docker compose -f deploy/compose/demo.yml up -d --build` | A central console and two sites on one machine |
 
+CI (`.github/workflows/ci.yml`) runs the tests and validates all four
+deployments on every push and pull request, builds the image for amd64 and
+arm64, and publishes it to `ghcr.io/wrcrooks/cerberus` when a `v*` tag is
+pushed. A change to a deployment should keep `docker compose config`,
+`docker stack config` and `kubectl kustomize` passing for it.
+
 ## Expectations for a change
 
 - **Tests go through the real engine.** Feed log lines in (see the `Harness`

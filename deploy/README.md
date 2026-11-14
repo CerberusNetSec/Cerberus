@@ -1,28 +1,47 @@
-# Deploying Cerberus across many sites
+# Deploying Cerberus
 
-Large networks run **one Cerberus per site** and connect them to a **central
-console**. Each site collects and analyses its own devices' syslog, keeps its
-own events, devices and topology, and works on its own if the console is
-unreachable. The console shows every site's alerts in one list, sends the
-notifications, and tells you when a site goes quiet.
+Four reference deployments, all built from the same image
+(`ghcr.io/wrcrooks/cerberus`):
+
+| Deployment | Files | Use it for |
+|---|---|---|
+| **Standalone** | [`docker-compose.yml`](../docker-compose.yml) at the repo root | One network, one host. Start here |
+| **Compose** | [`compose/`](compose/) | A central console and several sites, one Docker host each |
+| **Swarm** | [`swarm/`](swarm/) | A console and its sites as one stack across Swarm nodes |
+| **Kubernetes** | [`kubernetes/`](kubernetes/) | Standalone, site and console layers for clusters |
+
+One instance handles a few hundred devices (see "Running at scale" in the main
+README). Beyond that, run **one Cerberus per site** and connect the sites to a
+**central console**:
 
 ```
   site "north"                 site "south"                 ...
   devices ─syslog─▶ Cerberus   devices ─syslog─▶ Cerberus
-                       │ HTTPS: alerts + health    │
+                       │ alerts + health           │
                        └──────────────┬────────────┘
                                       ▼
-                         central console (Cerberus, CERBERUS_CENTRAL=on)
+                         central console (CERBERUS_CENTRAL=on)
                          one alert list · notifications · site health
 ```
 
-Sizing a site is covered in the main README under "Running at scale": one
-site handles a few hundred devices; on a desktop PC it took 6,000 messages a
-second through the whole application without loss, and about 10,000 a second
-in the in-process load test. Split a larger location into several sites (by
-building, zone or firewall cluster).
+On a desktop PC one instance took 6,000 messages a second through the whole
+application without loss, and about 10,000 a second in the in-process load
+test. Split a larger location into several sites (by building, zone or
+firewall cluster).
 
-## What travels between a site and the console
+## The image
+
+Version tags are published by CI for `linux/amd64` and `linux/arm64`:
+
+```sh
+docker pull ghcr.io/wrcrooks/cerberus:0.2.0
+```
+
+To build your own, `docker build -t registry.example.com/cerberus:0.2.0 .`,
+push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
+`kubernetes/base/kustomization.yaml`.
+
+## How sites and the console work together
 
 - **Up**, every 15 seconds: alerts that are new or changed since the last
   report (with their guidance details), and a health summary (message rate,
@@ -36,11 +55,10 @@ building, zone or firewall cluster).
   nothing is lost or doubled.
 - The console raises a **"Site stopped reporting"** alert when a site has been
   silent for 5 minutes (`CERBERUS_SITE_SILENT_MINUTES`).
-
-Investigating an alert (its events, the device, the map) happens on that
-site's own dashboard.
-
-## Settings
+- Investigating an alert (its events, the device, the map) happens on that
+  site's own dashboard.
+- Configure notification channels on the console. A site with its own
+  channels sends its alerts too, so they would arrive twice.
 
 | Variable | Where | |
 |---|---|---|
@@ -48,15 +66,12 @@ site's own dashboard.
 | `CERBERUS_SITE_TOKENS_FILE` | console | File of `site-name token` lines: the sites allowed to report. Sites can also be added in the UI, which shows a new token once |
 | `CERBERUS_SITE_SILENT_MINUTES` | console | Minutes without a report before alerting (default 5) |
 | `CERBERUS_SITE_NAME` | site | Name shown at the console (default: the container's hostname) |
-| `CERBERUS_CENTRAL_URL` | site | The console's base URL, e.g. `https://cerberus.example.com` |
+| `CERBERUS_CENTRAL_URL` | site | The console's base URL |
 | `CERBERUS_CENTRAL_TOKEN` or `_TOKEN_FILE` | site | This site's token |
 | `CERBERUS_CENTRAL_CA` | site | CA bundle to trust for the console's certificate, when it is not publicly trusted |
-| `CERBERUS_PASSWORD_FILE` | both | Read the dashboard password from a file (Docker and Kubernetes secrets) |
+| `CERBERUS_PASSWORD_FILE` | all | Read the dashboard password from a file (Docker and Kubernetes secrets) |
 
-Notifications: configure channels on the console. If a site also has
-channels, its alerts are sent twice (once by the site, once by the console).
-
-## Secrets
+### Secrets
 
 ```sh
 python deploy/make-secrets.py north south     # writes deploy/secrets/ (git-ignored)
@@ -67,23 +82,22 @@ This creates the console's password and `site_tokens.txt`, and for each site a
 site; existing tokens are kept. Give each site only its own two files.
 
 Tokens are bearer credentials: anyone holding a site's token can post alerts
-as that site. Serve the console over HTTPS, keep the token files out of
-version control, and rotate a token (Sites page → New token, or a new
-`make-secrets.py` file and restart) if one leaks.
+as that site. Keep the token files out of version control, send site reports
+over HTTPS or an encrypted network, and rotate a token (Sites page → New
+token, or a new `make-secrets.py` file and a restart) if one leaks.
 
-## The image
-
-All three deployments use the same image. Build it and push it somewhere every
-host or cluster can pull from:
+## Standalone
 
 ```sh
-docker build -t registry.example.com/cerberus:0.2.0 .
-docker push registry.example.com/cerberus:0.2.0
+cp .env.example .env          # optional: password, public URL, device identity
+docker compose up -d --build
 ```
 
-## Docker Compose
+The main README covers this in full. The same instance can later become a
+site by adding `CERBERUS_CENTRAL_URL` and a token; its data is kept. On
+Kubernetes, use [`kubernetes/standalone`](kubernetes/standalone).
 
-Files in [`compose/`](compose/).
+## Compose
 
 **Try it on one machine** (console and two sites, plain HTTP):
 
@@ -113,23 +127,34 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE` to use a pushed image instead of building locally.
-Compose (without Swarm) bind-mounts secret files, so they must be readable by
-the container's user (uid 10001); `make-secrets.py` writes them mode 0644.
+Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.2.0` to use the published image
+instead of building locally. Compose (without Swarm) bind-mounts secret files,
+so they must be readable by the container's user (uid 10001); `make-secrets.py`
+writes them mode 0644.
 
-## Docker Swarm
+## Swarm
 
-[`swarm/stack.yml`](swarm/stack.yml) deploys the console, its HTTPS proxy and
-two example sites as one stack. Each Cerberus is one replica pinned by a node
-label, because its database is on that node's local volume; updates stop the
-old task before starting the new one. Site ports are published in `host` mode
-so devices keep their real source addresses (the routing mesh would replace
-them). The header of the file lists the commands: label the nodes, create the
-secrets, then
+[`swarm/stack.yml`](swarm/stack.yml) deploys the console, an HTTPS proxy for
+its dashboard, and two example sites as one stack:
+
+- **Pinned instances.** Each Cerberus is one replica pinned by a node label,
+  because its database is on that node's local volume. Updates stop the old
+  task before starting the new one.
+- **Encrypted reporting.** Sites report to the console over an encrypted
+  overlay network (IPsec), so no certificates need handing out. Allow IP
+  protocol 50 between nodes; encrypted overlays do not work on Windows nodes.
+- **Real source addresses.** Site ports are published in `host` mode so
+  devices keep their real source addresses; the routing mesh would replace
+  them.
+- **Certificates.** `Caddyfile` gets a public certificate. For a name that only
+  resolves internally, deploy with `CADDYFILE=Caddyfile.internal`, which
+  issues Caddy's own.
+
+The header of the file lists the commands: label the nodes, create the secrets,
+then
 
 ```sh
-CERBERUS_IMAGE=registry.example.com/cerberus:0.2.0 CENTRAL_DOMAIN=cerberus.example.com \
-  docker stack deploy -c deploy/swarm/stack.yml cerberus
+CENTRAL_DOMAIN=cerberus.example.com docker stack deploy -c deploy/swarm/stack.yml cerberus
 ```
 
 Swarm suits sites that are all reachable from one manager. For sites run by
@@ -138,27 +163,39 @@ site instead.
 
 ## Kubernetes
 
-Kustomize bases in [`kubernetes/central`](kubernetes/central) and
-[`kubernetes/site`](kubernetes/site).
+Kustomize, in layers over one [`base`](kubernetes/base):
+
+| Layer | Namespace | What it adds |
+|---|---|---|
+| [`standalone`](kubernetes/standalone) | `cerberus` | Nothing: one instance on its own |
+| [`site`](kubernetes/site) | `cerberus` | Site name, console URL, token |
+| [`central`](kubernetes/central) | `cerberus-central` | Console mode, site tokens, an Ingress; no syslog service |
 
 ```sh
-# console
+# standalone
 kubectl create namespace cerberus
-kubectl -n cerberus create secret generic cerberus-central \
+kubectl -n cerberus create secret generic cerberus --from-literal=password='choose-one'
+kubectl apply -k deploy/kubernetes/standalone
+
+# console
+kubectl create namespace cerberus-central
+kubectl -n cerberus-central create secret generic cerberus \
   --from-file=password=deploy/secrets/central_password.txt \
   --from-file=site-tokens=deploy/secrets/site_tokens.txt
 kubectl apply -k deploy/kubernetes/central
 
 # each site, in that site's cluster (or its own namespace)
-kubectl -n cerberus create secret generic cerberus-site \
+kubectl create namespace cerberus
+kubectl -n cerberus create secret generic cerberus \
   --from-file=password=deploy/secrets/north_password.txt \
   --from-file=central-token=deploy/secrets/north.token
 kubectl apply -k deploy/kubernetes/site
 ```
 
-Before applying, edit the `kustomization.yaml` files: the image, the console's
-host name (also in `central/ingress.yaml`), and the site's name and console
-URL. Notes:
+Edit the `kustomization.yaml` files first: the console's host name (also in
+`central/ingress.yaml`), and the site's name and console URL. A site in the
+same cluster as the console can use
+`http://cerberus.cerberus-central.svc:8080` instead of the public URL.
 
 - **One replica, `Recreate` strategy.** Each instance is a single SQLite
   writer on a `ReadWriteOnce` volume. Use block or local storage, not NFS.
@@ -171,14 +208,16 @@ URL. Notes:
 - **Hardening.** Non-root (uid 10001), read-only root filesystem, no
   capabilities, no service-account token.
 
-## What is verified
+## What has been tested
 
-- The federation protocol has end-to-end tests (`tests/test_federation.py`):
-  reporting, catch-up in batches, idempotency, status hand-back, token
-  rotation, rebuilt sites, configured sites, silence alerts, console outages.
-- `compose/demo.yml` was run on Docker Desktop: both sites reported, an
-  acknowledgement at the console reached the site, and a site caught up fully
-  after the console was stopped and restarted, all with read-only containers.
-- The Swarm stack and the Kubernetes bases are validated by rendering
-  (`docker stack config`, `kubectl kustomize`) but have not been deployed to a
-  real Swarm or cluster yet.
+| Deployment | How |
+|---|---|
+| Standalone | Root `docker-compose.yml` on Docker Desktop with the 0.2.0 image: alerts raised, console endpoints absent, federation off |
+| Compose | `compose/demo.yml` on Docker Desktop: both sites reported; an acknowledgement at the console reached the site; a site caught up fully after the console was stopped and restarted |
+| Swarm | `swarm/stack.yml` on a three-node swarm (Docker-in-Docker): services placed by label, both sites reported over the overlay, traffic between nodes confirmed ESP-encrypted, console reached through Caddy's HTTPS, site saw devices' real source addresses |
+| Kubernetes | `standalone`, `site` and `central` on k3s 1.31: all rolled out as non-root with read-only filesystems; the site reported to the console; syslog through the LoadBalancer kept the sender's real address |
+
+Not yet tested: Swarm across real hosts on separate networks, Kubernetes on a
+managed cloud load balancer, and the console's Ingress with an ingress
+controller (k3s ran without one). CI checks on every push that all four
+deployments' files are valid.

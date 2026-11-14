@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, cluster]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+
+  deployments:
+    name: validate deployments
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secrets for the Compose files to refer to
+        run: python deploy/make-secrets.py north south
+      - name: Standalone (docker-compose.yml)
+        run: docker compose -f docker-compose.yml config -q
+      - name: Compose (console, site, demo)
+        env:
+          CENTRAL_DOMAIN: cerberus.example.com
+          CERBERUS_SITE_NAME: north
+          CERBERUS_CENTRAL_URL: https://cerberus.example.com
+        run: |
+          for f in central site demo; do docker compose -f deploy/compose/$f.yml config -q; done
+      - name: Swarm
+        env:
+          CENTRAL_DOMAIN: cerberus.example.com
+        run: |
+          docker stack config -c deploy/swarm/stack.yml > /dev/null
+          CADDYFILE=Caddyfile.internal docker stack config -c deploy/swarm/stack.yml > /dev/null
+      - name: Kubernetes
+        run: |
+          for k in standalone site central; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
+
+  image:
+    needs: [test, deployments]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cerberus
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Every push builds the image; only version tags publish it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

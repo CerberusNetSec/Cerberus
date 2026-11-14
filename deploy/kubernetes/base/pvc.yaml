@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: cerberus-central-data
+  name: cerberus-data
 spec:
   accessModes: [ReadWriteOnce]
   # storageClassName: fast-ssd   # SQLite wants local or block storage, not NFS
   resources:
     requests:
-      storage: 10Gi
+      storage: 50Gi  # about 850 bytes per stored event; size to CERBERUS_MAX_EVENTS

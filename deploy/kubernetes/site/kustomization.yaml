@@ -1,36 +1,33 @@
-# One site. Apply once per site, in that site's cluster, with its own name.
+# A site: collects syslog and reports to a central console.
+# Apply once per site, in that site's cluster or its own namespace.
 #
+#   python deploy/make-secrets.py north
 #   kubectl create namespace cerberus
-#   kubectl -n cerberus create secret generic cerberus-site \
+#   kubectl -n cerberus create secret generic cerberus \
 #     --from-file=password=deploy/secrets/north_password.txt \
 #     --from-file=central-token=deploy/secrets/north.token
 #   kubectl apply -k deploy/kubernetes/site
 #
-# Set the site name and console URL below (they must match make-secrets.py and
-# the console's address). For several sites in one cluster, copy this folder
-# per site and give each its own namespace.
+# Set the site name (as given to make-secrets.py) and the console's URL below.
+# For several sites in one cluster, copy this folder per site and change the
+# namespace.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: cerberus
-labels:
-  - pairs: {app.kubernetes.io/part-of: cerberus}
-    includeSelectors: false
 resources:
-  - pvc.yaml
-  - deployment.yaml
-  - service.yaml
-images:
-  - name: cerberus
-    newName: registry.example.com/cerberus
-    newTag: "0.2.0"
+  - ../base
 configMapGenerator:
-  - name: cerberus-site
+  - name: cerberus
+    behavior: merge
     literals:
       - CERBERUS_SITE_NAME=north
       - CERBERUS_CENTRAL_URL=https://cerberus.example.com
-      # Source addresses survive because the syslog Service uses
-      # externalTrafficPolicy: Local. If your load balancer still rewrites them,
-      # switch to hostname.
-      - CERBERUS_DEVICE_IDENTITY=ip
-      # - CERBERUS_MAX_EVENTS=20000000
-      # - CERBERUS_TRAFFIC_SAMPLE=20
+      # Only for a console behind a private CA: add a ca.crt key to the
+      # secret and uncomment.
+      # - CERBERUS_CENTRAL_CA=/run/secrets/cerberus/ca.crt
+patches:
+  - target: {kind: Deployment, name: cerberus}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: CERBERUS_CENTRAL_TOKEN_FILE, value: /run/secrets/cerberus/central-token}

@@ -1,0 +1,9 @@
+# HTTPS with a certificate Caddy issues itself, for a console name that only
+# resolves inside your network. Browsers warn until they trust Caddy's root
+# (in the caddy-data volume at /data/caddy/pki/authorities/local/root.crt).
+# Select with CADDYFILE=Caddyfile.internal when deploying the stack.
+{$CENTRAL_DOMAIN} {
+	tls internal
+	reverse_proxy console:8080
+	header Strict-Transport-Security "max-age=31536000"
+}

@@ -1,0 +1,17 @@
+# One Cerberus on its own: collects syslog, no central console.
+#
+#   kubectl create namespace cerberus
+#   kubectl -n cerberus create secret generic cerberus --from-literal=password='choose-one'
+#   kubectl apply -k deploy/kubernetes/standalone
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+resources:
+  - ../base
+# Settings: add literals here (see the README's configuration table), e.g.
+# configMapGenerator:
+#   - name: cerberus
+#     behavior: merge
+#     literals:
+#       - CERBERUS_MAX_EVENTS=20000000
+#       - CERBERUS_TRAFFIC_SAMPLE=20

@@ -1,0 +1,23 @@
+# One Cerberus instance. Not applied directly: use standalone/, site/ or central/,
+# which set the namespace and add what each role needs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs: {app.kubernetes.io/part-of: cerberus}
+    includeSelectors: false
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+images:
+  - name: cerberus
+    newName: ghcr.io/wrcrooks/cerberus
+    newTag: "0.2.0"
+configMapGenerator:
+  - name: cerberus
+    literals:
+      # Source addresses survive because the syslog Service uses
+      # externalTrafficPolicy: Local. If your load balancer still rewrites
+      # them, switch to hostname.
+      - CERBERUS_DEVICE_IDENTITY=ip
+      - CERBERUS_RETENTION_DAYS=7

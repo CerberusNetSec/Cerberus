@@ -22,7 +22,7 @@ README).
 | First step | Federation: one Cerberus per site, reporting alerts to a central console |
 | Message bus (clustering) | Kafka-compatible (Apache Kafka or Redpanda): key-partitioned consumer groups are what sharded detection needs |
 | Event store (clustering) | ClickHouse: columnar compression well below today's ~850 bytes per event, and these ingest rates |
-| Reference deployments | Docker Compose, Docker Swarm and Kubernetes (Kustomize) |
+| Reference deployments | Standalone, Docker Compose, Docker Swarm and Kubernetes (Kustomize layers), one image published to GHCR |
 | Licence | Apache 2.0 |
 
 ## Stage 1: federation (done on this branch)

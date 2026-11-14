@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.title="Cerberus" \
+      org.opencontainers.image.description="Syslog anomaly and security watchdog for firewalls and switches" \
+      org.opencontainers.image.source="https://github.com/wrcrooks/Cerberus" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     CERBERUS_DATA_DIR=/data

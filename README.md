@@ -180,6 +180,28 @@ shutdown, so a restart does not start them from scratch. A new installation
 needs about 30 minutes of traffic before the rate and silence detectors judge
 anything.
 
+### False positives
+
+When an alert is expected behaviour (a vulnerability scanner, a backup job, a
+monitoring system), open it on the **Alerts** page and choose **Mark as false
+positive**. You give your name and a justification (at least 10 characters).
+
+- **The same finding never alerts again:** the same detector on the same
+  entity (the address, address pair or account in the alert) raises no alert
+  and sends no notification, and no longer counts towards correlated
+  "likely compromised host" alerts. Other detectors still alert on it, and the
+  same detector still alerts on anything else.
+- **Nothing is silently hidden:** the **False positives** page lists every
+  suppression with how many findings it has held back and when it last did,
+  and a suppression can be removed (again with a name and a justification).
+- **Audited:** each marking and removal is recorded with the time, the name
+  given, the address it came from and the justification, in an audit log that
+  cannot be edited or deleted. There are no individual accounts yet, so the
+  name is what the analyst types.
+
+To silence everything from an address instead, use **Stop alerting on ... as
+a source** (Detection → General).
+
 ## Topology (SNMP)
 
 Switch it on under **Topology → SNMP polling** and enter a read-only community
@@ -546,9 +568,10 @@ If a device's logs are attributed to the wrong connector, pin one on the
 
 ## Security notes
 
-- Syslog is unauthenticated and unencrypted. Keep port 514 reachable only from
-  your management network; anyone who can reach it can inject log lines (and so
-  alerts). There is no TLS syslog listener.
+- Plain syslog is unauthenticated and unencrypted. Keep port 514 reachable only
+  from your management network; anyone who can reach it can inject log lines
+  (and so alerts). Syslog over TLS (`CERBERUS_SYSLOG_TLS_PORT`) encrypts it, and
+  with `CERBERUS_SYSLOG_TLS_CLIENT_CA` only devices with a certificate are heard.
 - The dashboard speaks plain HTTP. Put it behind a TLS reverse proxy if it is
   reachable from anywhere you do not trust.
 - The container runs as an unprivileged user.

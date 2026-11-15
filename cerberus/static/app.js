@@ -102,6 +102,52 @@ async function api(path, method = 'GET', body) {
   return data;
 }
 /* Run an action from a click handler, reporting failure to the user. */
+/* Ask for a name and a justification for an audited change. send({analyst, justification})
+   does the change; its error is shown in the dialog, which stays open. Resolves true once
+   sent, false if cancelled. */
+function justify({ title, intro, confirm, send }) {
+  const dlg = $('#justify'), form = $('#justify-form'), err = $('#justify-error');
+  $('#justify-title').textContent = title;
+  $('#justify-intro').textContent = intro;
+  $('#justify-ok').textContent = confirm;
+  err.textContent = '';
+  let saved = '';
+  try { saved = localStorage.getItem('cerberus.analyst') || ''; } catch { /* no storage: ask each time */ }
+  $('#justify-analyst').value = saved;
+  $('#justify-text').value = '';
+  dlg.showModal();
+  (saved ? $('#justify-text') : $('#justify-analyst')).focus();
+  return new Promise((resolve) => {
+    const finish = (sent) => {
+      form.removeEventListener('submit', submit);
+      $('#justify-cancel').removeEventListener('click', cancel);
+      dlg.removeEventListener('cancel', cancel);
+      if (dlg.open) dlg.close();
+      resolve(sent);
+    };
+    const cancel = (e) => { e.preventDefault(); finish(false); };
+    const submit = async (e) => {
+      e.preventDefault();
+      const analyst = $('#justify-analyst').value.trim(), justification = $('#justify-text').value.trim();
+      if (!analyst) { err.textContent = 'Enter your name.'; return; }
+      if (justification.length < 10) { err.textContent = 'Write a justification of at least 10 characters.'; return; }
+      $('#justify-ok').disabled = true;
+      try {
+        await send({ analyst, justification });
+        try { localStorage.setItem('cerberus.analyst', analyst); } catch { /* not kept */ }
+        finish(true);
+      } catch (e2) {
+        err.textContent = e2.message;
+      } finally {
+        $('#justify-ok').disabled = false;
+      }
+    };
+    form.addEventListener('submit', submit);
+    $('#justify-cancel').addEventListener('click', cancel);
+    dlg.addEventListener('cancel', cancel);
+  });
+}
+
 async function act(fn, okMessage) {
   try {
     await fn();
@@ -299,7 +345,8 @@ pages.alerts = {
         <button type="button" data-act="ack-all">Acknowledge all open</button></div>
       <div class="filters">
         <select id="f-status" aria-label="Status">
-          ${[['open', 'Open'], ['ack', 'Acknowledged'], ['active', 'Open + acknowledged'], ['resolved', 'Resolved'], ['all', 'All']]
+          ${[['open', 'Open'], ['ack', 'Acknowledged'], ['active', 'Open + acknowledged'], ['resolved', 'Resolved'],
+             ['false_positive', 'False positives'], ['all', 'All']]
             .map(([v, l]) => `<option value="${v}" ${v === s.status ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
         <select id="f-sev" aria-label="Minimum severity">
@@ -326,10 +373,18 @@ pages.alerts = {
     const { alerts } = await api('/alerts?' + q);
     const body = $('#rows');
     if (!body) return;
+    s.byId = new Map(alerts.map((a) => [a.id, a]));
     body.innerHTML = alerts.length ? alerts.map((a) => {
       const btn = (status, label) => `<button type="button" class="small" data-act="status" data-id="${a.id}" data-status="${status}">${label}</button>`;
-      const buttons = (a.status === 'open' ? btn('ack', 'Acknowledge') : '') +
+      const fp = a.status === 'false_positive', fpInfo = a.false_positive;
+      const buttons = fp ? '' : (a.status === 'open' ? btn('ack', 'Acknowledge') : '') +
         (a.status !== 'resolved' ? btn('resolved', 'Resolve') : btn('open', 'Reopen'));
+      const fpLines = fp ? (fpInfo ? `<dt>False positive</dt><dd>Marked by <b>${esc(fpInfo.analyst)}</b> ${ago(fpInfo.created)}:
+            <div class="quote">${esc(fpInfo.justification)}</div>
+            ${fpInfo.active ? `Held back since: ${num(fpInfo.hits)} time(s)${fpInfo.last_hit ? `, last ${ago(fpInfo.last_hit)}` : ''}.
+              <a href="#/suppressions">Manage</a>` : 'The suppression has since been removed.'}</dd>` : '<dt>False positive</dt><dd>Yes</dd>')
+        : `<dt>False positive?</dt><dd><button type="button" class="small" data-act="fp" data-id="${a.id}">Mark as false positive</button>
+            <span class="muted">${esc(a.detector.replace(/_/g, ' '))} will not alert on <span class="mono">${esc(a.entity)}</span> again</span></dd>`;
       const g = a.advice || { actions: [] };
       const detail = s.open.has(a.id) ? `<tr class="detail"><td></td><td colspan="7">
           ${guidance(g)}
@@ -341,11 +396,12 @@ pages.alerts = {
           ${a.src_ip ? `<dt>Events</dt><dd><a href="#/events" data-act="see-events" data-ip="${esc(a.src_ip)}">Show events for ${esc(a.src_ip)}</a></dd>` : ''}
           ${Number.isInteger((a.details || {}).port) ? `<dt>Risk ports</dt><dd><a href="#/riskports?port=${a.details.port}">Show all traffic on port ${a.details.port}</a></dd>` : ''}
           ${a.device ? `<dt>Topology</dt><dd><a href="#/topology?select=${encodeURIComponent(a.device)}">Show ${esc(a.device)} on the map</a></dd>` : ''}
-          ${a.src_ip ? `<dt>False alarm?</dt><dd><button type="button" class="small" data-act="ignore" data-ip="${esc(a.src_ip)}">Stop alerting on ${esc(a.src_ip)} as a source</button></dd>` : ''}
+          ${fpLines}
+          ${a.src_ip && !fp ? `<dt>Expected source?</dt><dd><button type="button" class="small" data-act="ignore" data-ip="${esc(a.src_ip)}">Stop alerting on ${esc(a.src_ip)} as a source</button></dd>` : ''}
         </dl></td></tr>` : '';
-      return `<tr class="click ${a.status === 'resolved' ? 'resolved' : ''}" data-act="toggle" data-id="${a.id}">
+      return `<tr class="click ${a.status === 'resolved' || fp ? 'resolved' : ''}" data-act="toggle" data-id="${a.id}">
         <td>${sevBadge(a.severity)}</td>
-        <td><div><b>${esc(a.title)}</b>${g.stage && g.stage !== 'Network health' ? ` <span class="tag">${esc(g.stage)}</span>` : ''}</div><div class="muted">${esc(a.description)}</div></td>
+        <td><div><b>${esc(a.title)}</b>${fp ? ' <span class="tag">False positive</span>' : ''}${g.stage && g.stage !== 'Network health' ? ` <span class="tag">${esc(g.stage)}</span>` : ''}</div><div class="muted">${esc(a.description)}</div></td>
         <td class="mono nowrap">${esc(a.src_ip || '—')}</td><td class="mono nowrap">${esc(a.device || '—')}</td>
         <td class="num">${num(a.count)}</td>
         <td class="nowrap" title="${clock(a.created, true)}">${ago(a.created)}</td>
@@ -369,11 +425,91 @@ pages.alerts = {
       await pages.alerts.refresh();
     },
     'see-events'(el) { seeEvents(el); },
+    async fp(el) {
+      const a = state.alerts.byId.get(Number(el.dataset.id));
+      if (!a) return;
+      const sent = await justify({
+        title: 'Mark as false positive',
+        intro: `"${a.title}". The ${a.detector.replace(/_/g, ' ')} detector will not raise an alert for ${a.entity} again, ` +
+          'and nothing it finds there is notified. Other detectors still alert on it. You can undo this under False positives.',
+        confirm: 'Mark as false positive',
+        send: (who) => api('/alerts/false-positive', 'POST', { id: a.id, ...who }),
+      });
+      if (sent) { toast('Marked as a false positive'); await pages.alerts.refresh(); }
+    },
     async ignore(el) {
       const ip = el.dataset.ip;
       if (!confirm(`Stop the source-based detectors alerting on ${ip}?\n\nUse this for scanners, management servers and other machines whose behaviour you have confirmed is expected. You can undo it under Detection → General.`)) return;
       await api('/ignore', 'POST', { ip, kind: 'source' });
       toast(`${ip} added to ignored sources`);
+    },
+  },
+};
+
+/* --- false positives: suppressions and the audit log --- */
+const AUDIT_ACTIONS = {
+  false_positive: 'Marked false positive',
+  false_positive_again: 'Marked false positive (already suppressed)',
+  suppression_removed: 'Suppression removed',
+};
+pages.suppressions = {
+  interval: 15000,
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>False positives</h1>
+        <p>Alerts marked as false positives, and what has been held back since. A suppression matches one detector
+          and one exact entity (an address, an address pair, an account); the same finding again raises no alert and
+          sends no notification. Every marking and removal is kept in the audit log below.</p></div></div>
+      <div class="card table-wrap"><h2>Active suppressions</h2><table>
+        <thead><tr><th>Detector</th><th>Matches</th><th>Marked</th><th>Justification</th><th class="num">Held back</th><th>Last held back</th><th></th></tr></thead>
+        <tbody id="sup-active"></tbody></table></div>
+      <div class="card table-wrap" style="margin-top:16px"><h2>Removed suppressions</h2><table>
+        <thead><tr><th>Detector</th><th>Matches</th><th>Marked</th><th>Removed</th><th>Reason for removal</th><th class="num">Held back</th></tr></thead>
+        <tbody id="sup-removed"></tbody></table></div>
+      <div class="card table-wrap" style="margin-top:16px"><h2>Audit log</h2><table>
+        <thead><tr><th>When</th><th>Action</th><th>Analyst</th><th>From</th><th>Alert</th><th>Detector and entity</th><th>Justification</th></tr></thead>
+        <tbody id="audit"></tbody></table></div>`;
+  },
+  async refresh() {
+    const [{ suppressions }, { audit }] = await Promise.all([api('/suppressions'), api('/audit?limit=500')]);
+    if (!$('#sup-active')) return;
+    const det = (d) => esc(d.replace(/_/g, ' '));
+    const when = (t) => `<span class="nowrap" title="${clock(t, true)}">${ago(t)}</span>`;
+    const active = suppressions.filter((s) => s.active), removed = suppressions.filter((s) => !s.active);
+    $('#sup-active').innerHTML = active.length ? active.map((s) => `<tr>
+        <td>${det(s.detector)}</td><td class="mono">${esc(s.entity)}<div class="muted">${esc(s.title || '')}</div></td>
+        <td>${esc(s.analyst)}<div class="muted">${when(s.created)}${s.alert_id ? ` · <a href="#/alerts?id=${s.alert_id}">alert</a>` : ''}</div></td>
+        <td><div class="quote">${esc(s.justification)}</div></td>
+        <td class="num">${num(s.hits)}</td><td>${s.last_hit ? when(s.last_hit) : '—'}</td>
+        <td><button type="button" class="small danger" data-act="remove" data-id="${s.id}">Remove</button></td></tr>`).join('')
+      : '<tr><td colspan="7" class="empty">No alerts are suppressed. Mark one from its details on the Alerts page.</td></tr>';
+    $('#sup-removed').innerHTML = removed.length ? removed.map((s) => `<tr>
+        <td>${det(s.detector)}</td><td class="mono">${esc(s.entity)}</td>
+        <td>${esc(s.analyst)}<div class="muted">${when(s.created)}</div></td>
+        <td>${esc(s.removed_by || '')}<div class="muted">${s.removed ? when(s.removed) : ''}</div></td>
+        <td><div class="quote">${esc(s.removed_justification || '')}</div></td><td class="num">${num(s.hits)}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="empty">None.</td></tr>';
+    $('#audit').innerHTML = audit.length ? audit.map((r) => {
+      const d = r.detail || {};
+      return `<tr><td>${when(r.ts)}</td><td>${esc(AUDIT_ACTIONS[r.action] || r.action)}</td><td>${esc(r.analyst || '')}</td>
+        <td class="mono">${esc(r.source || '')}</td>
+        <td>${r.alert_id ? `<a href="#/alerts?id=${r.alert_id}">#${r.alert_id}</a>` : '—'}</td>
+        <td>${d.detector ? `${det(d.detector)}<div class="mono muted">${esc(d.entity || '')}</div>` : ''}</td>
+        <td><div class="quote">${esc(d.justification || '')}</div></td></tr>`;
+    }).join('') : '<tr><td colspan="7" class="empty">Nothing yet.</td></tr>';
+    this.byId = new Map(suppressions.map((s) => [s.id, s]));
+  },
+  actions: {
+    async remove(el) {
+      const s = pages.suppressions.byId.get(Number(el.dataset.id));
+      if (!s) return;
+      const sent = await justify({
+        title: 'Remove suppression',
+        intro: `${s.detector.replace(/_/g, ' ')} will alert on ${s.entity} again from now on.`,
+        confirm: 'Remove suppression',
+        send: (who) => api('/suppressions/remove', 'POST', { id: s.id, ...who }),
+      });
+      if (sent) { toast('Suppression removed'); await pages.suppressions.refresh(); }
     },
   },
 };

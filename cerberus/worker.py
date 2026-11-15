@@ -91,7 +91,7 @@ class DetectionWorker:
 
         def emit_at(ts, replay):
             def emit(c):
-                if self.hostile is not None and self.hostile.enabled:
+                if self.hostile is not None and self.hostile.enabled and self.engine.is_suppressed(c) is None:
                     self.hostile.on_alert(c, ts)
                 if replay:
                     return  # raised before; the replay only rebuilds state
@@ -166,6 +166,7 @@ class DetectionWorker:
                 detectors = await asyncio.to_thread(self.store.get_setting, "detectors", {})
                 general = await asyncio.to_thread(self.store.get_setting, "general", {})
                 self.engine.apply_settings(detectors or {}, general or {})
+                self.engine.load_suppressions(await asyncio.to_thread(self.store.suppressions))
             except Exception as exc:
                 log.warning("could not reload settings: %s", exc)
 
@@ -208,6 +209,7 @@ class DetectionWorker:
     async def start(self) -> None:
         self.engine.apply_settings(self.store.get_setting("detectors", {}) or {},
                                    self.store.get_setting("general", {}) or {})
+        self.engine.load_suppressions()
         if self.family == "port":
             now = time.time()
             self.engine.risk_ports.restore_rows(self.store.port_minutes_since(int(now - 27 * 3600)), now)

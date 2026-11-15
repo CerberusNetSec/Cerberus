@@ -128,6 +128,20 @@ CREATE TABLE IF NOT EXISTS outbox (
     attempts INTEGER DEFAULT 0, next_try REAL NOT NULL, done INTEGER DEFAULT 0, error TEXT
 );
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(done, next_try);
+CREATE TABLE IF NOT EXISTS suppressions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created REAL NOT NULL, detector TEXT NOT NULL, entity TEXT NOT NULL, title TEXT, alert_id INTEGER,
+    justification TEXT NOT NULL, analyst TEXT NOT NULL, source TEXT,
+    active INTEGER NOT NULL DEFAULT 1, removed REAL, removed_by TEXT, removed_source TEXT, removed_justification TEXT,
+    hits INTEGER NOT NULL DEFAULT 0, last_hit REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS suppressions_active ON suppressions(detector, entity) WHERE active = 1;
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL, action TEXT NOT NULL, analyst TEXT, source TEXT,
+    alert_id INTEGER, suppression_id INTEGER, detail TEXT
+);
+CREATE INDEX IF NOT EXISTS audit_log_alert ON audit_log(alert_id);
 """
 
 # Columns added after the first release: (table, column, definition).
@@ -408,7 +422,59 @@ class Database(Store):
              batch.alert_updates),
             ("INSERT INTO outbox(created, channel_id, subject, body, next_try) VALUES(?,?,?,?,?)",
              [(*n, n[0]) for n in batch.notices]),
+            ("UPDATE suppressions SET hits = hits + ?, last_hit = ? WHERE id = ?", batch.suppression_hits),
         ])
+
+    # --- false positives ------------------------------------------------------
+    def false_positive(self, alert_id: int, when: float, justification: str, analyst: str, source: str) -> dict:
+        from .storage import NotFound
+        with self.transaction() as conn:
+            alert = conn.execute("SELECT detector, entity, title FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+            if alert is None:
+                raise NotFound(f"no alert {alert_id}")
+            detector, entity, title = alert
+            row = conn.execute("SELECT id FROM suppressions WHERE detector = ? AND entity = ? AND active = 1",
+                               (detector, entity)).fetchone()
+            if row:
+                suppression_id, action = row[0], "false_positive_again"
+            else:
+                suppression_id = conn.execute(
+                    "INSERT INTO suppressions(created, detector, entity, title, alert_id, justification, analyst, "
+                    "source) VALUES(?,?,?,?,?,?,?,?)",
+                    (when, detector, entity, title, alert_id, justification, analyst, source)).lastrowid
+                action = "false_positive"
+            conn.execute("UPDATE alerts SET status = 'false_positive', updated = ? WHERE id = ?", (when, alert_id))
+            conn.execute("INSERT INTO audit_log(ts, action, analyst, source, alert_id, suppression_id, detail) "
+                         "VALUES(?,?,?,?,?,?,?)",
+                         (when, action, analyst, source, alert_id, suppression_id,
+                          json.dumps({"justification": justification, "detector": detector, "entity": entity,
+                                      "title": title})))
+        return self.q("SELECT * FROM suppressions WHERE id = ?", (suppression_id,))[0]
+
+    def suppression_remove(self, suppression_id: int, when: float, justification: str, analyst: str,
+                           source: str) -> dict:
+        from .storage import NotFound
+        with self.transaction() as conn:
+            row = conn.execute("SELECT detector, entity FROM suppressions WHERE id = ? AND active = 1",
+                               (suppression_id,)).fetchone()
+            if row is None:
+                raise NotFound(f"no active suppression {suppression_id}")
+            conn.execute("UPDATE suppressions SET active = 0, removed = ?, removed_by = ?, removed_source = ?, "
+                         "removed_justification = ? WHERE id = ?",
+                         (when, analyst, source, justification, suppression_id))
+            conn.execute("INSERT INTO audit_log(ts, action, analyst, source, alert_id, suppression_id, detail) "
+                         "VALUES(?,?,?,?,?,?,?)",
+                         (when, "suppression_removed", analyst, source, None, suppression_id,
+                          json.dumps({"justification": justification, "detector": row[0], "entity": row[1]})))
+        return self.q("SELECT * FROM suppressions WHERE id = ?", (suppression_id,))[0]
+
+    def suppressions(self) -> list[dict]:
+        return self.q("SELECT * FROM suppressions ORDER BY id DESC")
+
+    def audit_log(self, limit: int, alert_id: int = 0) -> list[dict]:
+        if alert_id:
+            return self.q("SELECT * FROM audit_log WHERE alert_id = ? ORDER BY id DESC LIMIT ?", (alert_id, limit))
+        return self.q("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))
 
     # --- notification outbox --------------------------------------------------
     def outbox_due(self, now: float, limit: int) -> list[dict]:
@@ -479,16 +545,16 @@ class Database(Store):
         return (self.q("SELECT MAX(id) AS m FROM alerts")[0]["m"] or 0) + 1
 
     def alerts_active_since(self, last_seen: float) -> list[dict]:
-        return self.q("SELECT * FROM alerts WHERE status != 'resolved' AND last_seen > ?", (last_seen,))
+        return self.q("SELECT * FROM alerts WHERE status IN ('open', 'ack') AND last_seen > ?", (last_seen,))
 
     @staticmethod
     def _alert_filters(prefix: str, status: str, severity: str, text: str) -> tuple[list[str], list]:
         where, params = [], []
-        if status in ("open", "ack", "resolved"):
+        if status in ("open", "ack", "resolved", "false_positive"):
             where.append(f"{prefix}status = ?")
             params.append(status)
         elif status == "active":
-            where.append(f"{prefix}status != 'resolved'")
+            where.append(f"{prefix}status IN ('open', 'ack')")
         if severity in SEVERITIES:
             wanted = SEVERITIES[SEVERITIES.index(severity):]
             where.append(f"{prefix}severity IN ({','.join('?' * len(wanted))})")
@@ -516,7 +582,7 @@ class Database(Store):
 
     def alerts_unresolved_since(self, last_seen: float, limit: int) -> list[dict]:
         return self.q("SELECT id, detector, severity, title, last_seen, src_ip, device, details FROM alerts "
-                      "WHERE status != 'resolved' AND last_seen >= ? ORDER BY last_seen DESC, id DESC LIMIT ?",
+                      "WHERE status IN ('open', 'ack') AND last_seen >= ? ORDER BY last_seen DESC, id DESC LIMIT ?",
                       (last_seen, limit))
 
     def alert_counts_open(self) -> dict[str, int]:

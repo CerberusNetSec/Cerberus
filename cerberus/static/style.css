@@ -306,3 +306,11 @@ td .small + .small { margin-left: 4px; }
 .token-card { margin-bottom: 14px; border-left: 3px solid var(--accent); }
 .token-card pre { background: var(--surface-2); padding: 10px 12px; border-radius: 6px; overflow-x: auto; white-space: pre; }
 #site-rows a { text-decoration: none; color: inherit; margin-right: 6px; white-space: nowrap; }
+
+/* Justification dialog (false positives) */
+dialog.dialog { width: min(520px, calc(100vw - 32px)); color: var(--text); padding: 20px; }
+dialog.dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+dialog.dialog input { width: 100%; }
+dialog.dialog .note { font-size: 12.5px; margin: 8px 0 0; }
+.row.end { justify-content: flex-end; }
+.quote { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 46ch; }

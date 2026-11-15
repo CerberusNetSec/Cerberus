@@ -24,11 +24,17 @@ credentials, SNMP community strings) are never returned: they read back as
 | Method and path | Purpose |
 |---|---|
 | `GET /healthz` | Liveness check, no login needed |
+| `GET /readyz` | Ready for traffic (`503` on a standby processor), no login needed |
+| `GET /metrics` | Prometheus metrics; no login, or `Authorization: Bearer` with `CERBERUS_METRICS_TOKEN` |
 | `GET /api/me` | `{signed_in, auth, version}` |
 | `POST /api/login`, `POST /api/logout` | Session |
 | `GET /api/summary?range=1h\|6h\|24h\|7d` | Dashboard: message-rate series, open alerts by severity, hosts by risk, alerts by attack stage, top blocked sources and ports, collector health |
-| `GET /api/alerts?status=&severity=&q=&limit=&id=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `active` (not resolved) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions) |
+| `GET /api/alerts?status=&severity=&q=&limit=&id=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `false_positive`, `active` (open or acknowledged) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions); a false positive also carries `false_positive` (who, when, why, findings held back since) |
 | `POST /api/alerts/status` | `{"ids": [1,2], "status": "ack"}` or `{"all_open": true, "status": "ack"}` |
+| `POST /api/alerts/false-positive` | `{"id": 7, "analyst": "name", "justification": "at least 10 characters"}`: marks the alert a false positive and suppresses its detector and entity; audited. `400` without a name or justification, `404` for an unknown alert |
+| `GET /api/suppressions` | Every suppression, active and removed, with `hits` and `last_hit` |
+| `POST /api/suppressions/remove` | `{"id": 3, "analyst": "name", "justification": "..."}`: alerts resume; audited. `404` if not active |
+| `GET /api/audit?limit=&alert_id=` | The audit log, newest first: `action` (`false_positive`, `false_positive_again`, `suppression_removed`), `analyst`, `source` address, `alert_id`, `suppression_id`, `detail` (justification, detector, entity) |
 | `POST /api/ignore` | `{"ip": "10.0.0.5", "kind": "source"\|"destination"}` adds to an ignore list |
 | `GET /api/events?hours=&device=&type=&action=&ip=&port=&q=&before=&limit=` | Events, newest first. `ip` matches source or destination, `port` is the destination port, `q` is text in the message, `before` is an event id for paging. A search running over 10 seconds returns `504` |
 | `GET /api/riskports?range=` | High-risk ports: per port, totals by direction (`[allowed, blocked]`), series, findings, open alert count; plus summary figures and ports with no traffic |

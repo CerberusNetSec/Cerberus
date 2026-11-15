@@ -291,3 +291,10 @@ def test_sessions_survive_a_restart_and_logout_reaches_every_replica(tmp_path):
     third.cookies.set(web.COOKIE, token)
     assert third.get("/api/devices").status_code == 401  # logged out everywhere
     db.close()
+
+
+def test_a_false_positive_reported_by_a_site_stays_one_at_the_console():
+    from cerberus.federation import Central
+    row = Central._clean({"id": 7, "status": "false_positive", "severity": "high", "title": "t"})
+    assert row["status"] == "false_positive"
+    assert Central._clean({"id": 7, "status": "bogus"})["status"] == "open"

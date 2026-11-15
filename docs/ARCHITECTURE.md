@@ -222,6 +222,18 @@ two workers per family (routed by key, events and candidates as JSON) and
 requires the same alerts and identical storage; `tests/test_bus.py` does the
 same through a real broker.
 
+## False positives
+
+`Store.false_positive` marks an alert, creates (or reuses) the active
+suppression for its `(detector, entity)` and appends to `audit_log`, in one
+transaction; `suppression_remove` deactivates one, also audited. Nothing
+updates or deletes audit rows. `Engine.suppressed` maps `(detector, entity)`
+to the suppression; `raise_alert` checks it first, so a matching candidate
+creates no alert, no notification and feeds neither correlation nor
+hostile-address tracking, and is counted (`Batch.suppression_hits`). Detection
+workers reload suppressions with their settings, so source workers stop
+marking a suppressed finding's address as hostile.
+
 ## High availability
 
 Processors take a session advisory lock through `Store.leadership()`

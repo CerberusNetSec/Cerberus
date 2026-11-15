@@ -1,9 +1,17 @@
 # Scale-out on one host: HAProxy in front of several collectors, a Kafka-compatible
-# bus (Redpanda), one processor (detection, alerts, the dashboard), PostgreSQL and
-# ClickHouse. A template for spreading the same services over several hosts.
+# bus (Redpanda), detection workers, one processor (device detectors, alerts, the
+# dashboard), PostgreSQL and ClickHouse. A template for spreading the same services
+# over several hosts.
 #
 #   python deploy/make-secrets.py --storage
 #   docker compose -f deploy/compose/scale-out.yml up -d --build --scale collector=3
+#
+# Detection workers: one service per family of detectors (by source address, target
+# host, address pair, port, account), each scalable on its own, e.g.
+# --scale detector-source=4. Collectors send each family the events it reads, divided
+# by its key. To keep all detection in the processor instead, set
+# CERBERUS_DETECTION_WORKERS= (empty) and start the stack without the detector-*
+# services (list the others after "up").
 #
 # Dashboard: http://localhost:8080 (password: deploy/secrets/storage_password.txt).
 # Syslog: TCP 514 into HAProxy, which spreads connections over the collectors and
@@ -24,7 +32,18 @@ x-bus: &bus
   CERBERUS_POSTGRES_URL_FILE: /run/secrets/postgres_url
   CERBERUS_CLICKHOUSE_URL_FILE: /run/secrets/clickhouse_url
   CERBERUS_DEVICE_IDENTITY: ${CERBERUS_DEVICE_IDENTITY:-ip}
+  # The same on collectors, workers and the processor: which families workers run.
+  CERBERUS_DETECTION_WORKERS: ${CERBERUS_DETECTION_WORKERS-all}
   TZ: ${TZ:-UTC}
+
+x-detector: &detector
+  <<: *cerberus
+  depends_on:
+    redpanda: {condition: service_healthy}
+    postgres: {condition: service_healthy}
+    clickhouse: {condition: service_healthy}
+  volumes: [spool:/data]  # alert candidates wait here while the bus is unreachable
+  networks: [backend]
 
 services:
   haproxy:
@@ -68,6 +87,22 @@ services:
     ports: ["8080:8080"]
     tmpfs: ["/data:uid=10001,gid=10001"]
     networks: [backend]
+
+  detector-source:
+    <<: *detector
+    environment: {<<: *bus, CERBERUS_MODE: detector, CERBERUS_DETECTION_FAMILY: source}
+  detector-target:
+    <<: *detector
+    environment: {<<: *bus, CERBERUS_MODE: detector, CERBERUS_DETECTION_FAMILY: target}
+  detector-pair:
+    <<: *detector
+    environment: {<<: *bus, CERBERUS_MODE: detector, CERBERUS_DETECTION_FAMILY: pair}
+  detector-port:
+    <<: *detector
+    environment: {<<: *bus, CERBERUS_MODE: detector, CERBERUS_DETECTION_FAMILY: port}
+  detector-account:
+    <<: *detector
+    environment: {<<: *bus, CERBERUS_MODE: detector, CERBERUS_DETECTION_FAMILY: account}
 
   redpanda:
     image: redpandadata/redpanda:v24.2.7

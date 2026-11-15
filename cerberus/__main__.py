@@ -60,7 +60,7 @@ async def run_collector(cfg: Config) -> None:
 
 
 async def run_worker(cfg: Config) -> None:
-    from .bus import Publisher, ensure_topics
+    from .bus import Publisher, collector_name, ensure_topics
     from .detectors import WORKER_FAMILIES
     from .worker import DetectionWorker
 
@@ -75,7 +75,8 @@ async def run_worker(cfg: Config) -> None:
     await ensure_topics(cfg)
     engine = Engine(cfg, store, ConnectorRegistry(cfg.data_dir / "connectors"), Notifier(store))
     engine.families = {cfg.detection_family}
-    worker = DetectionWorker(cfg, store, engine, Publisher(cfg, cfg.data_dir / "spool", name=f"worker-{cfg.detection_family}"))
+    worker = DetectionWorker(cfg, store, engine, Publisher(cfg, cfg.data_dir / "spool",
+                                                    name=f"worker-{cfg.detection_family}-{collector_name(cfg)}"))
     await worker.start()
 
     from fastapi import FastAPI
@@ -203,6 +204,15 @@ async def watch_collectors(cfg: Config, engine, heartbeats) -> None:
                 silent.discard(name)
             elif name not in silent:
                 silent.add(name)
+                if status.get("role") == "detector":
+                    family = status.get("family", "")
+                    engine.raise_alert(Candidate(
+                        "collector_silent", f"collector|{name}", "high", f"Detection worker stopped reporting: {name}",
+                        f"Detection worker {name} ({family} family) has not sent a heartbeat for {int(quiet)} seconds. "
+                        f"Its share of the {family} detectors moves to the other {family} workers once the bus "
+                        "notices it has gone; if there are none, those detectors are not running.",
+                        None, "", {"collector": name, "family": family, "silent_seconds": int(quiet)}), now)
+                    continue
                 engine.raise_alert(Candidate(
                     "collector_silent", f"collector|{name}", "high", f"Collector stopped reporting: {name}",
                     f"Collector {name} has not sent a heartbeat for {int(quiet)} seconds. Devices sending to it are "

@@ -1,6 +1,8 @@
 # The processor: reads events from the bus and does recording, detection,
-# alerting, notifications and the dashboard. One replica (detection is not yet
-# divided between several; see docs/CLUSTERING.md phase 4). Needs clustered
+# alerting, notifications and the dashboard. One replica. With detector/, the
+# detection that keys on sources, targets, pairs, ports and accounts runs in the
+# workers and the processor turns their findings into alerts; set
+# CERBERUS_DETECTION_WORKERS below to the same families (all). Needs clustered
 # storage, which this layer includes.
 #
 #   kubectl -n cerberus create secret generic cerberus --from-literal=password='choose-one'
@@ -22,6 +24,8 @@ configMapGenerator:
       - CERBERUS_KAFKA_BOOTSTRAP=cerberus-kafka-bootstrap.kafka.svc:9092
       - CERBERUS_SYSLOG_UDP_PORT=0
       - CERBERUS_SYSLOG_TCP_PORT=0
+      # With detector/: the same families as there (all).
+      - CERBERUS_DETECTION_WORKERS=
 patches:
   # Syslog goes to the collectors, not here.
   - target: {kind: Service, name: cerberus-syslog}

@@ -85,7 +85,7 @@ jobs:
           CADDYFILE=Caddyfile.internal docker stack config -c deploy/swarm/stack.yml > /dev/null
       - name: Kubernetes
         run: |
-          for k in standalone site central collector processor; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
+          for k in standalone site central collector processor detector; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
           # Each layer with the clustered-storage component, through a throwaway overlay.
           for k in standalone site central; do
             mkdir -p deploy/kubernetes/ci-$k

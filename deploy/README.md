@@ -34,10 +34,10 @@ firewall cluster).
 Version tags are published by CI for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/wrcrooks/cerberus:0.5.0
+docker pull ghcr.io/wrcrooks/cerberus:0.6.0
 ```
 
-To build your own, `docker build -t registry.example.com/cerberus:0.5.0 .`,
+To build your own, `docker build -t registry.example.com/cerberus:0.6.0 .`,
 push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
 `kubernetes/base/kustomization.yaml`.
 
@@ -130,7 +130,7 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.5.0` to use the published image
+Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.6.0` to use the published image
 instead of building locally. Compose (without Swarm) bind-mounts secret files,
 so they must be readable by the container's user (uid 10001); `make-secrets.py`
 writes them mode 0644.
@@ -193,7 +193,8 @@ See "Scale-out ingest" in the main README for what it is. Needs clustered
 storage and a Kafka-compatible bus.
 
 - **Compose:** `compose/scale-out.yml` runs HAProxy, any number of collectors
-  (`--scale collector=N`), Redpanda, the processor and both databases on one
+  (`--scale collector=N`), Redpanda, a detection worker per family
+  (`--scale detector-source=N`), the processor and both databases on one
   host:
 
   ```sh
@@ -207,10 +208,15 @@ storage and a Kafka-compatible bus.
   address. Terminate syslog-over-TLS at HAProxy (see the config). UDP is not
   balanced here: send TCP. To spread the services over hosts, run the same
   services with `CERBERUS_KAFKA_BOOTSTRAP` and the database URLs pointing at
-  shared servers.
+  shared servers. To keep detection in the processor, set
+  `CERBERUS_DETECTION_WORKERS=` (empty) and leave out the `detector-*`
+  services.
 - **Kubernetes:** apply `kubernetes/processor` (which includes clustered
   storage) and `kubernetes/collector`, after setting the bus address in both
-  `kustomization.yaml` files. Collectors are a StatefulSet (stable names, one
+  `kustomization.yaml` files. For detection workers, also apply
+  `kubernetes/detector` (one Deployment per family; scale each by replicas)
+  and set `CERBERUS_DETECTION_WORKERS=all` in the collector and processor
+  layers. Collectors are a StatefulSet (stable names, one
   spool volume each) behind a `LoadBalancer` with `externalTrafficPolicy:
   Local`, which keeps device addresses for TCP and UDP, so no PROXY protocol
   is needed. Run the bus with an operator (Strimzi, Redpanda) or a managed
@@ -221,7 +227,10 @@ storage and a Kafka-compatible bus.
 
 Topics are created on first start if the cluster allows it
 (`CERBERUS_KAFKA_PARTITIONS`, default 12; `CERBERUS_KAFKA_REPLICATION`,
-default 1 - set 3 on a real cluster). `CERBERUS_KAFKA_SECURITY=SSL` with
+default 1 - set 3 on a real cluster). With detection workers there is also a
+topic per family (`<topic>.source` and so on) and one for their findings
+(`<topic>.candidates`); the partition count caps how many workers of a family
+can share the work. `CERBERUS_KAFKA_SECURITY=SSL` with
 `CERBERUS_KAFKA_CA` encrypts traffic to the bus; SASL authentication is not
 supported yet.
 

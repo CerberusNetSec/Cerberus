@@ -31,6 +31,7 @@ credentials, SNMP community strings) are never returned: they read back as
 | `GET /api/summary?range=1h\|6h\|24h\|7d` | Dashboard: message-rate series, open alerts by severity, hosts by risk, alerts by attack stage, top blocked sources and ports, collector health |
 | `GET /api/alerts?status=&severity=&q=&limit=&id=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `false_positive`, `active` (open or acknowledged) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions); a false positive also carries `false_positive` (who, when, why, findings held back since) |
 | `POST /api/alerts/status` | `{"ids": [1,2], "status": "ack"}` or `{"all_open": true, "status": "ack"}` |
+| `GET /api/alerts/counts` | Open alerts by severity and in total, for the navigation badge: `{"open": {"high": 2}, "total": 2}` |
 | `POST /api/alerts/false-positive` | `{"id": 7, "analyst": "name", "justification": "at least 10 characters"}`: marks the alert a false positive and suppresses its detector and entity; audited. `400` without a name or justification, `404` for an unknown alert |
 | `GET /api/suppressions` | Every suppression, active and removed, with `hits` and `last_hit` |
 | `POST /api/suppressions/remove` | `{"id": 3, "analyst": "name", "justification": "..."}`: alerts resume; audited. `404` if not active |
@@ -47,6 +48,8 @@ credentials, SNMP community strings) are never returned: they read back as
 | `PUT /api/snmp` | `{"enabled", "community", "interval", "concurrency", "networks": [...]}` |
 | `POST /api/snmp/poll` | Poll now. `{"id": "..."}` for one device; with more than 20 devices it returns immediately with `{"background": true}` |
 | `GET /api/connectors` | Loaded connectors and load errors |
+| `GET /api/listeners` | Syslog listeners: per `udp`/`tcp`/`tls`, `enabled`, `port`, whether it is `listening` and any `error`; whether this process receives syslog (`available`), runs in a container, and has a TLS certificate |
+| `PUT /api/listeners` | `{"listeners": {"tcp": {"enabled": true, "port": 1514}}}`: applied at once and saved; a listener that cannot change reports its `error` and keeps running as it was. `409` on a processor (collectors receive syslog) |
 | `POST /api/connectors/reload` | Re-read connector files |
 | `POST /api/connectors/test` | `{"raw": "<134>...", "connector": ""}` returns the parsed event |
 | `GET /api/detectors` | Each detector's settings schema and values, plus general settings. The High Risk Ports list (`risk_ports` → `ports`) has type `ports`, with `entries` (`[{port, proto, name}]`), `default_entries` and the built-in `catalog`; it is saved as a string, `PORT[/tcp\|/udp][=name]` separated by commas |

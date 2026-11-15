@@ -639,6 +639,7 @@ class Engine:
             devices=[(d.id, d.ip, d.hostname, d.connector_seen, d.first_seen, d.last_seen, d.events) for d in devices],
             ports=self.risk_ports.drain(),
             new_alerts=new_alerts, alert_updates=alert_updates,
+            notices=self.notifier.drain(),
         )
         if batch:
             await asyncio.to_thread(self.db.write_batch, batch)

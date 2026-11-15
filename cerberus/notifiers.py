@@ -175,12 +175,19 @@ async def send(channel: dict, subject: str, body: str, client: httpx.AsyncClient
         raise RuntimeError(f"unknown channel type {kind}")
 
 
+PENDING_MAX = 5000
+
+
 class Notifier:
     def __init__(self, db, public_url: str = ""):
         self.db = db
         self.public_url = public_url
         self.channels: list[dict] = []
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        # Formatted notifications waiting for the engine's next write, which puts them in
+        # the outbox with the alerts they are about: (created, channel_id, subject, body).
+        self.pending: list[tuple] = []
+        self._inflight: set[int] = set()  # outbox ids being sent now
+        self.sent = self.failed = 0
         self._sent: dict[int, deque] = {}
         self._suppressed: dict[int, int] = {}
         self._client: httpx.AsyncClient | None = None
@@ -230,10 +237,15 @@ class Notifier:
             self._enqueue(ch, subject, body)
 
     def _enqueue(self, ch: dict, subject: str, body: str) -> None:
-        try:
-            self.queue.put_nowait((ch, subject, body))
-        except asyncio.QueueFull:
-            log.warning("notification queue full, dropping message for %s", ch["name"])
+        if len(self.pending) >= PENDING_MAX:
+            log.warning("too many notifications waiting to be stored; dropping one for %s", ch["name"])
+            return
+        self.pending.append((time.time(), ch["id"], subject, body))
+
+    def drain(self) -> list[tuple]:
+        """Notifications for the outbox, taken by the engine's write (Batch.notices)."""
+        out, self.pending = self.pending, []
+        return out
 
     def tick(self) -> None:
         """Send a summary for alerts that were held back by the rate limit."""
@@ -273,17 +285,52 @@ class Notifier:
         await asyncio.to_thread(self.db.channel_result, ch["id"], time.time(), not error, error)
         return error
 
-    async def _deliver_slot(self, ch, subject, body) -> None:
-        async with self._slots:
-            await self.deliver(ch, subject, body)
+    async def _send_from_outbox(self, row: dict) -> None:
+        try:
+            async with self._slots:
+                ch = next((c for c in self.channels if c["id"] == row["channel_id"]), None)
+                if ch is None or not ch["enabled"]:
+                    error = "channel removed or disabled"
+                    await asyncio.to_thread(self.db.outbox_done, row["id"], time.time(), error)
+                    return
+                error = await self.deliver(ch, row["subject"], row["body"])
+                await asyncio.to_thread(self.db.outbox_done, row["id"], time.time(), error)
+                if error:
+                    self.failed += 1
+                else:
+                    self.sent += 1
+        except Exception:
+            log.exception("sending a notification from the outbox failed")
+        finally:
+            self._inflight.discard(row["id"])
 
-    async def run(self) -> None:
-        await self.reload()
-        while True:
-            ch, subject, body = await self.queue.get()
-            task = asyncio.create_task(self._deliver_slot(ch, subject, body))
+    async def send_due(self) -> int:
+        """Start sending what is due in the outbox; returns how many were started."""
+        rows = await asyncio.to_thread(self.db.outbox_due, time.time(), 50)
+        started = 0
+        for row in rows:
+            if row["id"] in self._inflight:
+                continue
+            self._inflight.add(row["id"])
+            task = asyncio.create_task(self._send_from_outbox(row))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+            started += 1
+        return started
+
+    async def run(self) -> None:
+        """Send from the outbox: notifications whose alerts are stored. Only the active
+        processor runs this, so each is sent once (a crash between sending and recording
+        it can send one again)."""
+        await self.reload()
+        while True:
+            try:
+                await self.send_due()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("reading the notification outbox failed: %s", exc)
+            await asyncio.sleep(1)
 
     async def close(self) -> None:
         if self._client:

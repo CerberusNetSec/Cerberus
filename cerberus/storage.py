@@ -37,13 +37,26 @@ class Batch:
     new_alerts: list[tuple] = field(default_factory=list)
     # Changed alerts: (last_seen, count, severity, description, details, updated, id).
     alert_updates: list[tuple] = field(default_factory=list)
+    # Notifications to send, written with the alerts they are about: (created, channel_id,
+    # subject, body). Sent from the outbox once stored.
+    notices: list[tuple] = field(default_factory=list)
 
     def __bool__(self) -> bool:
-        return any((self.events, self.stats, self.devices, self.ports, self.new_alerts, self.alert_updates))
+        return any((self.events, self.stats, self.devices, self.ports, self.new_alerts, self.alert_updates,
+                    self.notices))
 
 
 def _todo(*_args, **_kwargs):
     raise NotImplementedError
+
+
+OUTBOX_ATTEMPTS = 5
+OUTBOX_KEEP_SECONDS = 7 * 86400
+
+
+def outbox_retry_at(now: float, attempts: int) -> float:
+    """When to try a failed notification again: 1, 2, 4, 8 minutes."""
+    return now + 60 * 2 ** max(0, attempts - 1)
 
 
 class Leadership:
@@ -109,6 +122,21 @@ class Store:
 
     def settings_with_prefix(self, prefix: str) -> dict:
         """Every setting whose key starts with prefix: {key: value}."""
+        raise NotImplementedError
+
+    # --- notification outbox -------------------------------------------------------------
+    def outbox_due(self, now: float, limit: int) -> list[dict]:
+        """Notifications waiting to be sent whose time has come, oldest first:
+        {id, created, channel_id, subject, body, attempts}."""
+        raise NotImplementedError
+
+    def outbox_done(self, outbox_id: int, now: float, error: str | None) -> None:
+        """Record a delivery attempt: sent if error is None; otherwise tried again later,
+        and given up after OUTBOX_ATTEMPTS attempts."""
+        raise NotImplementedError
+
+    def outbox_pending(self) -> int:
+        """Notifications not yet sent nor given up."""
         raise NotImplementedError
 
     def leadership(self, name: str) -> Leadership:

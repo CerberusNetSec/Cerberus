@@ -23,6 +23,17 @@ def _secret(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+KAFKA_SECURITY = ("PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL")
+SASL_MECHANISMS = ("PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512")
+
+
+def _kafka_security(text: str) -> str:
+    value = (text or "PLAINTEXT").strip().upper()
+    if value not in KAFKA_SECURITY:
+        raise ValueError(f"CERBERUS_KAFKA_SECURITY must be one of {', '.join(KAFKA_SECURITY)}")
+    return value
+
+
 FAMILIES = ("source", "target", "pair", "port", "account")
 
 
@@ -105,8 +116,11 @@ class Config:
     kafka_group: str = "cerberus-processor"
     kafka_partitions: int = 12
     kafka_replication: int = 1
-    kafka_security: str = "PLAINTEXT"  # or SSL
+    kafka_security: str = "PLAINTEXT"  # SSL, SASL_PLAINTEXT or SASL_SSL
     kafka_ca: str = ""
+    kafka_sasl_mechanism: str = "SCRAM-SHA-512"  # PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512
+    kafka_username: str = ""
+    kafka_password: str = ""
     collector_name: str = ""
     spool_mb: int = 1024
     collector_silent_seconds: int = 90
@@ -156,8 +170,11 @@ class Config:
             kafka_group=env("CERBERUS_KAFKA_GROUP", "cerberus-processor"),
             kafka_partitions=max(1, _int("CERBERUS_KAFKA_PARTITIONS", 12)),
             kafka_replication=max(1, _int("CERBERUS_KAFKA_REPLICATION", 1)),
-            kafka_security="SSL" if env("CERBERUS_KAFKA_SECURITY", "").upper() == "SSL" else "PLAINTEXT",
+            kafka_security=_kafka_security(env("CERBERUS_KAFKA_SECURITY", "")),
             kafka_ca=env("CERBERUS_KAFKA_CA", ""),
+            kafka_sasl_mechanism=env("CERBERUS_KAFKA_SASL_MECHANISM", "SCRAM-SHA-512").strip().upper(),
+            kafka_username=env("CERBERUS_KAFKA_USERNAME", ""),
+            kafka_password=_secret("CERBERUS_KAFKA_PASSWORD"),
             collector_name=env("CERBERUS_COLLECTOR_NAME", "") or socket.gethostname(),
             spool_mb=max(10, _int("CERBERUS_SPOOL_MB", 1024)),
             collector_silent_seconds=max(30, _int("CERBERUS_COLLECTOR_SILENT_SECONDS", 90)),

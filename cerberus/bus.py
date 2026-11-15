@@ -41,15 +41,28 @@ SPOOL_FILE_EVENTS = 20_000  # events per spool file
 
 
 def _ssl_context(cfg) -> ssl.SSLContext | None:
-    if cfg.kafka_security != "SSL":
+    if cfg.kafka_security not in ("SSL", "SASL_SSL"):
         return None
     context = ssl.create_default_context(cafile=cfg.kafka_ca or None)
     return context
 
 
 def _common(cfg) -> dict:
-    return {"bootstrap_servers": cfg.kafka_bootstrap, "security_protocol": cfg.kafka_security,
-            "ssl_context": _ssl_context(cfg)}
+    """Connection settings every Kafka client here shares: TLS and SASL as configured."""
+    out = {"bootstrap_servers": cfg.kafka_bootstrap, "security_protocol": cfg.kafka_security,
+           "ssl_context": _ssl_context(cfg)}
+    if cfg.kafka_security.startswith("SASL_"):
+        from .config import SASL_MECHANISMS
+        if cfg.kafka_sasl_mechanism not in SASL_MECHANISMS:
+            raise SystemExit(f"CERBERUS_KAFKA_SASL_MECHANISM must be one of {', '.join(SASL_MECHANISMS)}")
+        if not (cfg.kafka_username and cfg.kafka_password):
+            raise SystemExit(f"CERBERUS_KAFKA_SECURITY={cfg.kafka_security} needs CERBERUS_KAFKA_USERNAME and "
+                             "CERBERUS_KAFKA_PASSWORD (or _PASSWORD_FILE)")
+        if cfg.kafka_security == "SASL_PLAINTEXT" and cfg.kafka_sasl_mechanism == "PLAIN":
+            log.warning("Kafka SASL PLAIN without TLS sends the password in clear; use SASL_SSL or SCRAM")
+        out.update(sasl_mechanism=cfg.kafka_sasl_mechanism, sasl_plain_username=cfg.kafka_username,
+                   sasl_plain_password=cfg.kafka_password)
+    return out
 
 
 async def ensure_topics(cfg) -> None:

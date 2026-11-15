@@ -44,6 +44,7 @@ jobs:
       CERBERUS_TEST_POSTGRES_URL: postgresql://cerberus:citest@127.0.0.1:5432/cerberus
       CERBERUS_TEST_CLICKHOUSE_URL: http://cerberus:citest@127.0.0.1:8123/cerberus
       CERBERUS_TEST_KAFKA_BOOTSTRAP: 127.0.0.1:19092
+      CERBERUS_TEST_KAFKA_SASL: "127.0.0.1:19093|cerberus|ci-sasl-pass|SCRAM-SHA-512"
       CERBERUS_REQUIRE_BACKENDS: "1"
     steps:
       - name: Start Redpanda (Kafka-compatible)
@@ -53,6 +54,13 @@ jobs:
             --kafka-addr external://0.0.0.0:19092 --advertise-kafka-addr external://127.0.0.1:19092
           for i in $(seq 1 60); do docker exec redpanda rpk cluster health | grep -q 'Healthy:.*true' && break; sleep 2; done
           docker exec redpanda rpk cluster health
+      - name: Start a second Redpanda that requires SASL (SCRAM)
+        run: |
+          docker run -d --name redpanda-sasl -p 19093:19093 redpandadata/redpanda:v24.2.7 redpanda start             --mode dev-container --smp 1 --memory 1G             --kafka-addr external://0.0.0.0:19093 --advertise-kafka-addr external://127.0.0.1:19093
+          for i in $(seq 1 60); do docker exec redpanda-sasl rpk cluster health | grep -q 'Healthy:.*true' && break; sleep 2; done
+          docker exec redpanda-sasl rpk security user create cerberus -p ci-sasl-pass --mechanism SCRAM-SHA-512
+          docker exec redpanda-sasl rpk cluster config set superusers "['cerberus']"
+          docker exec redpanda-sasl rpk cluster config set enable_sasl true
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

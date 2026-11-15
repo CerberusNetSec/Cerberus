@@ -445,3 +445,54 @@ def test_a_slow_assignment_still_replays_before_anything_live(tmp_path, monkeypa
         test_a_replaced_worker_rebuilds_its_windows_from_the_bus(tmp_path)
     else:
         test_a_new_leader_after_a_crash_finds_and_stores_exactly_the_same(tmp_path)
+
+
+SASL = os.environ.get("CERBERUS_TEST_KAFKA_SASL", "")  # host:port|user|password|mechanism
+if os.environ.get("CERBERUS_REQUIRE_BACKENDS") and KAFKA and not SASL:
+    raise RuntimeError("CERBERUS_REQUIRE_BACKENDS is set but CERBERUS_TEST_KAFKA_SASL is not")
+
+
+@pytest.mark.skipif(not SASL, reason="set CERBERUS_TEST_KAFKA_SASL=host:port|user|password|mechanism")
+def test_sasl_authentication(tmp_path):
+    """Publishing and consuming through a broker that requires SASL (SCRAM), and refusing a
+    wrong password."""
+    from aiokafka.errors import KafkaError
+
+    from cerberus.models import Event
+
+    bootstrap, user, password, mechanism = SASL.split("|")
+    cfg = bus_config(tmp_path)
+    cfg.kafka_bootstrap, cfg.kafka_security = bootstrap, "SASL_PLAINTEXT"
+    cfg.kafka_sasl_mechanism, cfg.kafka_username, cfg.kafka_password = mechanism, user, password
+
+    async def go():
+        await ensure_topics(cfg)
+        publisher = Publisher(cfg, tmp_path / "spool", name="sasl")
+        await publisher.start()
+        ev = Event(ts=1.0, device="fw", source_ip="10.0.0.1", event_type="traffic", message="hello over SASL")
+        from cerberus.bus import encode_event
+        await publisher.publish([encode_event(ev, ("run", 1))])
+        assert not publisher.spool and publisher.published == 1
+        await publisher.stop()
+        source = EventSource(cfg)
+        await source.start()
+        got = []
+        for _ in range(20):
+            got += await source.batch(timeout_ms=1000)
+            if got:
+                break
+        await source.stop()
+        return got
+    got = asyncio.run(go())
+    assert json.loads(got[0].value)["message"] == "hello over SASL"
+
+    wrong = bus_config(tmp_path)
+    wrong.kafka_bootstrap, wrong.kafka_security = bootstrap, "SASL_PLAINTEXT"
+    wrong.kafka_sasl_mechanism, wrong.kafka_username, wrong.kafka_password = mechanism, user, "not-the-password"
+    with pytest.raises(KafkaError):
+        asyncio.run(ensure_topics(wrong))
+    # Settings that cannot work stop the process with a message.
+    from cerberus.bus import _common
+    wrong.kafka_password = ""
+    with pytest.raises(SystemExit, match="USERNAME"):
+        _common(wrong)

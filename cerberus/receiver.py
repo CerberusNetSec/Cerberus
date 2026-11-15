@@ -84,6 +84,15 @@ class _UDP(asyncio.DatagramProtocol):
         pass
 
 
+def _bind_error(exc: OSError, port: int) -> str:
+    import errno
+    if exc.errno in (errno.EADDRINUSE, 10048):
+        return f"port {port} is already in use"
+    if exc.errno in (errno.EACCES, 10013):
+        return f"not permitted to listen on port {port}"
+    return str(exc.strerror or exc)
+
+
 class SyslogReceiver:
     def __init__(self, submit, bind: str, udp_port: int, tcp_port: int, max_tcp_clients: int = 1000,
                  tls_port: int = 0, tls: ssl.SSLContext | None = None, proxy_from: list | tuple = ()):
@@ -97,37 +106,90 @@ class SyslogReceiver:
         self.tls_port = tls_port
         self.tls = tls
         self.proxy_from = [ipaddress.ip_network(n, strict=False) for n in proxy_from]
-        self._servers: list = []
+        self._servers: dict[str, object] = {}  # "udp", "tcp", "tls" -> its open listener
+        self.errors: dict[str, str] = {}  # the last failure to open each listener
         self._clients = 0
 
-    async def start(self) -> None:
-        loop = asyncio.get_running_loop()
-        if self.udp_port:
-            udp, _ = await loop.create_datagram_endpoint(
-                lambda: _UDP(self.submit), local_addr=(self.bind, self.udp_port)
-            )
-            self._servers.append(udp)
+    def port(self, kind: str) -> int:
+        return {"udp": self.udp_port, "tcp": self.tcp_port, "tls": self.tls_port}[kind]
+
+    async def _open(self, kind: str, port: int):
+        if kind == "udp":
+            udp, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                lambda: _UDP(self.submit), local_addr=(self.bind, port))
             sock = udp.get_extra_info("socket")
             try:  # a bigger buffer rides out bursts; the OS may cap it
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
             except OSError:
                 pass
-            log.info("syslog UDP listening on %s:%d", self.bind, self.udp_port)
-        if self.tcp_port:
-            self._servers.append(await asyncio.start_server(self._client, self.bind, self.tcp_port,
-                                                            limit=MAX_MESSAGE * 2))
-            log.info("syslog TCP listening on %s:%d", self.bind, self.tcp_port)
-        if self.tls_port and self.tls:
-            self._servers.append(await asyncio.start_server(self._client, self.bind, self.tls_port,
-                                                            limit=MAX_MESSAGE * 2, ssl=self.tls,
-                                                            ssl_handshake_timeout=15))
-            log.info("syslog TLS listening on %s:%d%s", self.bind, self.tls_port,
-                     " (client certificates required)" if self.tls.verify_mode == ssl.CERT_REQUIRED else "")
+            log.info("syslog UDP listening on %s:%d", self.bind, port)
+            return udp
+        if kind == "tcp":
+            server = await asyncio.start_server(self._client, self.bind, port, limit=MAX_MESSAGE * 2)
+            log.info("syslog TCP listening on %s:%d", self.bind, port)
+            return server
+        server = await asyncio.start_server(self._client, self.bind, port, limit=MAX_MESSAGE * 2, ssl=self.tls,
+                                            ssl_handshake_timeout=15)
+        log.info("syslog TLS listening on %s:%d%s", self.bind, port,
+                 " (client certificates required)" if self.tls.verify_mode == ssl.CERT_REQUIRED else "")
+        return server
+
+    async def start(self) -> None:
+        """Open the listeners that have a port. One that cannot open (port in use, not
+        permitted) is logged and reported by status(); the others still run."""
+        for kind in ("udp", "tcp", "tls"):
+            port = self.port(kind)
+            if not port or (kind == "tls" and not self.tls):
+                continue
+            try:
+                self._servers[kind] = await self._open(kind, port)
+                self.errors.pop(kind, None)
+            except OSError as exc:
+                self.errors[kind] = _bind_error(exc, port)
+                log.error("syslog %s listener on port %d could not start: %s", kind.upper(), port, self.errors[kind])
         if self.proxy_from:
             log.info("PROXY protocol expected from %s", ", ".join(map(str, self.proxy_from)))
 
+    async def reconfigure(self, wanted: dict[str, int]) -> dict[str, str]:
+        """Change listeners while running: {kind: port, or 0 for off}. A new port is opened
+        before the old one closes, so a port that cannot be opened leaves the listener as it
+        was. Returns {kind: error} for those that could not change. Connections already open
+        on a closed listener carry on until the device disconnects."""
+        failed: dict[str, str] = {}
+        for kind, port in wanted.items():
+            if kind not in ("udp", "tcp", "tls"):
+                continue
+            current = self._servers.get(kind)
+            if port == self.port(kind) and (current is not None or not port):
+                continue
+            if port and kind == "tls" and not self.tls:
+                failed[kind] = "no certificate configured (CERBERUS_SYSLOG_TLS_CERT and _KEY)"
+                continue
+            if port:
+                try:
+                    opened = await self._open(kind, port)
+                except OSError as exc:
+                    failed[kind] = _bind_error(exc, port)
+                    continue
+            else:
+                opened = None
+            if current is not None:
+                current.close()
+                log.info("syslog %s listener on port %d closed", kind.upper(), self.port(kind))
+            if opened is None:
+                self._servers.pop(kind, None)
+            else:
+                self._servers[kind] = opened
+            setattr(self, f"{kind}_port", port)
+            self.errors.pop(kind, None)
+        return failed
+
+    def status(self) -> dict[str, dict]:
+        return {kind: {"port": self.port(kind), "listening": kind in self._servers, "error": self.errors.get(kind, "")}
+                for kind in ("udp", "tcp", "tls")}
+
     async def stop(self) -> None:
-        for server in self._servers:
+        for server in self._servers.values():
             server.close()
 
     def _trusted_proxy(self, ip: str) -> bool:

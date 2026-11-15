@@ -482,6 +482,12 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                 "directions": (await port_memory(now))["top"](port),
                 "alerts": (await _port_alerts(now)).get(port, [])[:20]}
 
+    @app.get("/api/alerts/counts")
+    async def alert_counts():
+        """Open alerts by severity: cheap enough for the navigation badge to poll."""
+        counts = await _run(db.alert_counts_open)
+        return {"open": counts, "total": sum(counts.values())}
+
     # --- false positives -----------------------------------------------------
     @app.post("/api/alerts/false-positive")
     async def false_positive(request: Request, body: dict = Body(...)):
@@ -728,6 +734,51 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         await db.aset_setting("detectors", stored)
         await db.aset_setting("general", engine.general_settings())
         return {"detectors": [d.schema() for d in engine.detectors], "general": engine.general_settings()}
+
+    # --- syslog listeners -------------------------------------------------
+    def listeners_view(errors: dict | None = None) -> dict:
+        from .listeners import SETTING, from_config
+        receiver = engine.receiver
+        saved = (db.get_setting(SETTING) if receiver is not None else None) or None
+        status = receiver.status() if receiver is not None else {}
+        listeners = {}
+        for kind, entry in (saved or from_config(cfg)).items():
+            st = status.get(kind, {})
+            listeners[kind] = {**entry, "listening": bool(st.get("listening")),
+                               "listening_port": st.get("port") if st.get("listening") else None,
+                               "error": (errors or {}).get(kind) or st.get("error", "")}
+        return {
+            # Collectors (scale-out) keep their environment; a processor receives no syslog itself.
+            "available": receiver is not None, "mode": cfg.mode, "bind": cfg.bind,
+            "tls_certificate": bool(cfg.syslog_tls_cert and cfg.syslog_tls_key),
+            "client_certificates": bool(cfg.syslog_tls_client_ca),
+            "container": Path("/.dockerenv").exists(), "saved": saved is not None,
+            "listeners": listeners, "environment": from_config(cfg),
+        }
+
+    @app.get("/api/listeners")
+    async def listeners_get():
+        return await asyncio.to_thread(listeners_view)
+
+    @app.put("/api/listeners")
+    async def listeners_put(body: dict = Body(...)):
+        from .listeners import SETTING, clean, from_config, ports
+        if engine.receiver is None:
+            raise _bad("this process receives no syslog: collectors take their ports from their environment", 409)
+        current = (await db.aget_setting(SETTING)) or from_config(cfg)
+        try:
+            wanted = clean(body.get("listeners", body), current)
+        except ValueError as exc:
+            raise _bad(str(exc))
+        if wanted["tls"]["enabled"] and not (cfg.syslog_tls_cert and cfg.syslog_tls_key):
+            raise _bad("TLS needs a certificate and key: set CERBERUS_SYSLOG_TLS_CERT and CERBERUS_SYSLOG_TLS_KEY")
+        if not any(w["enabled"] for w in wanted.values()):
+            raise _bad("switch on at least one listener, or no syslog can arrive")
+        failed = await engine.receiver.reconfigure(ports(wanted))
+        for kind in failed:  # keep what is actually running for those that could not change
+            wanted[kind] = current[kind]
+        await db.aset_setting(SETTING, wanted)
+        return await asyncio.to_thread(listeners_view, failed)
 
     # --- notification channels -------------------------------------------
     def _types():

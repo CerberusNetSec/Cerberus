@@ -227,9 +227,19 @@ function drawChart(el, series, bucketMinutes, names = ['All messages', 'Blocked'
 }
 
 /* ------------------------------------------------------------------ pages */
+/* How often the Alerts table and the navigation badge refresh, in seconds (0: off). */
+const REFRESH_CHOICES = [[0, 'Off'], [10, '10 s'], [30, '30 s'], [60, '1 min'], [300, '5 min']];
+function savedRefresh() {
+  try {
+    const v = Number(localStorage.getItem('cerberus.alertsRefresh'));
+    if (REFRESH_CHOICES.some(([s]) => s === v) && localStorage.getItem('cerberus.alertsRefresh') !== null) return v;
+  } catch { /* default */ }
+  return 10;
+}
+
 const state = {
   range: '24h',
-  alerts: { status: 'open', severity: '', q: '', open: new Set() },
+  alerts: { status: 'open', severity: '', q: '', open: new Set(), every: savedRefresh(), seen: null },
   events: { hours: '24', type: '', action: '', ip: '', port: '', q: '', live: true, open: new Set(), rows: [] },
   devices: { q: '', status: '', connector: '', sort: 'recent', limit: 100 },
   riskports: { range: '24h', flagged: false, open: null },
@@ -334,7 +344,7 @@ window.addEventListener('resize', () => {
 
 /* --- alerts --- */
 pages.alerts = {
-  interval: 5000,
+  get interval() { return state.alerts.every * 1000; },
   render() {
     const s = state.alerts;
     const linked = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('id'));
@@ -355,6 +365,12 @@ pages.alerts = {
         </select>
         <input id="f-q" type="search" placeholder="Search title, IP, device" value="${esc(s.q)}">
         ${s.only ? '<a href="#/alerts">Showing one alert · show all</a>' : ''}
+        <span class="spacer"></span>
+        <label class="inline" for="f-every">Auto-refresh</label>
+        <select id="f-every" aria-label="Auto-refresh the alerts and the count">
+          ${REFRESH_CHOICES.map(([v, l]) => `<option value="${v}" ${v === s.every ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+        <span class="muted small" id="f-updated" aria-live="polite"></span>
       </div>
       <div class="card table-wrap"><table>
         <thead><tr><th>Severity</th><th>Alert</th><th>Source</th><th>Reported by</th><th class="num">Count</th><th>First seen</th><th>Last seen</th><th></th></tr></thead>
@@ -365,6 +381,14 @@ pages.alerts = {
     };
     $('#f-status').addEventListener('change', change);
     $('#f-sev').addEventListener('change', change);
+    $('#f-every').addEventListener('change', () => {
+      s.every = Number($('#f-every').value);
+      try { localStorage.setItem('cerberus.alertsRefresh', String(s.every)); } catch { /* this visit only */ }
+      startPageTimer();
+      startBadgeTimer();
+      this.refresh().catch(() => {});
+    });
+    s.seen = null;  // rows that arrive after this first load are marked new
     $('#f-q').addEventListener('input', debounce(change, 300));
   },
   async refresh() {
@@ -374,6 +398,10 @@ pages.alerts = {
     const body = $('#rows');
     if (!body) return;
     s.byId = new Map(alerts.map((a) => [a.id, a]));
+    const fresh = new Set(s.seen ? alerts.filter((a) => !s.seen.has(a.id)).map((a) => a.id) : []);
+    s.seen = new Set([...(s.seen || []), ...alerts.map((a) => a.id)]);
+    $('#f-updated').textContent = `Updated ${clock(Date.now() / 1000)}`;
+    updateBadge();
     body.innerHTML = alerts.length ? alerts.map((a) => {
       const btn = (status, label) => `<button type="button" class="small" data-act="status" data-id="${a.id}" data-status="${status}">${label}</button>`;
       const fp = a.status === 'false_positive', fpInfo = a.false_positive;
@@ -399,7 +427,7 @@ pages.alerts = {
           ${fpLines}
           ${a.src_ip && !fp ? `<dt>Expected source?</dt><dd><button type="button" class="small" data-act="ignore" data-ip="${esc(a.src_ip)}">Stop alerting on ${esc(a.src_ip)} as a source</button></dd>` : ''}
         </dl></td></tr>` : '';
-      return `<tr class="click ${a.status === 'resolved' || fp ? 'resolved' : ''}" data-act="toggle" data-id="${a.id}">
+      return `<tr class="click ${a.status === 'resolved' || fp ? 'resolved' : ''} ${fresh.has(a.id) ? 'fresh' : ''}" data-act="toggle" data-id="${a.id}">
         <td>${sevBadge(a.severity)}</td>
         <td><div><b>${esc(a.title)}</b>${fp ? ' <span class="tag">False positive</span>' : ''}${g.stage && g.stage !== 'Network health' ? ` <span class="tag">${esc(g.stage)}</span>` : ''}</div><div class="muted">${esc(a.description)}</div></td>
         <td class="mono nowrap">${esc(a.src_ip || '—')}</td><td class="mono nowrap">${esc(a.device || '—')}</td>
@@ -417,7 +445,7 @@ pages.alerts = {
     },
     async status(el) {
       await api('/alerts/status', 'POST', { ids: [Number(el.dataset.id)], status: el.dataset.status });
-      await pages.alerts.refresh();
+      await pages.alerts.refresh();  // also updates the badge
     },
     async 'ack-all'() {
       const r = await api('/alerts/status', 'POST', { all_open: true, status: 'ack' });
@@ -1593,6 +1621,74 @@ pages.detection = {
   },
 };
 
+/* --- syslog listeners (Settings → Syslog) --- */
+const LISTENERS = [['udp', 'UDP', 'Plain syslog (RFC 3164/5424). Most devices send this by default.'],
+  ['tcp', 'TCP', 'Plain syslog over TCP: nothing is lost to a full network, and it gets through Docker Desktop.'],
+  ['tls', 'TLS', 'Syslog over TLS (RFC 5425): encrypted, and optionally only from devices with a certificate.']];
+pages.syslog = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Syslog</h1>
+        <p>Where Cerberus listens for your devices' logs. Changes take effect at once: a new port is opened before the
+          old one closes, so a port that cannot be used leaves the listener as it was.</p></div></div>
+      <div id="sys-notes"></div>
+      <form id="sys-form" class="card">
+        <div class="table-wrap"><table class="listeners">
+          <thead><tr><th>Listener</th><th>On</th><th>Port</th><th>Status</th></tr></thead>
+          <tbody id="sys-rows"></tbody></table></div>
+        <div class="actions"><button class="primary" type="submit" id="sys-save">Save changes</button>
+          <span class="muted" id="sys-source"></span></div>
+      </form>`;
+    $('#sys-form').addEventListener('submit', (e) => { e.preventDefault(); act(() => this.save()); });
+  },
+  async refresh() { this.show(await api('/listeners')); },
+  show(d) {
+    this.data = d;
+    const notes = [];
+    if (!d.available) {
+      notes.push(`<div class="note">This Cerberus does not receive syslog itself (it runs as the <b>${esc(d.mode)}</b>).
+        In a scale-out deployment the collectors receive it, on the ports in their environment
+        (<code>CERBERUS_SYSLOG_UDP_PORT</code>, <code>_TCP_PORT</code>, <code>_TLS_PORT</code>), so that every collector
+        behind the load balancer listens on the same ones.</div>`);
+    } else if (d.container) {
+      notes.push(`<div class="note"><b>Running in a container.</b> These are the ports inside it. Devices reach them through
+        the ports the container publishes (in <code>docker-compose.yml</code>, <code>514:5514</code> sends host port 514 to 5514).
+        When you change a port here, change the mapping to match and run <code>docker compose up -d</code>.</div>`);
+    }
+    $('#sys-notes').innerHTML = notes.join('');
+    $('#sys-rows').innerHTML = LISTENERS.map(([kind, label, help]) => {
+      const l = d.listeners[kind], tlsMissing = kind === 'tls' && !d.tls_certificate;
+      const status = l.error ? `<span class="error-text">${esc(l.error)}</span>`
+        : l.listening ? `<span class="dot on"></span>Listening on ${esc(d.bind)}:${l.listening_port}`
+        : tlsMissing ? '<span class="muted">Needs a certificate: set <code>CERBERUS_SYSLOG_TLS_CERT</code> and <code>_KEY</code></span>'
+        : '<span class="muted">Off</span>';
+      return `<tr data-kind="${kind}">
+        <td><b>${label}</b><div class="muted small">${esc(help)}${kind === 'tls' && d.client_certificates ? ' Device certificates are required.' : ''}</div></td>
+        <td><input type="checkbox" class="l-on" aria-label="${label} listener on" ${l.enabled && !tlsMissing ? 'checked' : ''}
+          ${!d.available || tlsMissing ? 'disabled' : ''}></td>
+        <td><input type="number" class="l-port mono" min="1" max="65535" value="${l.port}" aria-label="${label} port"
+          ${!d.available || tlsMissing ? 'disabled' : ''}></td>
+        <td>${status}</td></tr>`;
+    }).join('');
+    $('#sys-save').disabled = !d.available;
+    $('#sys-source').textContent = !d.available ? '' : d.saved ? 'Saved here; these replace the CERBERUS_SYSLOG_* environment variables.'
+      : 'From the CERBERUS_SYSLOG_* environment variables until you save here.';
+  },
+  async save() {
+    const listeners = {};
+    for (const tr of $$('#sys-rows tr')) {
+      const port = Number($('.l-port', tr).value);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`The ${tr.dataset.kind.toUpperCase()} port must be a number from 1 to 65535.`);
+      listeners[tr.dataset.kind] = { enabled: $('.l-on', tr).checked, port };
+    }
+    const d = await api('/listeners', 'PUT', { listeners });
+    this.show(d);
+    const failed = LISTENERS.filter(([k]) => d.listeners[k].error).map(([, label]) => label);
+    if (failed.length) toast(`Saved, but ${failed.join(' and ')} could not change: see Status.`, true);
+    else toast('Syslog listeners saved');
+  },
+};
+
 /* --- notifications --- */
 pages.notifications = {
   render() {
@@ -1695,10 +1791,30 @@ function setNavCount(n) {
   const el = $('#nav-alerts');
   el.hidden = !n;
   el.textContent = n > 99 ? '99+' : n;
+  el.title = `${n} open alert${n === 1 ? '' : 's'}`;
+}
+/* The open-alert count next to "Alerts", on every page, as often as the Alerts page refreshes. */
+let badgeTimer = null;
+function updateBadge() {
+  return api('/alerts/counts').then((d) => setNavCount(d.total)).catch(() => {});
+}
+function startBadgeTimer() {
+  clearInterval(badgeTimer);
+  const every = state.alerts.every * 1000;
+  if (every) badgeTimer = setInterval(() => { if (!document.hidden && !$('#shell').hidden) updateBadge(); }, every);
+}
+/* The current page's own refresh, at its interval (which the Alerts page lets you choose). */
+function startPageTimer() {
+  clearInterval(timer);
+  const page = pages[current];
+  if (!page || !page.interval) return;
+  timer = setInterval(() => {
+    if (!document.hidden) page.refresh().catch((err) => { if (err.message !== 'Not signed in') console.warn(err); });
+  }, page.interval);
 }
 /* Settings: Detection, Connectors and Notifications, as sections of one page.
    #/settings/<section>; the older #/detection and the like still work. */
-const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['notifications', 'Notifications']];
+const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications']];
 function settingsSection(name) {
   if (name === 'settings') {
     let last = '';
@@ -1713,7 +1829,10 @@ function settingsChrome(tab) {
   const head = $('.page-head', main);
   const title = head && $('h1', head);
   if (title) title.remove();
-  main.insertAdjacentHTML('afterbegin', `<div class="page-head"><div><h1>Settings</h1></div></div>
+  const v = state.version;
+  main.insertAdjacentHTML('afterbegin', `<div class="page-head"><div><h1>Settings</h1></div>
+    ${v ? `<div class="muted version">Cerberus <a href="https://github.com/wrcrooks/Cerberus/releases/tag/v${esc(v)}" target="_blank"
+      rel="noopener noreferrer" title="Release notes for this version">v${esc(v)}</a></div>` : ''}</div>
     <nav class="tabs" aria-label="Settings sections">${SETTINGS_TABS.map(([id, label]) =>
       `<a href="#/settings/${id}" class="${id === tab ? 'on' : ''}" ${id === tab ? 'aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`);
   try { localStorage.setItem('cerberus.settingsTab', tab); } catch { /* not kept */ }
@@ -1733,7 +1852,7 @@ function route() {
     if (err.message !== 'Not signed in') console.warn(err);
   });
   run();
-  if (page.interval) timer = setInterval(() => { if (!document.hidden) run(); }, page.interval);
+  startPageTimer();
 }
 main.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
@@ -1768,6 +1887,7 @@ $('#logout').addEventListener('click', async () => {
 
 async function start() {
   const me = await api('/me');
+  state.version = me.version || '';
   if (!me.signed_in) return showLogin();
   $('#login').hidden = true;
   $('#shell').hidden = false;
@@ -1775,7 +1895,8 @@ async function start() {
   $('#nav-sites').hidden = !me.central;
   if (me.central && !location.hash) location.hash = '#/sites';  // a console opens on its sites
   route();
-  if (current !== 'dashboard') api('/summary?range=1h').then((d) => setNavCount(SEVS.reduce((n, s) => n + (d.open_alerts[s] || 0), 0))).catch(() => {});
+  updateBadge();
+  startBadgeTimer();
 }
 window.addEventListener('hashchange', () => { if (!$('#shell').hidden) route(); });
 start();

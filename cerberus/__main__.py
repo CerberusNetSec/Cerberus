@@ -21,11 +21,11 @@ log = logging.getLogger("cerberus")
 
 
 def make_receiver(cfg: Config, submit) -> SyslogReceiver:
-    tls = None
-    if cfg.syslog_tls_port:
-        if not (cfg.syslog_tls_cert and cfg.syslog_tls_key):
-            raise SystemExit("CERBERUS_SYSLOG_TLS_PORT needs CERBERUS_SYSLOG_TLS_CERT and CERBERUS_SYSLOG_TLS_KEY.")
-        tls = tls_context(cfg.syslog_tls_cert, cfg.syslog_tls_key, cfg.syslog_tls_client_ca)
+    if cfg.syslog_tls_port and not (cfg.syslog_tls_cert and cfg.syslog_tls_key):
+        raise SystemExit("CERBERUS_SYSLOG_TLS_PORT needs CERBERUS_SYSLOG_TLS_CERT and CERBERUS_SYSLOG_TLS_KEY.")
+    # With a certificate configured, TLS can also be switched on later from Settings.
+    tls = (tls_context(cfg.syslog_tls_cert, cfg.syslog_tls_key, cfg.syslog_tls_client_ca)
+           if cfg.syslog_tls_cert and cfg.syslog_tls_key else None)
     return SyslogReceiver(submit, cfg.bind, cfg.syslog_udp_port, cfg.syslog_tcp_port, cfg.max_tcp_clients,
                           cfg.syslog_tls_port, tls, cfg.proxy_protocol_from)
 
@@ -160,6 +160,8 @@ async def amain() -> None:
         heartbeats = Heartbeats(cfg)
         log.info("processor: consuming %s from %s", cfg.kafka_topic, cfg.kafka_bootstrap)
     else:
+        from .listeners import apply_saved
+        apply_saved(cfg, db.get_setting("listeners"))  # ports chosen under Settings win over the environment
         receiver = make_receiver(cfg, engine.submit)
 
     poller = SnmpPoller(engine, db)

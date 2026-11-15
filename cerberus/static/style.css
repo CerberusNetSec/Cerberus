@@ -330,3 +330,18 @@ dialog.dialog .note { font-size: 12.5px; margin: 8px 0 0; }
 .tabs a { padding: 8px 14px; color: var(--text-2); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; font-weight: 500; }
 .tabs a:hover { color: var(--text); }
 .tabs a.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* Alerts: auto-refresh, and alerts that arrived since the page opened */
+.filters .spacer { flex: 1; }
+.filters label.inline { margin: 0; }
+.small { font-size: 12.5px; }
+tr.fresh > td { animation: fresh 4s ease-out; }
+@keyframes fresh { from { background: color-mix(in srgb, var(--accent) 22%, transparent); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { tr.fresh > td { animation: none; box-shadow: inset 3px 0 0 var(--accent); } }
+/* Settings: version, syslog listeners */
+.version { align-self: flex-end; font-size: 13px; }
+.listeners td { vertical-align: middle; }
+.listeners .l-port { width: 100px; }
+.note { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin: 0 0 14px; background: var(--surface); }
+.error-text { color: var(--critical); }
+@media (max-width: 600px) { .listeners .small { display: none; } }

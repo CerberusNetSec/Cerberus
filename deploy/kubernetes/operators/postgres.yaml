@@ -1,0 +1,24 @@
+# PostgreSQL for Cerberus, run by CloudNativePG (https://cloudnative-pg.io).
+# Three instances with streaming replication and automatic failover; Cerberus
+# connects to the read-write service. The operator creates the user and writes
+# its connection URI to the Secret "cerberus-pg-app" (key "uri"), which the
+# Helm chart reads directly (storage.postgresUrlFrom).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: cerberus-pg
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.6
+  storage:
+    size: 20Gi
+  bootstrap:
+    initdb:
+      database: cerberus
+      owner: cerberus
+  postgresql:
+    parameters:
+      max_connections: "200"  # every Cerberus process keeps a few
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 1Gi}

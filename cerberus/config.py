@@ -23,6 +23,17 @@ def _secret(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+KAFKA_SECURITY = ("PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL")
+SASL_MECHANISMS = ("PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512")
+
+
+def _kafka_security(text: str) -> str:
+    value = (text or "PLAINTEXT").strip().upper()
+    if value not in KAFKA_SECURITY:
+        raise ValueError(f"CERBERUS_KAFKA_SECURITY must be one of {', '.join(KAFKA_SECURITY)}")
+    return value
+
+
 FAMILIES = ("source", "target", "pair", "port", "account")
 
 
@@ -105,8 +116,11 @@ class Config:
     kafka_group: str = "cerberus-processor"
     kafka_partitions: int = 12
     kafka_replication: int = 1
-    kafka_security: str = "PLAINTEXT"  # or SSL
+    kafka_security: str = "PLAINTEXT"  # SSL, SASL_PLAINTEXT or SASL_SSL
     kafka_ca: str = ""
+    kafka_sasl_mechanism: str = "SCRAM-SHA-512"  # PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512
+    kafka_username: str = ""
+    kafka_password: str = ""
     collector_name: str = ""
     spool_mb: int = 1024
     collector_silent_seconds: int = 90
@@ -115,6 +129,18 @@ class Config:
     detection_family: str = ""  # in CERBERUS_MODE=detector: which family this worker runs
     worker_replay_minutes: int = 60  # how far back a worker rebuilds its windows from the bus
     metrics_token: str = ""  # if set, /metrics requires "Authorization: Bearer <token>"
+    # Single sign-on (OpenID Connect); see accounts.py
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = ""
+    oidc_scopes: str = "openid email profile"
+    oidc_label: str = ""
+    oidc_role_claim: str = "groups"
+    oidc_admin_groups: str = ""
+    oidc_analyst_groups: str = ""
+    oidc_viewer_groups: str = ""
+    oidc_default_role: str = ""
     # Ingest options for any mode that receives syslog.
     syslog_tls_port: int = 0
     syslog_tls_cert: str = ""
@@ -156,8 +182,11 @@ class Config:
             kafka_group=env("CERBERUS_KAFKA_GROUP", "cerberus-processor"),
             kafka_partitions=max(1, _int("CERBERUS_KAFKA_PARTITIONS", 12)),
             kafka_replication=max(1, _int("CERBERUS_KAFKA_REPLICATION", 1)),
-            kafka_security="SSL" if env("CERBERUS_KAFKA_SECURITY", "").upper() == "SSL" else "PLAINTEXT",
+            kafka_security=_kafka_security(env("CERBERUS_KAFKA_SECURITY", "")),
             kafka_ca=env("CERBERUS_KAFKA_CA", ""),
+            kafka_sasl_mechanism=env("CERBERUS_KAFKA_SASL_MECHANISM", "SCRAM-SHA-512").strip().upper(),
+            kafka_username=env("CERBERUS_KAFKA_USERNAME", ""),
+            kafka_password=_secret("CERBERUS_KAFKA_PASSWORD"),
             collector_name=env("CERBERUS_COLLECTOR_NAME", "") or socket.gethostname(),
             spool_mb=max(10, _int("CERBERUS_SPOOL_MB", 1024)),
             collector_silent_seconds=max(30, _int("CERBERUS_COLLECTOR_SILENT_SECONDS", 90)),
@@ -165,6 +194,17 @@ class Config:
             detection_family=env("CERBERUS_DETECTION_FAMILY", "").strip().lower(),
             worker_replay_minutes=max(0, _int("CERBERUS_WORKER_REPLAY_MINUTES", 60)),
             metrics_token=_secret("CERBERUS_METRICS_TOKEN"),
+            oidc_issuer=env("CERBERUS_OIDC_ISSUER", "").strip(),
+            oidc_client_id=env("CERBERUS_OIDC_CLIENT_ID", "").strip(),
+            oidc_client_secret=_secret("CERBERUS_OIDC_CLIENT_SECRET"),
+            oidc_redirect_url=env("CERBERUS_OIDC_REDIRECT_URL", "").strip(),
+            oidc_scopes=env("CERBERUS_OIDC_SCOPES", "openid email profile groups").strip(),
+            oidc_label=env("CERBERUS_OIDC_LABEL", "").strip(),
+            oidc_role_claim=env("CERBERUS_OIDC_ROLE_CLAIM", "groups").strip(),
+            oidc_admin_groups=env("CERBERUS_OIDC_ADMIN_GROUPS", ""),
+            oidc_analyst_groups=env("CERBERUS_OIDC_ANALYST_GROUPS", ""),
+            oidc_viewer_groups=env("CERBERUS_OIDC_VIEWER_GROUPS", ""),
+            oidc_default_role=env("CERBERUS_OIDC_DEFAULT_ROLE", "").strip().lower(),
             syslog_tls_port=_int("CERBERUS_SYSLOG_TLS_PORT", 0),
             syslog_tls_cert=env("CERBERUS_SYSLOG_TLS_CERT", ""),
             syslog_tls_key=env("CERBERUS_SYSLOG_TLS_KEY", ""),

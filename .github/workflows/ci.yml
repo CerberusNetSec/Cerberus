@@ -44,6 +44,7 @@ jobs:
       CERBERUS_TEST_POSTGRES_URL: postgresql://cerberus:citest@127.0.0.1:5432/cerberus
       CERBERUS_TEST_CLICKHOUSE_URL: http://cerberus:citest@127.0.0.1:8123/cerberus
       CERBERUS_TEST_KAFKA_BOOTSTRAP: 127.0.0.1:19092
+      CERBERUS_TEST_KAFKA_SASL: "127.0.0.1:19093|cerberus|ci-sasl-pass|SCRAM-SHA-512"
       CERBERUS_REQUIRE_BACKENDS: "1"
     steps:
       - name: Start Redpanda (Kafka-compatible)
@@ -53,6 +54,15 @@ jobs:
             --kafka-addr external://0.0.0.0:19092 --advertise-kafka-addr external://127.0.0.1:19092
           for i in $(seq 1 60); do docker exec redpanda rpk cluster health | grep -q 'Healthy:.*true' && break; sleep 2; done
           docker exec redpanda rpk cluster health
+      - name: Start a second Redpanda that requires SASL (SCRAM)
+        run: |
+          docker run -d --name redpanda-sasl -p 19093:19093 redpandadata/redpanda:v24.2.7 redpanda start \
+            --mode dev-container --smp 1 --memory 1G \
+            --kafka-addr external://0.0.0.0:19093 --advertise-kafka-addr external://127.0.0.1:19093
+          for i in $(seq 1 60); do docker exec redpanda-sasl rpk cluster health | grep -q 'Healthy:.*true' && break; sleep 2; done
+          docker exec redpanda-sasl rpk security user create cerberus -p ci-sasl-pass --mechanism SCRAM-SHA-512
+          docker exec redpanda-sasl rpk cluster config set superusers "['cerberus']"
+          docker exec redpanda-sasl rpk cluster config set enable_sasl true
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -85,7 +95,7 @@ jobs:
           CADDYFILE=Caddyfile.internal docker stack config -c deploy/swarm/stack.yml > /dev/null
       - name: Kubernetes
         run: |
-          for k in standalone site central collector processor detector; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
+          for k in standalone site central collector processor detector operators; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
           # Each layer with the clustered-storage component, through a throwaway overlay.
           for k in standalone site central; do
             mkdir -p deploy/kubernetes/ci-$k
@@ -93,6 +103,20 @@ jobs:
             echo "components: [../components/clustered-storage]" >> deploy/kubernetes/ci-$k/kustomization.yaml
             kubectl kustomize deploy/kubernetes/ci-$k | grep -q CERBERUS_CLICKHOUSE_URL_FILE
           done
+      - name: Helm chart
+        run: |
+          c=deploy/helm/cerberus
+          helm lint $c --strict
+          helm lint $c --strict -f $c/values-operators.yaml
+          # Standalone: one Deployment with its volume.
+          helm template t $c --set auth.password=x | grep -q "kind: PersistentVolumeClaim"
+          # Scale-out on the operators: URLs and the Kafka password from their Secrets.
+          out=$(helm template t $c -f $c/values-operators.yaml)
+          echo "$out" | grep -q "name: cerberus-pg-app"
+          echo "$out" | grep -q "SASL_SSL"
+          echo "$out" | grep -q "kind: StatefulSet"
+          # Scale-out with URLs given in values: they go into the chart's own Secret.
+          helm template t $c --set mode=scaleOut --set kafka.bootstrap=k:9092             --set storage.postgresUrl=postgresql://u:p@pg/c --set storage.clickhouseUrl=http://ch:8123/c             | grep -q CERBERUS_CLICKHOUSE_URL_FILE
       - name: Compose with clustered storage, and scale-out
         run: |
           python deploy/make-secrets.py --storage

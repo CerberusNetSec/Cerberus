@@ -1,0 +1,23 @@
+# Cerberus on Kafka (Strimzi), PostgreSQL (CloudNativePG) and ClickHouse
+# (Altinity) from deploy/kubernetes/operators, all in the "cerberus" namespace:
+#
+#   helm install cerberus deploy/helm/cerberus -n cerberus -f deploy/helm/cerberus/values-operators.yaml \
+#     --set auth.password='choose-one' --set publicUrl=https://cerberus.example.com
+mode: scaleOut
+
+storage:
+  postgresUrlFrom: {secret: cerberus-pg-app, key: uri}  # written by CloudNativePG
+  clickhouseUrlFrom: {secret: cerberus-clickhouse, key: url}  # created by you (see clickhouse.yaml)
+
+kafka:
+  bootstrap: cerberus-kafka-bootstrap:9093
+  replication: 3
+  security: SASL_SSL
+  caSecret: cerberus-cluster-ca-cert  # Strimzi's cluster CA (key ca.crt)
+  sasl:
+    mechanism: SCRAM-SHA-512
+    username: cerberus
+    existingSecret: cerberus  # Strimzi's KafkaUser Secret (key "password")
+
+detectors:
+  enabled: true

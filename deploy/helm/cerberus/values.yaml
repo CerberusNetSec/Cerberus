@@ -1,0 +1,153 @@
+# Cerberus Helm chart.
+#
+#   helm install cerberus deploy/helm/cerberus -n cerberus --create-namespace \
+#     --set auth.password='choose-one'
+#
+# mode: standalone runs one Cerberus (SQLite on a volume, or clustered storage).
+# mode: scaleOut runs collectors, active/standby processors and, optionally,
+# detection workers on a Kafka-compatible bus; it needs clustered storage.
+# See deploy/README.md for the operator-based Kafka, PostgreSQL and ClickHouse.
+
+mode: standalone  # standalone | scaleOut
+
+image:
+  repository: ghcr.io/wrcrooks/cerberus
+  tag: ""  # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The dashboard's built-in admin password (the shared password; see Settings ->
+# Users for accounts). Give it here, or name an existing Secret with a
+# "password" key. Neither: Cerberus generates one and prints it once in its log.
+auth:
+  password: ""
+  existingSecret: ""
+
+# Base URL for links in notifications, and single sign-on's redirect, e.g.
+# https://cerberus.example.com
+publicUrl: ""
+
+# Extra settings, as CERBERUS_* environment variables (see the README).
+config:
+  CERBERUS_DEVICE_IDENTITY: ip  # source addresses survive: the syslog Service keeps them
+  CERBERUS_RETENTION_DAYS: "7"
+
+storage:
+  # sqlite: a volume (standalone only). clustered: PostgreSQL and ClickHouse.
+  type: sqlite
+  persistence:
+    size: 20Gi
+    storageClass: ""
+  # clustered: either the URLs here (put into a Secret by the chart), or an
+  # existing Secret with "postgres-url" and "clickhouse-url" keys.
+  postgresUrl: ""
+  clickhouseUrl: ""
+  existingSecret: ""
+  # Or each URL from a key of any Secret, e.g. CloudNativePG's "<cluster>-app" Secret (key "uri"):
+  postgresUrlFrom: {secret: "", key: uri}
+  clickhouseUrlFrom: {secret: "", key: url}
+
+kafka:  # scaleOut
+  bootstrap: cerberus-kafka-bootstrap.kafka.svc:9092
+  topic: cerberus.events
+  partitions: 12
+  replication: 3
+  security: PLAINTEXT  # PLAINTEXT, SSL, SASL_PLAINTEXT or SASL_SSL
+  caSecret: ""  # a Secret with "ca.crt", for SSL / SASL_SSL with a private CA
+  sasl:
+    mechanism: SCRAM-SHA-512  # PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512
+    username: ""
+    password: ""
+    existingSecret: ""  # a Secret with a "password" key (Strimzi's KafkaUser Secret works as is)
+    passwordKey: password
+
+# Single sign-on (OpenID Connect). Register <publicUrl>/api/auth/oidc/callback
+# as the redirect URL with your provider.
+oidc:
+  issuer: ""
+  clientId: ""
+  clientSecret: ""
+  existingSecret: ""  # a Secret with a "client-secret" key
+  label: ""
+  roleClaim: groups
+  adminGroups: ""
+  analystGroups: ""
+  viewerGroups: ""
+  defaultRole: ""  # viewer, analyst or admin for everyone else; empty refuses them
+
+metrics:
+  token: ""  # if set, /metrics needs "Authorization: Bearer <token>"
+  podAnnotations: true  # prometheus.io/scrape annotations
+
+# Syslog from devices.
+syslog:
+  service:
+    type: LoadBalancer
+    port: 514
+    externalTrafficPolicy: Local  # keeps devices' source addresses
+    loadBalancerSourceRanges: []  # restrict to your management networks
+    annotations: {}
+  udp: true
+  tcp: true
+  tls:
+    enabled: false
+    port: 6514
+    secret: ""  # a kubernetes.io/tls Secret (tls.crt, tls.key; ca.crt to require device certificates)
+    requireClientCertificates: false
+
+web:
+  service:
+    type: ClusterIP
+    port: 8080
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: cerberus.example.com
+  tls: []  # [{secretName: cerberus-tls, hosts: [cerberus.example.com]}]
+
+standalone:
+  resources:
+    requests: {cpu: 500m, memory: 512Mi}
+    limits: {cpu: "2", memory: 2Gi}
+
+processor:  # scaleOut
+  replicas: 2  # one active, one standby
+  resources:
+    requests: {cpu: "1", memory: 1Gi}
+    limits: {cpu: "2", memory: 4Gi}
+
+collector:  # scaleOut
+  replicas: 3
+  spool:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests: {cpu: "1", memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+detectors:  # scaleOut: detection workers, one Deployment per family
+  enabled: false
+  families:
+    source: {replicas: 2}
+    target: {replicas: 1}
+    pair: {replicas: 1}
+    port: {replicas: 1}
+    account: {replicas: 1}
+  resources:
+    requests: {cpu: 500m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+nodeSelector: {}
+tolerations: []
+affinity: {}

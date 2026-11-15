@@ -1,6 +1,6 @@
 # Deploying Cerberus
 
-Four reference deployments, all built from the same image
+Five reference deployments, all built from the same image
 (`ghcr.io/wrcrooks/cerberus`):
 
 | Deployment | Files | Use it for |
@@ -9,6 +9,7 @@ Four reference deployments, all built from the same image
 | **Compose** | [`compose/`](compose/) | A central console and several sites, one Docker host each |
 | **Swarm** | [`swarm/`](swarm/) | A console and its sites as one stack across Swarm nodes |
 | **Kubernetes** | [`kubernetes/`](kubernetes/) | Standalone, site, console, collector and processor layers for clusters |
+| **Helm** | [`helm/cerberus`](helm/cerberus) | Standalone or scaled out on Kubernetes, with [operator-run](kubernetes/operators) Kafka, PostgreSQL and ClickHouse |
 
 One instance handles a few hundred devices (see "Running at scale" in the main
 README). Beyond that, run **one Cerberus per site** and connect the sites to a
@@ -34,10 +35,10 @@ firewall cluster).
 Version tags are published by CI for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/wrcrooks/cerberus:0.11.0
+docker pull ghcr.io/wrcrooks/cerberus:0.12.0
 ```
 
-To build your own, `docker build -t registry.example.com/cerberus:0.11.0 .`,
+To build your own, `docker build -t registry.example.com/cerberus:0.12.0 .`,
 push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
 `kubernetes/base/kustomization.yaml`.
 
@@ -130,7 +131,7 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.11.0` to use the published image
+Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.12.0` to use the published image
 instead of building locally. Compose (without Swarm) bind-mounts secret files,
 so they must be readable by the container's user (uid 10001); `make-secrets.py`
 writes them mode 0644.
@@ -233,8 +234,14 @@ default 1 - set 3 on a real cluster). With detection workers there is also a
 topic per family (`<topic>.source` and so on) and one for their findings
 (`<topic>.candidates`); the partition count caps how many workers of a family
 can share the work. `CERBERUS_KAFKA_SECURITY=SSL` with
-`CERBERUS_KAFKA_CA` encrypts traffic to the bus; SASL authentication is not
-supported yet.
+`CERBERUS_KAFKA_CA` encrypts traffic to the bus. To require a username and
+password, use `SASL_SSL` (or `SASL_PLAINTEXT` on a trusted network) with
+`CERBERUS_KAFKA_SASL_MECHANISM` (`SCRAM-SHA-512` by default, `SCRAM-SHA-256`
+or `PLAIN`), `CERBERUS_KAFKA_USERNAME` and `CERBERUS_KAFKA_PASSWORD_FILE`.
+Cerberus needs Read, Write, Describe and Create on the topics that start with
+`cerberus.events`, and Read and Describe on the consumer groups that start with
+`cerberus`; [`kubernetes/operators/kafka.yaml`](kubernetes/operators/kafka.yaml)
+has those ACLs as a Strimzi `KafkaUser`.
 
 ## Kubernetes
 
@@ -283,6 +290,82 @@ same cluster as the console can use
 - **Hardening.** Non-root (uid 10001), read-only root filesystem, no
   capabilities, no service-account token.
 
+## Kubernetes with Helm and operators
+
+The chart in [`helm/cerberus`](helm/cerberus) installs either form:
+
+```sh
+# standalone: one pod, SQLite on a volume
+helm install cerberus deploy/helm/cerberus -n cerberus --create-namespace \
+  --set auth.password='choose-one' --set publicUrl=https://cerberus.example.com \
+  --set ingress.enabled=true --set ingress.host=cerberus.example.com
+```
+
+`mode: scaleOut` runs collectors (a StatefulSet with a spool volume each,
+behind the syslog `LoadBalancer`), two processors (one active, one standby)
+and, with `detectors.enabled`, a detection-worker Deployment per family. It
+needs Kafka, PostgreSQL and ClickHouse, which
+[`kubernetes/operators`](kubernetes/operators) runs with their operators:
+
+1. **Install the operators** (each once per cluster; check their sites for the
+   current versions):
+
+   ```sh
+   kubectl create namespace cerberus
+   kubectl create -f 'https://strimzi.io/install/latest?namespace=cerberus' -n cerberus
+   kubectl apply --server-side -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.25/releases/cnpg-1.25.1.yaml
+   kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml
+   ```
+
+2. **Create the ClickHouse user's Secret** (the only credential made by hand):
+
+   ```sh
+   PASS=$(openssl rand -hex 24)
+   kubectl -n cerberus create secret generic cerberus-clickhouse --from-literal=password=$PASS \
+     --from-literal=url="http://cerberus:$PASS@clickhouse-cerberus-ch.cerberus.svc:8123/cerberus"
+   ```
+
+3. **Create the stores**, and wait for them to be ready:
+
+   ```sh
+   kubectl apply -k deploy/kubernetes/operators
+   kubectl -n cerberus wait kafka/cerberus --for=condition=Ready --timeout=10m
+   kubectl -n cerberus wait cluster.postgresql.cnpg.io/cerberus-pg --for=condition=Ready --timeout=10m
+   ```
+
+4. **Install Cerberus** pointing at them:
+
+   ```sh
+   helm install cerberus deploy/helm/cerberus -n cerberus -f deploy/helm/cerberus/values-operators.yaml \
+     --set auth.password='choose-one' --set publicUrl=https://cerberus.example.com
+   ```
+
+What [`values-operators.yaml`](helm/cerberus/values-operators.yaml) wires up:
+
+| Store | Operator resources | What Cerberus reads |
+|---|---|---|
+| Kafka | Strimzi `Kafka` with a `KafkaNodePool` of 3 KRaft nodes; a TLS listener on 9093 with SCRAM-SHA-512; `KafkaUser` `cerberus` with ACLs for its topics and groups | `cerberus-kafka-bootstrap:9093` over `SASL_SSL`; the password from Secret `cerberus`, the CA from `cerberus-cluster-ca-cert` (both written by Strimzi) |
+| PostgreSQL | CloudNativePG `Cluster` `cerberus-pg`, 3 instances, database and owner `cerberus` | The URI in Secret `cerberus-pg-app` (written by CloudNativePG), to the read-write service |
+| ClickHouse | Altinity `ClickHouseInstallation` `cerberus-ch`, one shard and one replica | The URL in Secret `cerberus-clickhouse`; Cerberus creates the database |
+
+ClickHouse has one replica because Cerberus's tables are plain MergeTree:
+extra replicas would not receive the data. Protect it with volume snapshots
+or `clickhouse-backup`. Size the volumes and resources in the manifests for
+your traffic before applying them.
+
+Chart values worth knowing (all in [`values.yaml`](helm/cerberus/values.yaml)):
+
+- `auth.password` or `auth.existingSecret`: the built-in admin's password.
+- `oidc.*`: single sign-on; `oidc.existingSecret` holds the client secret.
+- `storage.postgresUrl`/`clickhouseUrl`, `storage.existingSecret`, or
+  `storage.postgresUrlFrom`/`clickhouseUrlFrom` (a key of any Secret).
+- `kafka.security`, `kafka.caSecret`, `kafka.sasl.*`.
+- `syslog.service.loadBalancerSourceRanges`: restrict to your management
+  networks. `syslog.tls.*` adds syslog over TLS from a `kubernetes.io/tls` Secret.
+- `metrics.token`; the pods carry `prometheus.io/scrape` annotations.
+
+The chart is linted and rendered in CI in both forms.
+
 ## What has been tested
 
 | Deployment | How |
@@ -294,8 +377,9 @@ same cluster as the console can use
 | Clustered storage | `compose/clustered-storage.yml` on Docker Desktop with PostgreSQL 16 and ClickHouse 24.8: every attack scenario over TCP, alerts, event search and risk ports through the API, then a restart with the session and detector state intact. On Kubernetes, as part of the processor layer below |
 | Scale-out, Compose | `compose/scale-out.yml` with three collectors: senders with their own addresses through HAProxy (PROXY v2) kept those addresses; connections spread over collectors; with the bus stopped, a collector spooled 465 events and sent them when it returned, and the processor stored every event exactly once (475 resent copies ignored) |
 | Scale-out, Kubernetes | `collector` and `processor` layers on k3s 1.31 with Redpanda, PostgreSQL and ClickHouse in the cluster: three collectors (StatefulSet, own spool volumes), TCP and UDP through the LoadBalancer kept each sender pod's address, the processor stored every event and saw all three collectors' heartbeats |
+| Helm with operators | `kubernetes/operators` (scaled down to one replica each) on k3s 1.31 with Strimzi 1.3.1 (Kafka 4.3), CloudNativePG 1.25 and the Altinity operator 0.24, then the chart with `values-operators.yaml`: every role authenticated to Kafka with SCRAM-SHA-512 over TLS; syslog sent to a collector raised a port-scan alert through a detection worker; events stored in ClickHouse and alerts in PostgreSQL. The standalone chart passed a server-side dry run |
 
 Not yet tested: Swarm across real hosts on separate networks, Kubernetes on a
 managed cloud load balancer, the console's Ingress with an ingress
-controller (k3s ran without one), and a collector outage on Kubernetes. CI checks on every push that all four
+controller (k3s ran without one), and a collector outage on Kubernetes. CI checks on every push that all five
 deployments' files are valid.

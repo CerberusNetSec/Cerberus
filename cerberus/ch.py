@@ -13,9 +13,10 @@ whole-hour partitions that expire by dropping a partition.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from .storage import TOTAL, QueryTimeout
 
@@ -61,10 +62,26 @@ def _client_for(url: str):
         settings={"insert_deduplicate": 0}, connect_timeout=10, send_receive_timeout=300)
 
 
+def _ensure_database(url: str) -> None:
+    """Create the database the URL names if it does not exist yet (an operator-managed
+    ClickHouse has users, not databases). Needs the CREATE DATABASE grant, or an existing one."""
+    parts = urlparse(url)
+    name = (parts.path or "/").lstrip("/")
+    if not name or name == "default" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+        return
+    admin = _client_for(urlunparse(parts._replace(path="/default")))
+    try:
+        if not admin.command(f"EXISTS DATABASE {name}"):
+            admin.command(f"CREATE DATABASE IF NOT EXISTS {name}")
+    finally:
+        admin.close()
+
+
 class ClickHouseEvents:
     def __init__(self, url: str):
         self.url = url
         self._local = threading.local()  # one HTTP client per thread: the client is not thread-safe
+        _ensure_database(url)
         for statement in SCHEMA:
             for attempt in range(5):
                 try:

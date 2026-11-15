@@ -113,7 +113,9 @@ function justify({ title, intro, confirm, send }) {
   err.textContent = '';
   let saved = '';
   try { saved = localStorage.getItem('cerberus.analyst') || ''; } catch { /* no storage: ask each time */ }
-  $('#justify-analyst').value = saved;
+  const account = state.me?.user?.kind === 'session' && state.me.user.source !== 'builtin';
+  $('#justify-analyst').closest('form').classList.toggle('named', account);
+  $('#justify-analyst').value = account ? state.me.user.name : saved;
   $('#justify-text').value = '';
   dlg.showModal();
   (saved ? $('#justify-text') : $('#justify-analyst')).focus();
@@ -129,7 +131,7 @@ function justify({ title, intro, confirm, send }) {
     const submit = async (e) => {
       e.preventDefault();
       const analyst = $('#justify-analyst').value.trim(), justification = $('#justify-text').value.trim();
-      if (!analyst) { err.textContent = 'Enter your name.'; return; }
+      if (!analyst && !form.classList.contains('named')) { err.textContent = 'Enter your name.'; return; }
       if (justification.length < 10) { err.textContent = 'Write a justification of at least 10 characters.'; return; }
       $('#justify-ok').disabled = true;
       try {
@@ -357,7 +359,7 @@ pages.alerts = {
     if (params.get('status')) s.status = params.get('status');
     main.innerHTML = `
       <div class="page-head"><div><h1>Alerts</h1><p>Repeats of the same problem are folded into one alert and counted.</p></div>
-        <button type="button" data-act="ack-all">Acknowledge all open</button></div>
+        <button type="button" class="needs-analyst" data-act="ack-all">Acknowledge all open</button></div>
       <div class="filters">
         <select id="f-status" aria-label="Status">
           ${[['open', 'Open'], ['ack', 'Acknowledged'], ['active', 'Open + acknowledged'], ['resolved', 'Resolved'],
@@ -410,7 +412,7 @@ pages.alerts = {
     $('#f-updated').textContent = `Updated ${clock(Date.now() / 1000)}`;
     updateBadge();
     body.innerHTML = alerts.length ? alerts.map((a) => {
-      const btn = (status, label) => `<button type="button" class="small" data-act="status" data-id="${a.id}" data-status="${status}">${label}</button>`;
+      const btn = (status, label) => `<button type="button" class="small needs-analyst" data-act="status" data-id="${a.id}" data-status="${status}">${label}</button>`;
       const fp = a.status === 'false_positive', fpInfo = a.false_positive;
       const buttons = fp ? '' : (a.status === 'open' ? btn('ack', 'Acknowledge') : '') +
         (a.status !== 'resolved' ? btn('resolved', 'Resolve') : btn('open', 'Reopen'));
@@ -418,7 +420,7 @@ pages.alerts = {
             <div class="quote">${esc(fpInfo.justification)}</div>
             ${fpInfo.active ? `Held back since: ${num(fpInfo.hits)} time(s)${fpInfo.last_hit ? `, last ${ago(fpInfo.last_hit)}` : ''}.
               <a href="#/suppressions">Manage</a>` : 'The suppression has since been removed.'}</dd>` : '<dt>False positive</dt><dd>Yes</dd>')
-        : `<dt>False positive?</dt><dd><button type="button" class="small" data-act="fp" data-id="${a.id}">Mark as false positive</button>
+        : `<dt>False positive?</dt><dd><button type="button" class="small needs-analyst" data-act="fp" data-id="${a.id}">Mark as false positive</button>
             <span class="muted">${esc(a.detector.replace(/_/g, ' '))} will not alert on <span class="mono">${esc(a.entity)}</span> again</span></dd>`;
       const g = a.advice || { actions: [] };
       const detail = s.open.has(a.id) ? `<tr class="detail"><td></td><td colspan="7">
@@ -432,7 +434,7 @@ pages.alerts = {
           ${Number.isInteger((a.details || {}).port) ? `<dt>High Risk Ports</dt><dd><a href="#/riskports?port=${a.details.port}">Show all traffic on port ${a.details.port}</a></dd>` : ''}
           ${a.device ? `<dt>Topology</dt><dd><a href="#/topology?select=${encodeURIComponent(a.device)}">Show ${esc(a.device)} on the map</a></dd>` : ''}
           ${fpLines}
-          ${a.src_ip && !fp ? `<dt>Expected source?</dt><dd><button type="button" class="small" data-act="ignore" data-ip="${esc(a.src_ip)}">Stop alerting on ${esc(a.src_ip)} as a source</button></dd>` : ''}
+          ${a.src_ip && !fp ? `<dt>Expected source?</dt><dd><button type="button" class="small needs-analyst" data-act="ignore" data-ip="${esc(a.src_ip)}">Stop alerting on ${esc(a.src_ip)} as a source</button></dd>` : ''}
         </dl></td></tr>` : '';
       return `<tr class="click ${a.status === 'resolved' || fp ? 'resolved' : ''} ${fresh.has(a.id) ? 'fresh' : ''}" data-act="toggle" data-id="${a.id}">
         <td>${sevBadge(a.severity)}</td>
@@ -517,6 +519,7 @@ pages.attack = {
         <div class="chart-head" style="margin-bottom:10px"><h2 style="margin:0">Alerts by tactic and technique</h2>
           <div class="heat-legend" id="ak-legend" aria-label="Colour scale"></div></div>
         <div class="matrix-wrap"><div class="matrix" id="ak-matrix"></div></div>
+        <p class="muted small" id="ak-hidden" style="margin:6px 0 0"></p>
       </div>
       <div class="card" style="margin-top:16px" id="ak-other"></div>`;
     $('#ak-range').addEventListener('click', (e) => {
@@ -546,7 +549,11 @@ pages.attack = {
         heatRanges(d.max).map(([step, label]) => `<span class="heat-key"><i class="heat-${step}"></i>${label}</span>`).join('')
       : '<span class="muted">No alerts in this period</span>';
     const status = s.status === 'active' ? 'active' : 'all';
-    $('#ak-matrix').innerHTML = d.tactics.map((t) => `
+    const shown = d.hide_uncovered ? d.tactics.filter((t) => t.techniques.length) : d.tactics;
+    $('#ak-matrix').style.setProperty('--tactics', shown.length);
+    $('#ak-hidden').textContent = d.hide_uncovered && shown.length < d.tactics.length
+      ? `${d.tactics.length - shown.length} tactics with no Cerberus detector are hidden (Settings → General).` : '';
+    $('#ak-matrix').innerHTML = shown.map((t) => `
       <section class="tactic" aria-label="${esc(t.name)}">
         <header><a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">${esc(t.name)}</a>
           <span class="muted">${t.techniques.length ? `${num(t.alerts)} alert${t.alerts === 1 ? '' : 's'}` : ''}</span></header>
@@ -607,7 +614,7 @@ pages.suppressions = {
         <td>${esc(s.analyst)}<div class="muted">${when(s.created)}${s.alert_id ? ` · <a href="#/alerts?id=${s.alert_id}">alert</a>` : ''}</div></td>
         <td><div class="quote">${esc(s.justification)}</div></td>
         <td class="num">${num(s.hits)}</td><td>${s.last_hit ? when(s.last_hit) : '—'}</td>
-        <td><button type="button" class="small danger" data-act="remove" data-id="${s.id}">Remove</button></td></tr>`).join('')
+        <td><button type="button" class="small danger needs-analyst" data-act="remove" data-id="${s.id}">Remove</button></td></tr>`).join('')
       : '<tr><td colspan="7" class="empty">No alerts are suppressed. Mark one from its details on the Alerts page.</td></tr>';
     $('#sup-removed').innerHTML = removed.length ? removed.map((s) => `<tr>
         <td>${det(s.detector)}</td><td class="mono">${esc(s.entity)}</td>
@@ -666,7 +673,7 @@ pages.riskports = {
     main.innerHTML = `
       <div class="page-head"><div><h1>High Risk Ports</h1>
         <p>Traffic on the services attackers go for first: remote access, file sharing, clear-text protocols and databases.
-          Ports with something to look at are listed first. <a href="#/settings/detection?focus=risk_ports">Edit the list of ports and protocols</a>.</p></div>
+          Ports with something to look at are listed first. <a class="needs-admin" href="#/settings/detection?focus=risk_ports">Edit the list of ports and protocols</a>.</p></div>
         <div class="row"><label class="check" style="margin:0"><input id="rp-flagged" type="checkbox" ${s.flagged ? 'checked' : ''}> Only ports with findings</label>
           <div class="seg" id="rp-range">${['1h', '6h', '24h', '7d'].map((r) =>
             `<button type="button" data-range="${r}" class="${r === s.range ? 'on' : ''}">${r}</button>`).join('')}</div></div></div>
@@ -795,7 +802,7 @@ pages.sites = {
       <div class="page-head"><div><h1>Sites</h1>
         <p>Every site runs its own Cerberus against its own devices and reports here. Acknowledging or resolving a site's
           alert here is passed back to that site.</p></div>
-        <button type="button" class="primary" data-act="add-site">Add a site</button></div>
+        <button type="button" class="primary needs-admin" data-act="add-site">Add a site</button></div>
       <div id="site-token" hidden></div>
       <div class="grid tiles" id="site-tiles"></div>
       <div class="card table-wrap" style="margin-bottom:14px"><table>
@@ -812,7 +819,7 @@ pages.sites = {
           ${SEVS.slice(1).map((v) => `<option value="${v}" ${v === s.severity ? 'selected' : ''}>${v} and above</option>`).join('')}</select>
         <input id="sa-q" type="search" placeholder="Search title, IP, device" value="${esc(s.q)}">
         ${s.only ? '<a href="#/sites">Showing one alert · show all</a>' : ''}
-        <button type="button" data-act="ack-shown">Acknowledge all shown</button>
+        <button type="button" class="needs-analyst" data-act="ack-shown">Acknowledge all shown</button>
       </div>
       <div class="card table-wrap"><table>
         <thead><tr><th>Severity</th><th>Site</th><th>Alert</th><th>Source</th><th class="num">Count</th><th>Last seen</th><th></th></tr></thead>
@@ -855,8 +862,8 @@ pages.sites = {
         <td>${sevs.length ? sevs.map((k) => `<a href="#/sites" data-act="filter-site" data-site="${x.id}" data-sev="${k}">${sevBadge(k)} ${x.open_alerts[k]}</a>`).join(' ') : '<span class="muted">None</span>'}</td>
         <td>${health ? `<span class="error">${esc(health)}</span>` : x.last_seen ? '<span class="muted">Keeping up</span>' : ''}</td>
         <td class="mono">${esc(x.version || '')}</td>
-        <td class="nowrap">${x.managed ? '' : `<button type="button" class="small" data-act="rotate" data-id="${x.id}" data-name="${esc(x.name)}">New token</button>
-          <button type="button" class="small danger" data-act="delete-site" data-id="${x.id}" data-name="${esc(x.name)}">Remove</button>`}</td></tr>`;
+        <td class="nowrap">${x.managed ? '' : `<button type="button" class="small needs-admin" data-act="rotate" data-id="${x.id}" data-name="${esc(x.name)}">New token</button>
+          <button type="button" class="small danger needs-admin" data-act="delete-site" data-id="${x.id}" data-name="${esc(x.name)}">Remove</button>`}</td></tr>`;
     }).join('') : '<tr><td colspan="8" class="empty">No sites yet. Add one, then start Cerberus at that site with the settings shown.</td></tr>';
     const picked = String(s.site);
     $('#sa-site').innerHTML = '<option value="">All sites</option>' + sites.map((x) =>
@@ -872,7 +879,7 @@ pages.sites = {
     const body = $('#sa-rows');
     if (!body) return;
     body.innerHTML = alerts.length ? alerts.map((a) => {
-      const btn = (status, label) => `<button type="button" class="small" data-act="site-status" data-id="${a.id}" data-status="${status}">${label}</button>`;
+      const btn = (status, label) => `<button type="button" class="small needs-analyst" data-act="site-status" data-id="${a.id}" data-status="${status}">${label}</button>`;
       const buttons = (a.status === 'open' ? btn('ack', 'Acknowledge') : '') + (a.status !== 'resolved' ? btn('resolved', 'Resolve') : btn('open', 'Reopen'));
       const g = a.advice || { actions: [] };
       const detail = s.open.has(a.id) ? `<tr class="detail"><td></td><td colspan="6">${guidance(g)}<dl class="kv">${stageLine(g)}
@@ -1130,8 +1137,8 @@ pages.devices = {
             placeholder="${d.snmp_has_community ? 'unchanged' : 'community'}" ${d.snmp_mode === 'custom' ? '' : 'hidden'}>
           <input type="text" class="d-host" aria-label="SNMP address" placeholder="address, if not ${esc(d.ip)}" value="${esc(d.snmp_host)}"></div></td>
         <td class="num">${num(d.events)}</td><td class="nowrap" title="${clock(d.last_seen, true)}">${ago(d.last_seen)}</td>
-        <td class="nowrap"><button type="button" class="small" data-act="save">Save</button>
-          <button type="button" class="small danger" data-act="forget">Forget</button></td>
+        <td class="nowrap"><button type="button" class="small needs-admin" data-act="save">Save</button>
+          <button type="button" class="small danger needs-admin" data-act="forget">Forget</button></td>
       </tr>`).join('')
       : `<tr><td colspan="8" class="empty">${this.rows.length ? 'No device matches these filters.'
         : 'Nothing has sent syslog yet. Point a device at this host on UDP or TCP port 514.'}</td></tr>`;
@@ -1223,7 +1230,7 @@ pages.topology = {
     main.innerHTML = `
       <div class="page-head"><div><h1>Topology</h1>
         <p>Built from what each device reports about its neighbours over SNMP (LLDP and CDP). Drag devices to arrange them; a ring and count mark devices with open alerts.</p></div>
-        <div class="row"><span class="muted" id="topo-status"></span><button type="button" data-act="poll">Poll now</button></div></div>
+        <div class="row"><span class="muted" id="topo-status"></span><button type="button" class="needs-admin" data-act="poll">Poll now</button></div></div>
       <div class="grid topo-grid">
         <div class="card">
           <div class="filters topo-tools" id="topo-tools">
@@ -1719,6 +1726,30 @@ pages.detection = {
   },
 };
 
+/* --- Settings -> General: display options --- */
+pages.general = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>General</h1><p>Options for how Cerberus shows things, for everyone who uses it.</p></div></div>
+      <form class="card" id="gen-form">
+        <h2>MITRE ATT&amp;CK page</h2>
+        <label class="check"><input type="checkbox" id="gen-attack-hide"> Hide tactic columns Cerberus has no detector for</label>
+        <p class="muted small" style="margin:4px 0 0 24px">Reconnaissance, Execution, Collection and other tactics that cannot be seen
+          from network logs. Showing them makes the gaps in coverage visible; hiding them leaves more room for the rest.</p>
+        <div class="actions"><button class="primary" type="submit">Save changes</button></div>
+      </form>`;
+    $('#gen-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(async () => {
+        const d = await api('/display', 'PUT', { display: { attack_hide_uncovered: $('#gen-attack-hide').checked } });
+        this.show(d);
+      }, 'Saved');
+    });
+  },
+  async refresh() { this.show(await api('/display')); },
+  show(d) { $('#gen-attack-hide').checked = d.display.attack_hide_uncovered; },
+};
+
 /* --- syslog listeners (Settings → Syslog) --- */
 const LISTENERS = [['udp', 'UDP', 'Plain syslog (RFC 3164/5424). Most devices send this by default.'],
   ['tcp', 'TCP', 'Plain syslog over TCP: nothing is lost to a full network, and it gets through Docker Desktop.'],
@@ -1866,6 +1897,179 @@ pages.agents = {
   },
 };
 
+/* --- users, roles and single sign-on (Settings -> Users) --- */
+pages.users = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Users</h1>
+        <p><b>Viewers</b> see everything; <b>analysts</b> can also acknowledge, resolve and mark false positives;
+          <b>admins</b> can also change settings, channels, users and tokens. Every sign-in and every change is in the
+          <a href="#/settings/audit">audit log</a>.</p></div></div>
+      <div class="grid two" id="us-cards"></div>
+      <form class="card" id="us-form" style="margin-top:16px">
+        <h2>New user</h2>
+        <div class="form-grid">
+          <div><label for="us-name">Username</label><input id="us-name" autocomplete="off" spellcheck="false" required></div>
+          <div><label for="us-display">Name (optional)</label><input id="us-display" autocomplete="off"></div>
+          <div><label for="us-role">Role</label><select id="us-role"><option value="viewer">Viewer</option>
+            <option value="analyst" selected>Analyst</option><option value="admin">Admin</option></select></div>
+          <div><label for="us-pass">Password (at least 12 characters)</label><input id="us-pass" type="password" autocomplete="new-password" required></div>
+        </div>
+        <div class="actions"><button class="primary" type="submit">Add user</button></div>
+      </form>
+      <div class="card table-wrap" style="margin-top:16px"><h2>Accounts</h2><table>
+        <thead><tr><th>User</th><th>Role</th><th>Sign-in</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead>
+        <tbody id="us-rows"></tbody></table></div>`;
+    $('#us-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(async () => {
+        await api('/users', 'POST', { username: $('#us-name').value.trim(), display_name: $('#us-display').value.trim(),
+          role: $('#us-role').value, password: $('#us-pass').value });
+        $('#us-name').value = $('#us-display').value = $('#us-pass').value = '';
+        await this.refresh();
+      }, 'User added');
+    });
+  },
+  async refresh() {
+    const d = await api('/users');
+    this.data = d;
+    if (!$('#us-rows')) return;
+    const me = state.me?.user || {};
+    const sso = d.sso;
+    const groups = (l) => (l.length ? l.map(esc).join(', ') : '<span class="muted">none</span>');
+    $('#us-cards').innerHTML = `
+      <div class="card"><h2>Single sign-on</h2>${sso.enabled ? `
+        <p><span class="dot on"></span>On, with <span class="mono">${esc(sso.issuer)}</span> (client <span class="mono">${esc(sso.client_id)}</span>).</p>
+        <dl class="kv"><dt>Redirect URL</dt><dd class="mono">${esc(sso.redirect_url)}</dd>
+          <dt>Groups claim</dt><dd class="mono">${esc(sso.role_claim)}</dd>
+          <dt>Admins</dt><dd>${groups(sso.admin_groups)}</dd><dt>Analysts</dt><dd>${groups(sso.analyst_groups)}</dd>
+          <dt>Viewers</dt><dd>${groups(sso.viewer_groups)}</dd><dt>Everyone else</dt><dd>${esc(sso.default_role)}</dd></dl>
+        <p class="muted small">Roles follow the groups at every sign-in. Configured with the CERBERUS_OIDC_* settings.</p>`
+        : `<p class="muted">Off. To sign in through Okta, Microsoft Entra ID, Google, Keycloak, Authentik or another OpenID Connect
+          provider, set <code>CERBERUS_OIDC_ISSUER</code>, <code>CERBERUS_OIDC_CLIENT_ID</code>, <code>CERBERUS_OIDC_CLIENT_SECRET</code>
+          and <code>CERBERUS_PUBLIC_URL</code>, and map groups to roles with <code>CERBERUS_OIDC_ADMIN_GROUPS</code>,
+          <code>_ANALYST_GROUPS</code> and <code>_VIEWER_GROUPS</code>. See the README.</p>`}</div>
+      <div class="card"><h2>Built-in admin</h2>
+        <p>${d.builtin_admin ? '<span class="dot on"></span>Allowed: the shared dashboard password signs in as an admin (leave the username empty).'
+          : 'Switched off: only accounts and single sign-on can sign in.'}</p>
+        <p class="muted small">Switch it off once you have an admin account of your own, so every change is made by a named person.</p>
+        <button type="button" data-act="builtin" data-allowed="${d.builtin_admin ? '' : '1'}">${d.builtin_admin ? 'Switch off' : 'Allow again'}</button></div>`;
+    $('#us-rows').innerHTML = d.users.length ? d.users.map((u) => {
+      const self = me.username === u.username && me.source !== 'builtin';
+      const role = u.source === 'sso' ? `${ROLE_NAMES[u.role]} <span class="muted small">from groups</span>`
+        : `<select data-act-change="role" data-id="${u.id}" ${self ? 'disabled title="You cannot change your own role"' : ''}>${d.roles.map((r) =>
+          `<option value="${r}" ${r === u.role ? 'selected' : ''}>${ROLE_NAMES[r]}</option>`).join('')}</select>`;
+      return `<tr><td><b>${esc(u.display_name || u.username)}</b><div class="muted mono small">${esc(u.username)}</div></td>
+        <td>${role}</td><td>${u.source === 'sso' ? 'Single sign-on' : 'Password'}</td>
+        <td>${u.last_login ? `<span title="${clock(u.last_login, true)}">${ago(u.last_login)}</span>` : '<span class="muted">Never</span>'}</td>
+        <td>${u.disabled ? '<span class="muted">Disabled</span>' : '<span class="dot on"></span>Active'}</td>
+        <td class="nowrap">${u.source === 'local' ? `<button type="button" class="small" data-act="reset" data-id="${u.id}" data-name="${esc(u.username)}">Set password</button>` : ''}
+          ${self ? '' : `<button type="button" class="small" data-act="toggle-user" data-id="${u.id}" data-disabled="${u.disabled ? '' : '1'}">${u.disabled ? 'Enable' : 'Disable'}</button>
+          <button type="button" class="small danger" data-act="delete-user" data-id="${u.id}" data-name="${esc(u.username)}">Delete</button>`}</td></tr>`;
+    }).join('') : '<tr><td colspan="6" class="empty">No accounts yet: everyone signs in with the shared password.</td></tr>';
+    $$('#us-rows [data-act-change="role"]').forEach((sel) => sel.addEventListener('change', () => act(async () => {
+      await api(`/users/${sel.dataset.id}`, 'PUT', { role: sel.value });
+      await this.refresh();
+    }, 'Role changed; that user signs in again')));
+  },
+  actions: {
+    async builtin(el) {
+      const allowed = Boolean(el.dataset.allowed);
+      if (!allowed && !confirm('Switch off the built-in admin? The shared password will stop working, and anyone signed in with it is signed out.')) return;
+      await api('/auth/builtin', 'PUT', { allowed });
+      toast(allowed ? 'The built-in admin is allowed again' : 'The built-in admin is switched off');
+      if (!allowed && state.me?.user?.source === 'builtin') return start();
+      await pages.users.refresh();
+    },
+    async 'toggle-user'(el) {
+      await api(`/users/${el.dataset.id}`, 'PUT', { disabled: Boolean(el.dataset.disabled) });
+      await pages.users.refresh();
+    },
+    async 'delete-user'(el) {
+      if (!confirm(`Delete the account "${el.dataset.name}"? Its audit log entries stay.`)) return;
+      await api(`/users/${el.dataset.id}`, 'DELETE');
+      toast('User deleted');
+      await pages.users.refresh();
+    },
+    async reset(el) {
+      const password = prompt(`New password for ${el.dataset.name} (at least 12 characters):`);
+      if (!password) return;
+      await api(`/users/${el.dataset.id}`, 'PUT', { password });
+      toast('Password set; that user signs in again');
+    },
+  },
+};
+
+/* --- the audit log (Settings -> Audit log) --- */
+const AUDIT_LABELS = [
+  [/^login$/, 'Signed in'], [/^login_failed$/, 'Failed sign-in'], [/^login_refused$/, 'Sign-in refused'],
+  [/^logout$/, 'Signed out'], [/^password_changed$/, 'Changed own password'],
+  [/^false_positive/, 'Marked a false positive'], [/^suppression_removed$/, 'Removed a suppression'],
+  [/^token_created$/, 'Created an API token'], [/^token_revoked$/, 'Revoked an API token'],
+  [/^alert_status$/, 'Changed alert status (agent)'],
+  [/^POST \/api\/alerts\/status$/, 'Changed alert status'], [/^POST \/api\/ignore$/, 'Stopped alerting on a source'],
+  [/^PUT \/api\/detectors$/, 'Changed detection settings'], [/^PUT \/api\/display$/, 'Changed display options'],
+  [/^PUT \/api\/listeners$/, 'Changed syslog listeners'], [/^PUT \/api\/snmp$/, 'Changed SNMP settings'],
+  [/^POST \/api\/snmp\/poll$/, 'Polled SNMP'], [/^PUT \/api\/devices$/, 'Changed a device'],
+  [/^POST \/api\/devices\/forget$/, 'Forgot a device'], [/^POST \/api\/connectors\/reload$/, 'Reloaded connectors'],
+  [/^POST \/api\/connectors\/test$/, 'Tested a connector'],
+  [/^POST \/api\/channels\/\d+\/test$/, 'Sent a test notification'], [/^POST \/api\/channels$/, 'Added a notification channel'],
+  [/^PUT \/api\/channels\//, 'Changed a notification channel'], [/^DELETE \/api\/channels\//, 'Deleted a notification channel'],
+  [/^POST \/api\/users$/, 'Added a user'], [/^PUT \/api\/users\//, 'Changed a user'], [/^DELETE \/api\/users\//, 'Deleted a user'],
+  [/^PUT \/api\/auth\/builtin$/, 'Changed the built-in admin'], [/^POST \/api\/site-alerts\/status$/, 'Changed site alert status'],
+  [/\/api\/sites/, 'Changed console sites'],
+];
+const auditLabel = (action) => (AUDIT_LABELS.find(([re]) => re.test(action)) || [null, action])[1];
+function auditDetail(r) {
+  const d = r.detail || {};
+  if (d.justification) return d.justification;
+  const req = d.request;
+  if (req && typeof req === 'object') {
+    return Object.entries(req).slice(0, 6).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v).slice(0, 80) : v}`).join(' · ');
+  }
+  return Object.entries(d).filter(([k]) => k !== 'request').map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ');
+}
+pages.audit = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>Audit log</h1>
+        <p>Every sign-in, and every change anyone made: who, from where, when and what. Passwords, tokens and other secrets
+          are masked. Entries cannot be edited or deleted.</p></div>
+        <input id="au-q" type="search" placeholder="Filter: name, address, action" aria-label="Filter the audit log"></div>
+      <div class="card table-wrap"><table>
+        <thead><tr><th>When</th><th>Who</th><th>From</th><th>What</th><th>Details</th></tr></thead>
+        <tbody id="au-rows"></tbody></table>
+        <div class="actions"><button type="button" data-act="older" id="au-older">Older entries</button></div></div>`;
+    this.rows = [];
+    $('#au-q').addEventListener('input', debounce(() => this.show(), 150));
+  },
+  async refresh() {
+    const { audit } = await api('/audit?limit=200');
+    this.rows = audit;
+    this.show();
+  },
+  show() {
+    const q = ($('#au-q')?.value || '').trim().toLowerCase();
+    const rows = this.rows.filter((r) => !q || [r.analyst, r.source, r.action, auditLabel(r.action), auditDetail(r)].join(' ').toLowerCase().includes(q));
+    $('#au-rows').innerHTML = rows.length ? rows.map((r) => `<tr>
+        <td class="nowrap" title="${clock(r.ts, true)}">${clock(r.ts, true)}</td>
+        <td>${esc(r.analyst || '')}</td><td class="mono">${esc(r.source || '')}</td>
+        <td><b>${esc(auditLabel(r.action))}</b>${auditLabel(r.action) === r.action ? '' : `<div class="muted mono small">${esc(r.action)}</div>`}</td>
+        <td><div class="quote">${esc(auditDetail(r))}</div>${r.alert_id ? `<a href="#/alerts?id=${r.alert_id}">alert #${r.alert_id}</a>` : ''}</td></tr>`).join('')
+      : '<tr><td colspan="5" class="empty">Nothing matches.</td></tr>';
+    $('#au-older').hidden = this.rows.length < 200 || this.done;
+  },
+  actions: {
+    async older() {
+      const s = pages.audit, last = s.rows[s.rows.length - 1];
+      const { audit } = await api(`/audit?limit=200&before=${last.id}`);
+      s.done = audit.length < 200;
+      s.rows = s.rows.concat(audit);
+      s.show();
+    },
+  },
+};
+
 /* --- notifications --- */
 pages.notifications = {
   render() {
@@ -1997,16 +2201,21 @@ function startPageTimer() {
 }
 /* Settings: Detection, Connectors and Notifications, as sections of one page.
    #/settings/<section>; the older #/detection and the like still work. */
-const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
-  ['agents', 'API & agents']];
+const SETTINGS_TABS = [['general', 'General'], ['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
+  ['agents', 'API & agents'], ['users', 'Users'], ['audit', 'Audit log']];
+// Admins see every section; analysts only the audit log (the rest needs an admin).
+const settingsTabs = () => (document.body.dataset.role === 'analyst'
+  ? SETTINGS_TABS.filter(([id]) => id === 'audit') : SETTINGS_TABS);
 function settingsSection(name) {
+  const tabs = settingsTabs();
   if (name === 'settings') {
     let last = '';
     try { last = localStorage.getItem('cerberus.settingsTab') || ''; } catch { /* first one */ }
-    return SETTINGS_TABS.some(([id]) => id === last) ? last : 'detection';
+    return tabs.some(([id]) => id === last) ? last : tabs[0][0];
   }
   const id = name.startsWith('settings/') ? name.slice(9) : name;
-  return SETTINGS_TABS.some(([t]) => t === id) ? id : null;
+  if (!SETTINGS_TABS.some(([t]) => t === id)) return null;
+  return tabs.some(([t]) => t === id) ? id : tabs[0][0];
 }
 function settingsChrome(tab) {
   // The section's own heading becomes the tabs; its description stays.
@@ -2017,7 +2226,7 @@ function settingsChrome(tab) {
   main.insertAdjacentHTML('afterbegin', `<div class="page-head"><div><h1>Settings</h1></div>
     ${v ? `<div class="muted version">Cerberus <a href="https://github.com/wrcrooks/Cerberus/releases/tag/v${esc(v)}" target="_blank"
       rel="noopener noreferrer" title="Release notes for this version">v${esc(v)}</a></div>` : ''}</div>
-    <nav class="tabs" aria-label="Settings sections">${SETTINGS_TABS.map(([id, label]) =>
+    <nav class="tabs" aria-label="Settings sections">${settingsTabs().map(([id, label]) =>
       `<a href="#/settings/${id}" class="${id === tab ? 'on' : ''}" ${id === tab ? 'aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`);
   try { localStorage.setItem('cerberus.settingsTab', tab); } catch { /* not kept */ }
 }
@@ -2057,25 +2266,59 @@ $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#login-error').textContent = '';
   try {
-    await api('/login', 'POST', { password: $('#login-password').value });
+    await api('/login', 'POST', { username: $('#login-username').value.trim(), password: $('#login-password').value });
     $('#login-password').value = '';
     start();
   } catch (err) {
     $('#login-error').textContent = err.message;
   }
 });
+$('#whoami').addEventListener('click', () => {
+  if (!state.me?.user?.local) return;
+  $('#pw-current').value = $('#pw-new').value = '';
+  $('#pw-error').textContent = '';
+  $('#pw-dialog').showModal();
+  $('#pw-current').focus();
+});
+$('#pw-cancel').addEventListener('click', () => $('#pw-dialog').close());
+$('#pw-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('/me/password', 'POST', { current: $('#pw-current').value, new: $('#pw-new').value });
+    $('#pw-dialog').close();
+    toast('Password changed');
+  } catch (err) { $('#pw-error').textContent = err.message; }
+});
 $('#logout').addEventListener('click', async () => {
   await api('/logout', 'POST').catch(() => {});
   showLogin();
 });
 
+/* A single sign-on failure comes back as ?sso_error=...: show it on the sign-in form. */
+const ssoError = new URLSearchParams(location.search).get('sso_error');
+if (ssoError) history.replaceState(null, '', location.pathname + location.hash);
+
+const ROLE_NAMES = { viewer: 'Viewer', analyst: 'Analyst', admin: 'Admin' };
 async function start() {
   const me = await api('/me');
   state.version = me.version || '';
-  if (!me.signed_in) return showLogin();
+  state.me = me;
+  if (!me.signed_in) {
+    $('#login-sso').hidden = $('#login-or').hidden = !(me.sso && me.sso.enabled);
+    if (me.sso && me.sso.enabled) $('#login-sso').textContent = `Sign in with ${me.sso.label}`;
+    $('#login-username-hint').hidden = !me.builtin_admin;
+    if (ssoError) $('#login-error').textContent = `Single sign-on did not work: ${ssoError}`;
+    return showLogin();
+  }
   $('#login').hidden = true;
   $('#shell').hidden = false;
   $('#logout').hidden = !me.auth;
+  const user = me.user || {};
+  document.body.dataset.role = user.role || 'viewer';
+  $('#whoami').hidden = !me.auth;
+  $('#whoami').textContent = `${user.name || ''} · ${ROLE_NAMES[user.role] || user.role || ''}`;
+  $('#whoami').disabled = !user.local;
+  $('#whoami').title = user.local ? 'Change your password' : (user.source === 'sso' ? 'Signed in with single sign-on' : 'Your account');
   $('#nav-sites').hidden = !me.central;
   if (me.central && !location.hash) location.hash = '#/sites';  // a console opens on its sites
   route();

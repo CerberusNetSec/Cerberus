@@ -21,15 +21,30 @@ response time and no bounty.
   `CERBERUS_PROXY_PROTOCOL_FROM`; list only your load balancers, or any sender
   could claim any device address.
 - **The message bus (scale-out)** carries every parsed event. Use
-  `CERBERUS_KAFKA_SECURITY=SSL`, restrict who can reach it, and note that SASL
-  authentication is not supported yet.
+  `CERBERUS_KAFKA_SECURITY=SASL_SSL` (TLS and a SCRAM password), give Cerberus's
+  Kafka user access to its own topics and groups only, and restrict who can
+  reach the bus.
 - **The dashboard is plain HTTP.** Put it behind a TLS reverse proxy if it is
-  reachable from anywhere you do not fully trust. It has one shared password
-  and no user accounts.
-- **Secrets are stored unencrypted** in the SQLite file in the data volume:
-  SMTP passwords, Telegram and Pushbullet tokens, and SNMP community strings.
-  The API never returns them, but anyone who can read the volume can. Protect
-  the volume and its backups.
+  reachable from anywhere you do not fully trust; single sign-on needs HTTPS.
+- **Accounts and roles.** The shared dashboard password signs in as the
+  built-in admin. Give people their own accounts (or single sign-on) with the
+  least role they need, then switch the built-in admin off under Settings →
+  Users, so every change in the audit log has a person's name on it. Local
+  passwords are stored as scrypt hashes; changing a user's role or password,
+  or disabling them, ends their sessions.
+- **Single sign-on** trusts your identity provider's groups for roles,
+  refreshed at each sign-in. Map only groups you control, and leave
+  `CERBERUS_OIDC_DEFAULT_ROLE` empty unless everyone your provider will sign in
+  should see your network's alerts.
+- **The audit log** records sign-ins and every change, with passwords, tokens
+  and community strings masked. It is kept in Cerberus's own database, so an
+  admin with access to that database could alter it; forward it elsewhere
+  (`GET /api/audit`) if you need it tamper-evident.
+- **Secrets are stored unencrypted** in the database (the SQLite file in the
+  data volume, or PostgreSQL): SMTP passwords, Telegram and Pushbullet tokens,
+  webhook signing secrets, and SNMP community strings.
+  The API never returns them, but anyone who can read the database can.
+  Protect it and its backups.
 - **SNMP is v2c.** The community string crosses the network in clear text. Use
   a read-only community that is not reused elsewhere. Cerberus only polls
   addresses inside the allowed networks unless an address was entered by hand,

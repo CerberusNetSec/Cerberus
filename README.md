@@ -11,8 +11,8 @@
 
 ![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
 ![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
-![Tests: 296](https://img.shields.io/badge/tests-296-2ea44f)
-![Deployments: standalone, Compose, Swarm, Kubernetes](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes-0366d6)
+![Tests: 314](https://img.shields.io/badge/tests-314-2ea44f)
+![Deployments: standalone, Compose, Swarm, Kubernetes, Helm](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes%20%7C%20Helm-0366d6)
 
 A syslog watchdog for networks of up to a few hundred devices. It runs in one Docker container, receives
 syslog from your firewalls and switches, looks for traffic and behaviour that is
@@ -36,8 +36,11 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
 - [Topology (SNMP)](#topology-snmp)
 - [Clustered storage](#clustered-storage)
 - [Scale-out ingest](#scale-out-ingest)
-  - [Detection workers](#detection-workers) · [High availability](#high-availability) · [Metrics](#metrics)
+  - [Detection workers](#detection-workers) · [High availability](#high-availability) · [Metrics](#metrics) ·
+    [Kafka authentication](#kafka-authentication)
+- [Kubernetes: Helm and operators](#kubernetes-helm-and-operators)
 - [Many sites](#many-sites) · [Running at scale](#running-at-scale)
+- [Users, roles and single sign-on](#users-roles-and-single-sign-on) · [Audit log](#audit-log)
 - [Notifications](#notifications) · [Agents and the API](#agents-and-the-api) · [Connectors](#connectors)
 - [Configuration](#configuration) · [Security notes](#security-notes)
 - [Development](#development) · [Licence](#licence)
@@ -52,8 +55,9 @@ every address and hostname in them is simulated.
 | [![Dashboard](docs/screenshots/dashboard.png)](docs/screenshots/dashboard.png) **Dashboard**: message rate, hosts ranked by risk, alerts by attack stage | [![Alert guidance](docs/screenshots/alert-guidance.png)](docs/screenshots/alert-guidance.png) **Alert**: why it matters and what to do |
 | [![High Risk Ports](docs/screenshots/risk-ports.png)](docs/screenshots/risk-ports.png) **High Risk Ports**: traffic and findings on RDP, SMB, Telnet, FTP, HTTP and others | [![Topology](docs/screenshots/topology.png)](docs/screenshots/topology.png) **Topology**: the map built from SNMP, with alert counts per device |
 | [![Alerts](docs/screenshots/alerts.png)](docs/screenshots/alerts.png) **Alerts** | [![Events](docs/screenshots/events.png)](docs/screenshots/events.png) **Events** |
+| [![MITRE ATT&CK](docs/screenshots/attack.png)](docs/screenshots/attack.png) **ATT&CK**: alerts laid out in the MITRE ATT&CK matrix | [![Sites](docs/screenshots/sites.png)](docs/screenshots/sites.png) **Sites** (central console): every site's health and alerts in one place |
 | [![Devices](docs/screenshots/devices.png)](docs/screenshots/devices.png) **Devices** | [![Detection](docs/screenshots/detection.png)](docs/screenshots/detection.png) **Detection settings** |
-| [![Sites](docs/screenshots/sites.png)](docs/screenshots/sites.png) **Sites** (central console): every site's health and alerts in one place | |
+| [![Users](docs/screenshots/users.png)](docs/screenshots/users.png) **Users**: accounts, roles, single sign-on | [![Audit log](docs/screenshots/audit-log.png)](docs/screenshots/audit-log.png) **Audit log**: every sign-in and change, by whom |
 
 ## Quick start
 
@@ -169,7 +173,9 @@ alerts. Tactics Cerberus cannot see from network logs (Execution, Collection
 and others) say so, and alerts with no ATT&CK technique (a correlated
 compromise, network health) are counted separately. A technique that ATT&CK
 lists under several tactics is shown once, under the one that fits the
-detector, so nothing is counted twice.
+detector, so nothing is counted twice. To show only the tactics Cerberus has
+detectors for, tick **Settings → General → Hide tactic columns Cerberus has no
+detector for**.
 
 ### High Risk Ports
 
@@ -458,9 +464,62 @@ workers; `cerberus_active` is 1 on the active processor and 0 on a standby.
 Set `CERBERUS_METRICS_TOKEN` to require `Authorization: Bearer <token>`.
 
 Reference deployments: `deploy/compose/scale-out.yml` (HAProxy, collectors,
-Redpanda, detection workers, two processors, both databases) and the
-Kubernetes `collector`, `detector` and `processor` layers; see
+Redpanda, detection workers, two processors, both databases), the Helm chart
+(below) and the Kubernetes `collector`, `detector` and `processor` layers; see
 [deploy/README.md](deploy/README.md) and [docs/CLUSTERING.md](docs/CLUSTERING.md).
+
+### Kafka authentication
+
+Collectors, processors and workers can sign in to the bus with a username and
+password (SASL), with or without TLS:
+
+```sh
+CERBERUS_KAFKA_SECURITY=SASL_SSL            # or SASL_PLAINTEXT on a trusted network
+CERBERUS_KAFKA_SASL_MECHANISM=SCRAM-SHA-512 # or SCRAM-SHA-256, PLAIN
+CERBERUS_KAFKA_USERNAME=cerberus
+CERBERUS_KAFKA_PASSWORD_FILE=/run/secrets/kafka_password
+CERBERUS_KAFKA_CA=/run/secrets/kafka-ca.crt # SASL_SSL with a private CA
+```
+
+`PLAIN` sends the password as it is, so use it only with `SASL_SSL`. Cerberus
+needs to read and write its topics (`cerberus.events` and the topics that start
+with it) and to use the consumer groups that start with `cerberus`; it creates
+the topics itself when allowed to, and otherwise expects them to exist. CI runs
+against a Redpanda that requires SCRAM-SHA-512.
+
+## Kubernetes: Helm and operators
+
+The Helm chart in [`deploy/helm/cerberus`](deploy/helm/cerberus) installs
+Cerberus either **standalone** (one pod with a volume, SQLite) or **scaled
+out** (collectors behind a `LoadBalancer` that keeps device addresses, a
+processor with a standby, and a detection-worker Deployment per family):
+
+```sh
+helm install cerberus deploy/helm/cerberus -n cerberus --create-namespace \
+  --set auth.password='choose-one' --set publicUrl=https://cerberus.example.com
+```
+
+The scaled-out form needs Kafka, PostgreSQL and ClickHouse.
+[`deploy/kubernetes/operators`](deploy/kubernetes/operators) runs them with
+their operators:
+
+| Store | Operator | What you get |
+|---|---|---|
+| Kafka | [Strimzi](https://strimzi.io) 1.x | 3 KRaft nodes, a TLS listener with SCRAM-SHA-512, a `KafkaUser` limited to Cerberus's topics and groups |
+| PostgreSQL | [CloudNativePG](https://cloudnative-pg.io) | 3 instances with streaming replication and automatic failover |
+| ClickHouse | [Altinity operator](https://github.com/Altinity/clickhouse-operator) | one server (Cerberus's tables are not replicated; back it up) |
+
+```sh
+kubectl apply -k deploy/kubernetes/operators        # after installing the operators
+helm install cerberus deploy/helm/cerberus -n cerberus -f deploy/helm/cerberus/values-operators.yaml \
+  --set auth.password='choose-one' --set publicUrl=https://cerberus.example.com
+```
+
+`values-operators.yaml` takes the database URLs and the Kafka password from
+the Secrets the operators write, so the only credential made by hand is
+ClickHouse's. Step by step, with the operator installs, in
+[deploy/README.md](deploy/README.md#kubernetes-with-helm-and-operators).
+Tested end to end in k3s: syslog in, an alert out, data in both stores.
 
 ## Many sites
 
@@ -598,6 +657,62 @@ attackers can write to, and must be treated as data, not instructions.
 For scripts, the same token works on the HTTP API ([docs/API.md](docs/API.md)):
 `curl -H "Authorization: Bearer cerb_..." https://cerberus.example:8080/api/alerts?status=open`.
 
+## Users, roles and single sign-on
+
+Out of the box there is one shared dashboard password, which signs in as the
+**built-in admin**. To know who did what, give people their own accounts under
+**Settings → Users**, or let them sign in through your identity provider. Each
+account has a role:
+
+| Role | Can |
+|---|---|
+| **Viewer** | see everything: dashboards, alerts, events, devices, topology |
+| **Analyst** | also acknowledge and resolve alerts and mark false positives |
+| **Admin** | also change settings, notification channels, users and API tokens |
+
+Local accounts have their own password (12 characters or more, stored as a
+scrypt hash), which they can change from the menu under their name. Once you
+have an admin account of your own, switch the built-in admin off on the same
+page. Cerberus will not let you lock everyone out: the last working admin
+cannot be removed, and the built-in admin stays on while single sign-on has no
+admin group.
+
+**Single sign-on** works with any OpenID Connect provider: Okta, Microsoft
+Entra ID, Google, Keycloak, Authentik and others. Register Cerberus as a web
+application with the redirect URL `https://<your Cerberus>/api/auth/oidc/callback`,
+then set:
+
+```sh
+CERBERUS_PUBLIC_URL=https://cerberus.example.com
+CERBERUS_OIDC_ISSUER=https://login.example.com/realms/corp
+CERBERUS_OIDC_CLIENT_ID=cerberus
+CERBERUS_OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc_secret
+CERBERUS_OIDC_ADMIN_GROUPS=netsec-admins
+CERBERUS_OIDC_ANALYST_GROUPS=netsec,soc
+CERBERUS_OIDC_VIEWER_GROUPS=noc
+```
+
+The login page then shows **Sign in with single sign-on**. Roles come from the
+groups in the ID token (`CERBERUS_OIDC_ROLE_CLAIM`, default `groups`; the
+userinfo endpoint is asked when the token has none) and are refreshed at every
+sign-in, so taking someone out of a group takes effect the next time they sign
+in. Someone in none of the groups is refused, unless you set
+`CERBERUS_OIDC_DEFAULT_ROLE`. The provider must use HTTPS; Cerberus uses the
+authorization code flow with PKCE and checks the token's issuer, audience,
+expiry and nonce.
+
+Signed-in names are recorded on everything people do: an alert's
+acknowledgement, a false positive's justification, the audit log. API tokens
+act as viewers (read-only tokens) or analysts (triage tokens).
+
+## Audit log
+
+**Settings → Audit log** (analysts and admins) lists every sign-in, failed
+sign-in and change: who, from which address, when, and what, with the request's
+details. Passwords, tokens, community strings and other secrets are masked
+before they are stored. Entries cannot be edited or deleted through Cerberus.
+The same entries are at `GET /api/audit`.
+
 ## Connectors
 
 A connector is a YAML file that turns one vendor's log text into normalised
@@ -653,7 +768,7 @@ If a device's logs are attributed to the wrong connector, pin one on the
 
 | Variable | Default | |
 |---|---|---|
-| `CERBERUS_PASSWORD` | generated | Dashboard password |
+| `CERBERUS_PASSWORD` | generated | Dashboard password (the [built-in admin](#users-roles-and-single-sign-on)) |
 | `CERBERUS_AUTH` | `on` | `off` disables the login (only behind your own authenticating proxy) |
 | `CERBERUS_PUBLIC_URL` | | Base URL for links in notifications |
 | `CERBERUS_DEVICE_IDENTITY` | `ip` | `ip` or `hostname` |
@@ -673,7 +788,10 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_DETECTION_WORKERS`, `CERBERUS_DETECTION_FAMILY` | | Families run by [detection workers](#detection-workers) (`all`, or a comma-separated list), the same everywhere; and a worker's own family |
 | `CERBERUS_WORKER_REPLAY_MINUTES` | `60` | How far back a detection worker replays the bus to rebuild its windows |
 | `CERBERUS_METRICS_TOKEN` (or `_FILE`) | | Require this bearer token for [`/metrics`](#metrics) |
-| `CERBERUS_KAFKA_BOOTSTRAP`, `_TOPIC`, `_GROUP`, `_PARTITIONS`, `_REPLICATION`, `_SECURITY` (`SSL`), `_CA` | | The message bus between collectors and the processor |
+| `CERBERUS_KAFKA_BOOTSTRAP`, `_TOPIC`, `_GROUP`, `_PARTITIONS`, `_REPLICATION`, `_SECURITY`, `_CA` | | The message bus between collectors and the processor; `_SECURITY` is `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT` or `SASL_SSL` |
+| `CERBERUS_KAFKA_SASL_MECHANISM`, `_USERNAME`, `_PASSWORD` (or `_FILE`) | `SCRAM-SHA-512` | [Kafka authentication](#kafka-authentication) |
+| `CERBERUS_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET` (or `_FILE`), `_REDIRECT_URL`, `_SCOPES`, `_LABEL` | | [Single sign-on](#users-roles-and-single-sign-on); the redirect URL defaults to `CERBERUS_PUBLIC_URL` + `/api/auth/oidc/callback`, the scopes to `openid email profile groups` |
+| `CERBERUS_OIDC_ROLE_CLAIM`, `_ADMIN_GROUPS`, `_ANALYST_GROUPS`, `_VIEWER_GROUPS`, `_DEFAULT_ROLE` | `groups` | Which groups get which role (comma-separated), and the role for people in none of them (default: refused) |
 | `CERBERUS_COLLECTOR_NAME`, `CERBERUS_SPOOL_MB`, `CERBERUS_COLLECTOR_SILENT_SECONDS` | hostname, `1024`, `90` | Collector identity, spool size while the bus is unreachable, and when the processor calls a collector silent |
 | `CERBERUS_SYSLOG_TLS_PORT`, `_TLS_CERT`, `_TLS_KEY`, `_TLS_CLIENT_CA` | `0` | Syslog over TLS (RFC 5425), optionally requiring device certificates |
 | `CERBERUS_PROXY_PROTOCOL_FROM` | | Load balancer addresses whose TCP connections start with a PROXY protocol header carrying the device's address |
@@ -685,7 +803,10 @@ If a device's logs are attributed to the wrong connector, pin one on the
   (and so alerts). Syslog over TLS (`CERBERUS_SYSLOG_TLS_PORT`) encrypts it, and
   with `CERBERUS_SYSLOG_TLS_CLIENT_CA` only devices with a certificate are heard.
 - The dashboard speaks plain HTTP. Put it behind a TLS reverse proxy if it is
-  reachable from anywhere you do not trust.
+  reachable from anywhere you do not trust (single sign-on requires it).
+- Give people their own accounts or single sign-on, with the least role they
+  need, and switch the built-in admin off; every change is then in the
+  [audit log](#audit-log) under a person's name.
 - The container runs as an unprivileged user.
 
 ## Development

@@ -1,0 +1,71 @@
+# The dashboard and API (with standalone, the one pod; with scaleOut, the active processor).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.fullname" . }}
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.web.service.type }}
+  selector: {{- include "cerberus.selector" . | nindent 4 }}
+    app.kubernetes.io/component: {{ ternary "standalone" "processor" (eq .Values.mode "standalone") }}
+  ports:
+    - {name: http, port: {{ .Values.web.service.port }}, targetPort: http}
+---
+# Syslog in: one address for every device. externalTrafficPolicy: Local keeps each
+# device's real source address, which is how Cerberus tells devices apart.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.fullname" . }}-syslog
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+  {{- with .Values.syslog.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.syslog.service.type }}
+  {{- if ne .Values.syslog.service.type "ClusterIP" }}
+  externalTrafficPolicy: {{ .Values.syslog.service.externalTrafficPolicy }}
+  {{- end }}
+  {{- with .Values.syslog.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector: {{- include "cerberus.selector" . | nindent 4 }}
+    app.kubernetes.io/component: {{ ternary "standalone" "collector" (eq .Values.mode "standalone") }}
+  ports:
+    {{- if .Values.syslog.tcp }}
+    - {name: syslog-tcp, port: {{ .Values.syslog.service.port }}, targetPort: syslog-tcp, protocol: TCP}
+    {{- end }}
+    {{- if .Values.syslog.udp }}
+    - {name: syslog-udp, port: {{ .Values.syslog.service.port }}, targetPort: syslog-udp, protocol: UDP}
+    {{- end }}
+    {{- if .Values.syslog.tls.enabled }}
+    - {name: syslog-tls, port: {{ .Values.syslog.tls.port }}, targetPort: syslog-tls, protocol: TCP}
+    {{- end }}
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cerberus.fullname" . }}
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "cerberus.fullname" . }}
+                port: {name: http}
+{{- end }}

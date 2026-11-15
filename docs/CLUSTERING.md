@@ -182,11 +182,15 @@ Estimates assume one experienced engineer and are rough.
      `tests/test_leader.py`, `tests/test_outbox.py`, and live on Compose (the
      active processor killed twice: dashboard back in 8 seconds, replay of
      the events since the checkpoint, every event stored once).
-   - Not done: a Helm chart and operator-based Kubernetes deployments of
-     Kafka, PostgreSQL and ClickHouse (Kustomize layers remain the reference);
-     SASL authentication to the bus.
-6. **Enterprise features (open-ended).** Single sign-on, roles, audit log,
-   optionally tenancy.
+   - Added in 0.12.0: a Helm chart (`deploy/helm/cerberus`, standalone or
+     scaled out), operator-run Kafka (Strimzi), PostgreSQL (CloudNativePG)
+     and ClickHouse (Altinity) in `deploy/kubernetes/operators`, and SASL
+     authentication to the bus (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512). Tested
+     together on k3s; the Kustomize layers remain for those who prefer them.
+6. **Enterprise features.** Done in 0.12.0: local accounts and OpenID Connect
+   single sign-on with groups mapped to viewer, analyst and admin roles; an
+   audit log of every sign-in and change, with secrets masked. Not planned:
+   tenancy (run one Cerberus per tenant, with a console if needed).
 
 ### How it will be proven
 

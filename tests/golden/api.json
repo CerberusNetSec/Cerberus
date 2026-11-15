@@ -41866,9 +41866,22 @@
  "me": {
   "body": {
    "auth": false,
+   "builtin_admin": true,
    "central": false,
    "signed_in": true,
-   "site": null
+   "site": null,
+   "sso": {
+    "enabled": false,
+    "label": "single sign-on"
+   },
+   "user": {
+    "kind": "open",
+    "local": false,
+    "name": "open (no sign-in)",
+    "role": "admin",
+    "source": "open",
+    "username": "open"
+   }
   },
   "status": 200
  },

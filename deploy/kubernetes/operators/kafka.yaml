@@ -1,0 +1,72 @@
+# Kafka for Cerberus, run by the Strimzi operator (https://strimzi.io), 1.0 or later.
+# Three nodes in KRaft mode (no ZooKeeper), each controller and broker. Clients
+# use the TLS listener on 9093 and must authenticate with SCRAM-SHA-512; the
+# KafkaUser below gives Cerberus only its own topics and consumer groups, and
+# Strimzi writes its password to the Secret "cerberus" (key "password") and the
+# cluster's CA to "cerberus-cluster-ca-cert" (key "ca.crt").
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual
+  labels:
+    strimzi.io/cluster: cerberus
+spec:
+  replicas: 3
+  roles: [controller, broker]
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 50Gi
+        deleteClaim: false
+        kraftMetadata: shared
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits: {memory: 2Gi}
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: cerberus
+spec:
+  kafka:
+    version: 4.3.2  # one the installed Strimzi supports (Strimzi 1.3)
+    listeners:
+      - name: tls
+        port: 9093
+        type: internal
+        tls: true
+        authentication:
+          type: scram-sha-512
+    authorization:
+      type: simple
+    config:
+      offsets.topic.replication.factor: 3
+      transaction.state.log.replication.factor: 3
+      transaction.state.log.min.isr: 2
+      default.replication.factor: 3
+      min.insync.replicas: 2
+      log.retention.hours: 72  # well beyond the 60-minute replay and a processor checkpoint
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaUser
+metadata:
+  name: cerberus
+  labels:
+    strimzi.io/cluster: cerberus
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      # Its topics: events, the per-family topics, alert candidates and heartbeats
+      # (Cerberus creates them on first start).
+      - resource: {type: topic, name: cerberus.events, patternType: prefix}
+        operations: [Read, Write, Describe, DescribeConfigs, Create]
+      - resource: {type: group, name: cerberus, patternType: prefix}
+        operations: [Read, Describe]

@@ -2224,7 +2224,7 @@ function settingsChrome(tab) {
   if (title) title.remove();
   const v = state.version;
   main.insertAdjacentHTML('afterbegin', `<div class="page-head"><div><h1>Settings</h1></div>
-    ${v ? `<div class="muted version">Cerberus <a href="https://github.com/wrcrooks/Cerberus/releases/tag/v${esc(v)}" target="_blank"
+    ${v ? `<div class="muted version">Cerberus <a href="https://github.com/CerberusNetSec/Cerberus/releases/tag/v${esc(v)}" target="_blank"
       rel="noopener noreferrer" title="Release notes for this version">v${esc(v)}</a></div>` : ''}</div>
     <nav class="tabs" aria-label="Settings sections">${settingsTabs().map(([id, label]) =>
       `<a href="#/settings/${id}" class="${id === tab ? 'on' : ''}" ${id === tab ? 'aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`);

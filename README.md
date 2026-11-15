@@ -1,13 +1,13 @@
 # Cerberus
 
-[![CI](https://github.com/wrcrooks/Cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wrcrooks/Cerberus/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/wrcrooks/Cerberus?sort=semver)](https://github.com/wrcrooks/Cerberus/releases/latest)
-[![Licence: Apache 2.0](https://img.shields.io/github/license/wrcrooks/Cerberus)](LICENSE)
-[![Container image](https://img.shields.io/badge/image-ghcr.io%2Fwrcrooks%2Fcerberus-2496ED?logo=docker&logoColor=white)](https://github.com/wrcrooks/Cerberus/pkgs/container/cerberus)
+[![CI](https://github.com/CerberusNetSec/Cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CerberusNetSec/Cerberus/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/CerberusNetSec/Cerberus?sort=semver)](https://github.com/CerberusNetSec/Cerberus/releases/latest)
+[![Licence: Apache 2.0](https://img.shields.io/github/license/CerberusNetSec/Cerberus)](LICENSE)
+[![Container image](https://img.shields.io/badge/image-ghcr.io%2Fcerberusnetsec%2Fcerberus-2496ED?logo=docker&logoColor=white)](https://github.com/CerberusNetSec/Cerberus/pkgs/container/cerberus)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](Dockerfile)
-[![Last commit](https://img.shields.io/github/last-commit/wrcrooks/Cerberus)](https://github.com/wrcrooks/Cerberus/commits/main)
-[![Stars](https://img.shields.io/github/stars/wrcrooks/Cerberus?style=flat)](https://github.com/wrcrooks/Cerberus/stargazers)
-[![Open issues](https://img.shields.io/github/issues/wrcrooks/Cerberus)](https://github.com/wrcrooks/Cerberus/issues)
+[![Last commit](https://img.shields.io/github/last-commit/CerberusNetSec/Cerberus)](https://github.com/CerberusNetSec/Cerberus/commits/main)
+[![Stars](https://img.shields.io/github/stars/CerberusNetSec/Cerberus?style=flat)](https://github.com/CerberusNetSec/Cerberus/stargazers)
+[![Open issues](https://img.shields.io/github/issues/CerberusNetSec/Cerberus)](https://github.com/CerberusNetSec/Cerberus/issues)
 
 ![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
 ![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
@@ -530,7 +530,7 @@ sends the notifications, hands acknowledgements back to the sites, and alerts
 when a site stops reporting. The four reference deployments (standalone,
 Compose, Swarm and Kubernetes) and the settings are in
 [deploy/README.md](deploy/README.md). A published image is at
-`ghcr.io/wrcrooks/cerberus`.
+`ghcr.io/cerberusnetsec/cerberus`.
 The plan for clustering beyond that is in [docs/CLUSTERING.md](docs/CLUSTERING.md).
 
 ## Running at scale

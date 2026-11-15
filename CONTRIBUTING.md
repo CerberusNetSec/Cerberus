@@ -55,7 +55,7 @@ CERBERUS_TEST_KAFKA_BOOTSTRAP=127.0.0.1:19092 .venv/bin/python -m pytest tests/t
 
 CI (`.github/workflows/ci.yml`) runs the tests and validates all four
 deployments on every push and pull request, builds the image for amd64 and
-arm64, and publishes it to `ghcr.io/wrcrooks/cerberus` when a `v*` tag is
+arm64, and publishes it to `ghcr.io/cerberusnetsec/cerberus` when a `v*` tag is
 pushed. A change to a deployment should keep `docker compose config`,
 `docker stack config` and `kubectl kustomize` passing for it.
 

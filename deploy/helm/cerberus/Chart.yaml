@@ -5,10 +5,11 @@ description: >-
   One instance, or collectors, active/standby processors and detection workers
   on a Kafka-compatible bus with PostgreSQL and ClickHouse.
 type: application
-version: 0.12.0
-appVersion: "0.12.0"
-home: https://github.com/wrcrooks/Cerberus
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/CerberusNetSec/Cerberus
 sources:
-  - https://github.com/wrcrooks/Cerberus
+  - https://github.com/CerberusNetSec/Cerberus
 keywords: [syslog, security, siem, network, detection, mitre-attack]
-license: Apache-2.0
+annotations:
+  artifacthub.io/license: Apache-2.0

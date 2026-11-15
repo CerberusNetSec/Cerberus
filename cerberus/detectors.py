@@ -24,11 +24,13 @@ EMIT_INTERVAL = 5.0  # seconds between repeat emits for one entity
 # same copy. "split" marks a detector that keys on two things at once and must be
 # divided into two detectors before it can be sharded; "none" reads no events.
 PARTITIONS = {
-    "source": lambda ev: ev.src_ip or "",
-    "source_or_device": lambda ev: ev.src_ip or f"device {ev.device}",
+    # Events without a source address go by device: the brute-force detector counts
+    # failed logins with no address per device; the others ignore such events.
+    "source": lambda ev: ev.src_ip or f"device {ev.device}",
     "device": lambda ev: ev.device,
     "pair": lambda ev: "|".join(sorted((ev.src_ip or "", ev.dst_ip or ""))),
     "port": lambda ev: "" if ev.dst_port is None else str(ev.dst_port),
+    "account": lambda ev: f"{ev.device}|{(ev.user or '')[:64]}",
 }
 
 
@@ -91,7 +93,8 @@ class Detector:
     # The event types process() acts on (None: any). The engine does not call
     # process() for others. Must include every type the detector reacts to.
     event_types: frozenset | None = None
-    # What the detector's state is keyed by: a key of PARTITIONS, "split" or "none".
+    # What the detector's state is keyed by: a key of PARTITIONS (or "target", see
+    # ExposedService), "alerts" for the alert stream, or "none".
     partition = "none"
 
     def partition_key(self, ev: Event) -> str:
@@ -297,7 +300,7 @@ class _AuthState:
 
 class BruteForce(Detector):
     event_types = frozenset({"auth_failure", "auth_success"})
-    partition = "source_or_device"
+    partition = "source"
     id = "brute_force"
     name = "Login brute force"
     description = "Repeated failed logins from one source, and a successful login that follows them."

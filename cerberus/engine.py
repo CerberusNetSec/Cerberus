@@ -35,7 +35,8 @@ STATE_VERSION = 1
 STATE_SAVE_SECONDS = 300
 # Detectors keyed on a source address; the ignore list applies to these.
 _SOURCE_KEYED = {"port_scan", "host_sweep", "deny_flood", "brute_force", "large_transfer", "threat",
-                 "risky_egress", "lateral_movement", "beaconing", "credential_attacks", "correlation",
+                 "risky_egress", "lateral_movement", "beaconing", "password_spray", "distributed_guessing",
+                 "hostile_allowed", "correlation",
                  "risk_ports"}
 # Detectors about a destination; the ignored-destinations list applies to these.
 _DEST_KEYED = {"exposed_service", "risky_egress", "beaconing", "large_transfer"}
@@ -58,6 +59,49 @@ def parse_message(cfg: Config, connectors: ConnectorRegistry, devices: dict, dat
     if cfg.device_identity == "hostname" and ev.hostname and ev.device != ev.hostname:
         ev.device = ev.hostname  # the connector found a hostname the envelope did not have
     return ev
+
+
+def migrate_detector_settings(detectors: dict) -> dict:
+    """Settings saved before 0.6.0, when password spraying and distributed guessing were
+    one detector (credential_attacks) and correlation included hostile_allowed."""
+    detectors = dict(detectors or {})
+    old = detectors.get("credential_attacks")
+    if isinstance(old, dict):
+        on = old.get("enabled", True)
+        detectors.setdefault("password_spray", {"enabled": on, **{k: old[k] for k in ("users", "window") if k in old}})
+        detectors.setdefault("distributed_guessing",
+                             {"enabled": on, **{k: old[k] for k in ("sources", "window") if k in old}})
+    corr = detectors.get("correlation")
+    if isinstance(corr, dict) and "hostile_allowed" not in detectors:
+        detectors["hostile_allowed"] = {"enabled": corr.get("enabled", True),
+                                        **{k: corr[k] for k in ("window_hours",) if k in corr}}
+    return detectors
+
+
+def migrate_snapshot(snap: dict) -> dict:
+    """Detector state saved before 0.6.0: split the old combined detectors' state."""
+    dets = dict(snap.get("detectors") or {})
+    old = dets.pop("credential_attacks", None)
+    if old is not None and "password_spray" not in dets:
+        try:
+            state = decode(old.get("_state"))
+            emitted = decode(old.get("_emitted"))
+            for new, tag in (("password_spray", "spray"), ("distributed_guessing", "dist")):
+                dets[new] = {"_state": encode({k: v for k, v in state.items() if k[0] == tag}),
+                             "_emitted": encode({k: v for k, v in emitted.items() if k[0] == tag})}
+        except (TypeError, ValueError, KeyError, AttributeError, IndexError):
+            pass
+    corr = dets.get("correlation")
+    if corr is not None and "hostile" in corr and "hostile_allowed" not in dets:
+        try:
+            emitted = decode(corr.get("_emitted"))
+            dets["hostile_allowed"] = {"_state": encode({}), "hostile": corr["hostile"],
+                                       "_emitted": encode({k: v for k, v in emitted.items() if k[0] == "hostile"})}
+            dets["correlation"] = {"_state": corr.get("_state"), "hosts": corr.get("hosts"),
+                                   "_emitted": encode({k: v for k, v in emitted.items() if k[0] == "host"})}
+        except (TypeError, ValueError, KeyError, AttributeError, IndexError):
+            pass
+    return {**snap, "detectors": dets}
 
 
 @dataclass
@@ -184,6 +228,7 @@ class Engine:
         self.baselines = next(d for d in self.detectors if isinstance(d, RateAnomaly)).baselines
         self.new_device: NewDevice = self.by_id["new_device"]  # type: ignore[assignment]
         self.correlation = self.by_id["correlation"]
+        self.hostile = self.by_id["hostile_allowed"]
         self.admin_access = self.by_id["admin_access"]
         self.risk_ports = self.by_id["risk_ports"]
         self.ignore_destinations: list[str] = []
@@ -232,6 +277,7 @@ class Engine:
         self.alerts.load(now)
 
     def apply_settings(self, detectors: dict, general: dict) -> None:
+        detectors = migrate_detector_settings(detectors)
         for det in self.detectors:
             det.configure(detectors.get(det.id, {}))
         def networks(items) -> tuple[list[str], list]:
@@ -259,6 +305,8 @@ class Engine:
     def raise_alert(self, c: Candidate, now: float) -> None:
         """The alert stage: fold the candidate into an alert, and let the correlator see it."""
         self.alerts.raise_(c, now)
+        if self.hostile.enabled:
+            self.hostile.on_alert(c, now)
         if self.correlation.enabled:
             self.correlation.on_alert(c, now, lambda found: self.alerts.raise_(found, now))
 
@@ -275,6 +323,7 @@ class Engine:
         state does not load starts empty, as it would have without a snapshot."""
         if not snap or snap.get("version") != STATE_VERSION:
             return set()
+        snap = migrate_snapshot(snap)
         restored = set()
         for det in self.detectors:
             data = snap.get("detectors", {}).get(det.id)

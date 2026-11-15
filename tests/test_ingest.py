@@ -286,3 +286,38 @@ def test_spool_files_from_0_5_0_still_read(tmp_path):
     path, rows = Spool(d, 10**6).oldest('cerberus.events')
     assert rows == [('cerberus.events', b'fw', json.dumps({'n': 1}).encode()),
                     ('cerberus.events', b'fw', json.dumps({'n': 2}).encode())]
+
+
+def test_records_fetched_before_a_seek_are_not_processed():
+    """After going back on a partition (a takeover's or a worker's replay), records the
+    consumer had already fetched from the old position must not come first."""
+    from types import SimpleNamespace
+
+    from aiokafka.structs import TopicPartition
+
+    from cerberus.bus import EventSource
+
+    tp = TopicPartition("t", 0)
+    rec = lambda o: SimpleNamespace(topic="t", partition=0, offset=o, value=b"{}")  # noqa: E731
+    seeks = []
+
+    class Consumer:
+        def __init__(self):
+            # First what was prefetched from the committed position (100), then from the seek (40).
+            self.batches = [{tp: [rec(100), rec(101)]}, {tp: [rec(40), rec(41)]}, {tp: [rec(42)]}]
+
+        async def getmany(self, timeout_ms, max_records):
+            return self.batches.pop(0)
+
+        def seek(self, part, offset):
+            seeks.append((part.partition, offset))
+
+    source = EventSource(SimpleNamespace(kafka_topic="t", kafka_group="g"), consumer=Consumer())
+    source.consumer.seek(tp, 40)
+    source.seeked[tp] = 40
+
+    async def go():
+        return [[r.offset for r in await source.batch()] for _ in range(3)]
+    assert asyncio.run(go()) == [[], [40, 41], [42]]
+    assert seeks == [(0, 40), (0, 40)]  # sent back again when the stale records arrived
+    assert source.position[tp] == 43 and source.seeked == {}

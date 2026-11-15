@@ -43,6 +43,9 @@ _SOURCE_KEYED = {"port_scan", "host_sweep", "deny_flood", "brute_force", "large_
 _DEST_KEYED = {"exposed_service", "risky_egress", "beaconing", "large_transfer"}
 
 
+from .secrets_scan import SCANNER, ensure_key  # noqa: E402
+
+
 def parse_message(cfg: Config, connectors: ConnectorRegistry, devices: dict, data: bytes | str, source_ip: str,
                   ts: float, pin: str | None = None) -> Event:
     """Syslog bytes to a normalised Event. devices maps device id to anything with
@@ -59,6 +62,7 @@ def parse_message(cfg: Config, connectors: ConnectorRegistry, devices: dict, dat
     ev = connectors.build_event(parsed, ts, device_id, source_ip, pin, hint)
     if cfg.device_identity == "hostname" and ev.hostname and ev.device != ev.hostname:
         ev.device = ev.hostname  # the connector found a hostname the envelope did not have
+    SCANNER.scan_event(ev)  # plaintext secrets: found, and kept out of storage, before anything else
     return ev
 
 
@@ -279,6 +283,7 @@ class Engine:
             self.installed = time.time()
             self.db.set_setting("installed", self.installed)
         self.db.ensure_stats_totals()  # databases from before the all-devices counter row
+        ensure_key(self.db)  # secret fingerprints: the same in every process of this installation
         self.apply_settings(self.db.get_setting("detectors", {}), self.db.get_setting("general", {}))
         restored = self.restore(self.db.get_setting(STATE_KEY) or {}, now)
         if "admin_access" not in restored:

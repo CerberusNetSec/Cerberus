@@ -382,6 +382,51 @@ class LinkFlap(Detector):
             ))
 
 
+class PlaintextSecret(Detector):
+    """Alerts for the secrets the parse stage found (see secrets_scan.py). Its settings
+    also switch the scanning and the redaction of stored events on and off."""
+    id = "plaintext_secret"
+    name = "Plaintext passwords and secrets"
+    description = ("Passwords, API keys, tokens and private keys that appear in clear in your devices' logs: "
+                   "credentials in URLs (user:password@, ?password=), HTTP Basic and bearer headers quoted by an IDS "
+                   "or proxy, and cloud and SaaS keys. Found secrets are removed from the stored event, and the "
+                   "alert shows only a fingerprint. Switching this off stops the scanning and the redaction.")
+    params = [
+        ("redact", True, "Remove found secrets from stored events (recommended)"),
+    ]
+    event_types = None  # any message may carry one
+    partition = "device"
+
+    def configure(self, settings: dict) -> None:
+        super().configure(settings)
+        from .secrets_scan import SCANNER
+        SCANNER.configure(self.enabled, self.cfg["redact"])
+
+    def process(self, ev, now, emit):
+        for s in ev.extra.get("secrets") or ():
+            if not isinstance(s, dict) or not s.get("fingerprint"):
+                continue
+            key = (s.get("kind"), s["fingerprint"])
+            if not self._may_emit(key, now):
+                continue
+            who = ev.hostname or ev.device
+            route = (f" from {ev.src_ip}" if ev.src_ip else "") + (
+                f" to {ev.dst_ip}{f':{ev.dst_port}' if ev.dst_port is not None else ''}" if ev.dst_ip else "")
+            where = "a URL" if s.get("kind") == "url_credentials" else f"the {s.get('parameter') or s.get('field', 'message')}"
+            emit(Candidate(
+                self.id, f"{s.get('kind')}|{s['fingerprint']}", s.get("severity", "medium"),
+                f"Plaintext {s.get('label', 'secret')} in logs from {who}",
+                f"{who} logged a {s.get('label', 'secret')} in clear{route}, in {where}. "
+                + ("It was removed from the stored event; " if "[REDACTED" in (ev.message or "") or any(
+                    "[REDACTED" in str(v) for v in ev.extra.values()) else "")
+                + "anyone who can read these logs, or the traffic they describe, could use it.",
+                ev.src_ip, ev.device,
+                {"kind": s.get("kind"), "fingerprint": s["fingerprint"], "preview": s.get("preview"),
+                 "field": s.get("field"), "target": ev.dst_ip, "port": ev.dst_port,
+                 **{k: s[k] for k in ("user", "parameter") if s.get(k)}},
+            ))
+
+
 class ThreatEvent(Detector):
     event_types = frozenset({"threat"})
     partition = "source"
@@ -762,7 +807,7 @@ def build_detectors() -> list[Detector]:
     baselines = Baselines()
     return [
         *build_security_detectors(),
-        PortScan(), HostSweep(), DenyFlood(), BruteForce(), ThreatEvent(), NotableEvent(),
+        PortScan(), HostSweep(), DenyFlood(), BruteForce(), ThreatEvent(), PlaintextSecret(), NotableEvent(),
         LinkFlap(), LargeTransfer(), RateAnomaly(baselines), DeviceSilent(baselines), NewDevice(),
         TopologyChange(),
     ]

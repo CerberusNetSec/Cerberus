@@ -95,6 +95,7 @@ class Collector:
 
     # --- background --------------------------------------------------------------------
     async def _refresh_pins(self) -> None:
+        """Every minute, from shared storage: device pins, and whether to scan for secrets."""
         while self.store is not None:
             try:
                 for row in await asyncio.to_thread(self.store.devices_all):
@@ -103,6 +104,9 @@ class Collector:
                         seen = self.devices[row["id"]] = _Seen(seen=row.get("connector_seen") or "")
                     if seen is not None:
                         seen.connector_pin = row.get("connector_pin") or ""
+                from .secrets_scan import configure_from, ensure_key
+                await asyncio.to_thread(ensure_key, self.store)
+                configure_from(await asyncio.to_thread(self.store.get_setting, "detectors", {}))
             except Exception as exc:
                 log.warning("could not read device pins from storage: %s", exc)
             await asyncio.sleep(60)

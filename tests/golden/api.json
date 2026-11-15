@@ -8091,6 +8091,21 @@
      ]
     },
     {
+     "description": "Passwords, API keys, tokens and private keys that appear in clear in your devices' logs: credentials in URLs (user:password@, ?password=), HTTP Basic and bearer headers quoted by an IDS or proxy, and cloud and SaaS keys. Found secrets are removed from the stored event, and the alert shows only a fingerprint. Switching this off stops the scanning and the redaction.",
+     "enabled": true,
+     "id": "plaintext_secret",
+     "name": "Plaintext passwords and secrets",
+     "params": [
+      {
+       "default": true,
+       "key": "redact",
+       "label": "Remove found secrets from stored events (recommended)",
+       "type": "bool",
+       "value": true
+      }
+     ]
+    },
+    {
      "description": "Port-security and DHCP/ARP inspection violations, loops, spanning-tree guards, MAC flaps, restarts, plus anything a device logs at a critical level.",
      "enabled": true,
      "id": "notable",
@@ -9115,6 +9130,21 @@
        "label": "Minimum vendor severity (info, low, medium, high, critical)",
        "type": "str",
        "value": "low"
+      }
+     ]
+    },
+    {
+     "description": "Passwords, API keys, tokens and private keys that appear in clear in your devices' logs: credentials in URLs (user:password@, ?password=), HTTP Basic and bearer headers quoted by an IDS or proxy, and cloud and SaaS keys. Found secrets are removed from the stored event, and the alert shows only a fingerprint. Switching this off stops the scanning and the redaction.",
+     "enabled": true,
+     "id": "plaintext_secret",
+     "name": "Plaintext passwords and secrets",
+     "params": [
+      {
+       "default": true,
+       "key": "redact",
+       "label": "Remove found secrets from stored events (recommended)",
+       "type": "bool",
+       "value": true
       }
      ]
     },
@@ -10147,6 +10177,21 @@
        "label": "Minimum vendor severity (info, low, medium, high, critical)",
        "type": "str",
        "value": "low"
+      }
+     ]
+    },
+    {
+     "description": "Passwords, API keys, tokens and private keys that appear in clear in your devices' logs: credentials in URLs (user:password@, ?password=), HTTP Basic and bearer headers quoted by an IDS or proxy, and cloud and SaaS keys. Found secrets are removed from the stored event, and the alert shows only a fingerprint. Switching this off stops the scanning and the redaction.",
+     "enabled": true,
+     "id": "plaintext_secret",
+     "name": "Plaintext passwords and secrets",
+     "params": [
+      {
+       "default": true,
+       "key": "redact",
+       "label": "Remove found secrets from stored events (recommended)",
+       "type": "bool",
+       "value": true
       }
      ]
     },

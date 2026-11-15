@@ -192,6 +192,30 @@ class DetectionWorker:
         await self.source.stop()
 
 
+VIEW_STALE = 300  # a summary older than this is from a worker that has gone
+
+
+def merge_views(views, now: float) -> dict:
+    """The port workers' summaries as one: each port belongs to one worker, except briefly
+    while partitions move, when the fresher summary wins."""
+    out = {"since": 0.0, "spikes": [], "fresh": {}, "talkers": {}}
+    spikes: dict[int, list] = {}
+    for view in sorted((v for v in views if isinstance(v, dict) and now - v.get("at", 0) < VIEW_STALE),
+                       key=lambda v: v["at"]):
+        if view.get("since"):
+            out["since"] = min(out["since"] or view["since"], view["since"])
+        for port, tops in view.get("talkers", {}).items():
+            out["talkers"][int(port)] = tops
+        for port, n in view.get("fresh", {}).items():
+            out["fresh"][int(port)] = n
+        mine: dict[int, list] = {}
+        for s in view.get("spikes", []):
+            mine.setdefault(int(s["port"]), []).append(s)
+        spikes.update(mine)
+    out["spikes"] = [s for port in sorted(spikes) for s in spikes[port]]
+    return out
+
+
 def riskports_view(rp, now: float) -> dict:
     """What the Risk ports page needs from a port worker's memory."""
     from .riskports import DIRECTIONS

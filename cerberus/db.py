@@ -330,6 +330,15 @@ class Database(Store):
         except ValueError:
             return default
 
+    def settings_with_prefix(self, prefix: str) -> dict:
+        out = {}
+        for row in self.q("SELECT key, value FROM settings WHERE substr(key, 1, length(?)) = ?", (prefix, prefix)):
+            try:
+                out[row["key"]] = json.loads(row["value"])
+            except ValueError:
+                pass
+        return out
+
     def set_setting(self, key: str, value) -> None:
         self.x(
             "INSERT INTO settings(key, value) VALUES(?, ?) "

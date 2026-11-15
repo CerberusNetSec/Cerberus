@@ -56,6 +56,7 @@ SUPPRESSION_COLUMNS = ("id", "created", "detector", "entity", "title", "alert_id
                        "source", "active", "removed", "removed_by", "removed_source", "removed_justification",
                        "hits", "last_hit")
 AUDIT_COLUMNS = ("id", "ts", "action", "analyst", "source", "alert_id", "suppression_id", "detail")
+TOKEN_COLUMNS = ("id", "created", "name", "token_hash", "scope", "last_used", "revoked")
 
 
 class NotFound(Exception):
@@ -121,6 +122,7 @@ class Store:
                         "status", "pending"),
         "suppressions": SUPPRESSION_COLUMNS,
         "audit_log": AUDIT_COLUMNS,
+        "api_tokens": TOKEN_COLUMNS,
     }
 
     def import_table(self, table: str, rows: list[dict]) -> None:
@@ -178,6 +180,30 @@ class Store:
         """Alerts active since (last seen at or after it), per detector and severity:
         {detector, severity, alerts, occurrences, last_seen}. status: "real" (all but false
         positives), "active" (open or acknowledged) or "all"."""
+        raise NotImplementedError
+
+    # --- API tokens (agents and scripts) and the audit trail -----------------------------
+    def audit_add(self, row: dict) -> int:
+        """Append to the audit log: {ts, action, analyst, source, alert_id?, suppression_id?, detail (JSON text)}."""
+        raise NotImplementedError
+
+    def token_add(self, row: dict) -> int:
+        """{created, name, token_hash, scope}; returns the id."""
+        raise NotImplementedError
+
+    def tokens(self) -> list[dict]:
+        """Every token, newest first, without its hash."""
+        raise NotImplementedError
+
+    def token_by_hash(self, token_hash: str) -> dict | None:
+        """The active (not revoked) token with this hash."""
+        raise NotImplementedError
+
+    def token_used(self, token_id: int, when: float) -> None:
+        raise NotImplementedError
+
+    def token_revoke(self, token_id: int, when: float) -> dict | None:
+        """Revoke an active token; returns it, or None if there was no such active token."""
         raise NotImplementedError
 
     def leadership(self, name: str) -> Leadership:

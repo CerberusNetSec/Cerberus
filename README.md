@@ -10,14 +10,14 @@
 [![Open issues](https://img.shields.io/github/issues/wrcrooks/Cerberus)](https://github.com/wrcrooks/Cerberus/issues)
 
 ![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
-![Detectors: 23](https://img.shields.io/badge/detectors-23-d73a49)
-![Tests: 248](https://img.shields.io/badge/tests-248-2ea44f)
+![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
+![Tests: 296](https://img.shields.io/badge/tests-296-2ea44f)
 ![Deployments: standalone, Compose, Swarm, Kubernetes](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes-0366d6)
 
 A syslog watchdog for networks of up to a few hundred devices. It runs in one Docker container, receives
 syslog from your firewalls and switches, looks for traffic and behaviour that is
 out of the ordinary, shows it on a web dashboard, and tells you by email,
-Telegram or Pushbullet. It can also poll those devices over SNMP and draw the
+Telegram, Pushbullet, webhooks or any HTTP API. It can also poll those devices over SNMP and draw the
 network topology they describe.
 
 More documentation: [architecture](docs/ARCHITECTURE.md) ·
@@ -31,14 +31,14 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
 - [Quick start](#quick-start) · [Telling devices apart](#telling-devices-apart)
 - [Pointing devices at it](#pointing-devices-at-it)
 - [What it detects](#what-it-detects)
-  - [Security detections](#security-detections) · [High Risk Ports](#high-risk-ports) ·
+  - [Security detections](#security-detections) · [MITRE ATT&CK](#mitre-attck) · [High Risk Ports](#high-risk-ports) ·
     [Anomaly and health detections](#anomaly-and-health-detections) · [False positives](#false-positives)
 - [Topology (SNMP)](#topology-snmp)
 - [Clustered storage](#clustered-storage)
 - [Scale-out ingest](#scale-out-ingest)
   - [Detection workers](#detection-workers) · [High availability](#high-availability) · [Metrics](#metrics)
 - [Many sites](#many-sites) · [Running at scale](#running-at-scale)
-- [Notifications](#notifications) · [Connectors](#connectors)
+- [Notifications](#notifications) · [Agents and the API](#agents-and-the-api) · [Connectors](#connectors)
 - [Configuration](#configuration) · [Security notes](#security-notes)
 - [Development](#development) · [Licence](#licence)
 
@@ -147,6 +147,29 @@ straight to the alert.
 | Threat not blocked | an IDS/threat signature fired but the device only alerted | on |
 | Correlation: likely compromised host | one internal host shows three different kinds of attack behaviour in 24 h | 3 kinds |
 | Correlation: hostile address allowed in | an internet address that was scanning or guessing passwords is later allowed through to an internal host | 24 h |
+| Plaintext passwords and secrets | a password, API key, token or private key appears in clear in a log: credentials in URLs (`user:password@`, `?password=`), HTTP Basic and bearer headers quoted by an IDS or proxy, AWS, GitHub, Slack, Google and Stripe keys | on; secrets removed from stored events |
+
+**Plaintext secrets** are looked for as each message is parsed, before it is
+stored. What is found is replaced in the stored event by `[REDACTED kind
+fingerprint]`, so Cerberus does not keep other people's passwords; the alert
+shows the kind, where it was seen, a preview that never reveals it (`AKIA…
+(20 characters)`) and a fingerprint, so the same secret seen again folds into
+one alert. The fingerprint is keyed per installation and cannot be turned back
+into a password. Values a device has already masked (`****`, `<hidden>`) are
+left alone. Switch it off, or keep the alerts but stop the redaction, under
+**Settings → Detection → Plaintext passwords and secrets**.
+
+### MITRE ATT&CK
+
+The **ATT&CK** page lays the alerts out in the MITRE ATT&CK Enterprise matrix:
+the 14 tactics as columns, and each technique Cerberus detects as a cell shaded
+by how many alerts it had (darker is more; the count is on every cell), over
+24 hours to all time, with or without false positives. A cell links to its
+alerts. Tactics Cerberus cannot see from network logs (Execution, Collection
+and others) say so, and alerts with no ATT&CK technique (a correlated
+compromise, network health) are counted separately. A technique that ATT&CK
+lists under several tactics is shown once, under the one that fits the
+detector, so nothing is counted twice.
 
 ### High Risk Ports
 
@@ -531,12 +554,49 @@ Add channels under **Settings → Notifications**; each has a minimum severity a
 - **Email (SMTP)**: server, port, STARTTLS/SSL/none, optional login, any number of recipients.
 - **Telegram**: create a bot with @BotFather, send it a message, and use the bot token plus your chat ID (several IDs may be comma-separated; group IDs work too).
 - **Pushbullet**: an access token from your account settings; optionally an email or channel tag to target.
+- **Webhook**: POSTs each alert as JSON to a URL (the payload is in [docs/API.md](docs/API.md#webhook-payload)).
+  With a signing secret, `X-Cerberus-Signature: sha256=<HMAC-SHA256 of timestamp + "." + body>` and
+  `X-Cerberus-Timestamp` let the receiver check it came from Cerberus and is recent. Extra headers are allowed.
+- **Custom API call**: any method, URL, headers and body, for ticketing systems, chat tools or SOAR platforms.
+  Placeholders such as `{{title}}`, `{{severity}}`, `{{src_ip}}`, `{{link}}` and `{{payload}}` (the whole alert)
+  fill in the alert; they are escaped for where they are (JSON-escaped in a JSON body, URL-encoded in the URL),
+  and a JSON body is checked when you save. For example, a Slack-style incoming webhook:
+  `{"text": "{{subject}}: {{description}} {{link}}"}`.
 
 A channel sends at most 10 notifications a minute; anything beyond that arrives
 as one "N more alerts" summary. Notifications are stored with their alert and
 sent from there about a second later; one that fails is tried again at 1, 2, 4
 and 8 minutes. Credentials are stored in the database (SQLite in
 the data volume, or PostgreSQL) and are never returned by the API.
+
+## Agents and the API
+
+AI agents can monitor Cerberus through its built-in **MCP server**, and scripts
+through its **HTTP API**. Create a token under **Settings → API & agents**:
+
+- **Read only** (recommended): everything the dashboard shows.
+- **Read and triage**: also acknowledge, resolve and mark false positives,
+  recorded in the audit log against the token.
+- No token can change settings, notification channels or tokens: those need the
+  dashboard. Tokens are shown once, stored as a hash, and can be revoked.
+
+The page shows the setup for the token it just made. For Claude Code:
+
+```sh
+claude mcp add --transport http cerberus https://cerberus.example:8080/mcp \
+  --header "Authorization: Bearer cerb_..."
+```
+
+Any MCP client that speaks streamable HTTP works the same way (URL
+`/mcp`, the token as a bearer header). The tools: `get_status`, `list_alerts`,
+`get_alert` (with why it matters, what to do, and the ATT&CK technique),
+`search_events`, `list_devices`, `get_attack_matrix`, `get_high_risk_ports`,
+and with a triage token `set_alert_status` and `mark_false_positive`. The
+server tells agents that alert and event text comes from network devices, which
+attackers can write to, and must be treated as data, not instructions.
+
+For scripts, the same token works on the HTTP API ([docs/API.md](docs/API.md)):
+`curl -H "Authorization: Bearer cerb_..." https://cerberus.example:8080/api/alerts?status=open`.
 
 ## Connectors
 

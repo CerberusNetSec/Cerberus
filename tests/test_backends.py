@@ -240,3 +240,31 @@ def test_false_positives_on_clustered_storage(cluster):
     assert [e["action"] for e in store.audit_log(10, alert_id=1)] == ["false_positive_again"]
     # A new suppression for the same finding once the old one is removed.
     assert store.false_positive(2, 600.0, "Back again, still expected.", "Alex", "x")["id"] != s["id"]
+
+
+def test_tokens_counts_and_payloads_on_clustered_storage(cluster):
+    import json as _json
+
+    from cerberus.storage import Batch
+    store = cluster()
+    tid = store.token_add({"created": 1.0, "name": "agent", "token_hash": "h1", "scope": "read"})
+    assert store.token_by_hash("h1")["name"] == "agent" and store.token_by_hash("nope") is None
+    store.token_used(tid, 5.0)
+    assert store.tokens()[0]["last_used"] == 5.0 and "token_hash" not in store.tokens()[0]
+    assert store.token_revoke(tid, 6.0)["revoked"] == 6.0
+    assert store.token_revoke(tid, 7.0) is None and store.token_by_hash("h1") is None
+    assert store.audit_add({"ts": 8.0, "action": "token_revoked", "analyst": "dashboard", "source": "1.2.3.4",
+                            "detail": _json.dumps({"token_id": tid})}) > 0
+    assert store.audit_log(5)[0]["action"] == "token_revoked"
+    rows = [(i, 100.0 + i, 100.0 + i, det, sev, "t", "d", f"e{i}", None, "fw", c, st, "{}", 100.0)
+            for i, (det, sev, c, st) in enumerate([("port_scan", "high", 3, "open"), ("port_scan", "high", 2, "ack"),
+                                                   ("port_scan", "low", 1, "false_positive"),
+                                                   ("brute_force", "high", 5, "resolved")], start=1)]
+    store.write_batch(Batch(new_alerts=rows, notices=[(1.0, 1, "s", "b", '{"a": 1}')]))
+    real = {(r["detector"], r["severity"]): (r["alerts"], r["occurrences"]) for r in store.alert_counts_by_detector(0, "real")}
+    assert real == {("port_scan", "high"): (2, 5), ("brute_force", "high"): (1, 5)}
+    assert {r["detector"] for r in store.alert_counts_by_detector(0, "active")} == {"port_scan"}
+    assert sum(r["alerts"] for r in store.alert_counts_by_detector(0, "all")) == 4
+    assert store.alert_counts_by_detector(103.5, "all")[0]["detector"] == "brute_force"
+    assert {a["detector"] for a in store.alerts_find(status="all", detectors=["brute_force"])} == {"brute_force"}
+    assert store.outbox_due(10.0, 5)[0]["payload"] == '{"a": 1}'

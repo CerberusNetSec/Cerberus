@@ -79,6 +79,9 @@ stages and requires identical results.
 | `bus.py`, `collector.py` | Scale-out: publishing to and consuming from the message bus, the collector's spool, copy detection, heartbeats; the collector process |
 | `worker.py` | Detection worker: one family of detectors on its share of the events, alert candidates back over the bus |
 | `leader.py` | Active/standby processors: the standby server, taking and keeping the leadership lock |
+| `secrets_scan.py` | Plaintext secrets: found and redacted in the parse stage (`parse_message`), alerted on by `PlaintextSecret` |
+| `attack.py` | The MITRE ATT&CK matrix: tactics, where each detector's technique sits, alert counts |
+| `mcp.py` | The MCP server for agents (JSON-RPC over `POST /mcp`); its tools are defined in `web.py` |
 | `listeners.py` | Syslog listener settings (Settings → Syslog): saved ports over the environment; `SyslogReceiver.reconfigure` applies them live |
 | `metrics.py` | Prometheus metrics for every role |
 | `web.py`, `static/` | JSON API and the single-page UI (no build step) |

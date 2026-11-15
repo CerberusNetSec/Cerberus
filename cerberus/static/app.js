@@ -1787,6 +1787,85 @@ pages.syslog = {
   },
 };
 
+/* --- API tokens for agents and scripts (Settings -> API & agents) --- */
+pages.agents = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>API &amp; agents</h1>
+        <p>Tokens let AI agents and scripts watch Cerberus: through its MCP server (for agents) or its HTTP API.
+          A <b>read</b> token can see everything the dashboard shows. A <b>read and triage</b> token can also acknowledge,
+          resolve and mark false positives, and what it does is recorded in the audit log against the token.
+          No token can change settings, channels or tokens.</p></div></div>
+      <form class="card" id="tk-form">
+        <h2>New token</h2>
+        <div class="form-grid">
+          <div><label for="tk-name">Name (who or what will use it)</label><input id="tk-name" maxlength="60" placeholder="SOC agent" required></div>
+          <div><label for="tk-scope">Access</label><select id="tk-scope">
+            <option value="read">Read only (recommended)</option><option value="write">Read and triage</option></select></div>
+        </div>
+        <div class="actions"><button class="primary" type="submit">Create token</button></div>
+      </form>
+      <div id="tk-new"></div>
+      <div class="card table-wrap" style="margin-top:16px"><h2>Tokens</h2><table>
+        <thead><tr><th>Name</th><th>Access</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+        <tbody id="tk-rows"></tbody></table></div>
+      <p class="muted small" style="margin-top:12px">Alert and event text comes from your devices' logs, which attackers can write to.
+        The MCP server tells agents to treat it as data, not instructions; give agents read-only tokens unless they need to triage.</p>`;
+    $('#tk-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(async () => {
+        const t = await api('/tokens', 'POST', { name: $('#tk-name').value, scope: $('#tk-scope').value });
+        $('#tk-name').value = '';
+        this.showNew(t);
+        await this.refresh();
+      });
+    });
+  },
+  base() { return (this.data && this.data.public_url) || location.origin; },
+  showNew(t) {
+    const base = this.base(), mcpUrl = `${base}/mcp`;
+    const claude = `claude mcp add --transport http cerberus ${mcpUrl} --header "Authorization: Bearer ${t.token}"`;
+    const json = JSON.stringify({ mcpServers: { cerberus: { type: 'http', url: mcpUrl, headers: { Authorization: `Bearer ${t.token}` } } } }, null, 2);
+    const curl = `curl -H "Authorization: Bearer ${t.token}" "${base}/api/alerts?status=open"`;
+    const block = (label, text, id) => `<label for="${id}">${label}</label>
+      <div class="copy-row"><textarea id="${id}" class="mono" rows="${text.split('\n').length}" readonly spellcheck="false">${esc(text)}</textarea>
+      <button type="button" class="small" data-act="copy" data-for="${id}">Copy</button></div>`;
+    $('#tk-new').innerHTML = `<div class="card note-strong" style="margin-top:16px">
+      <h2>Token for ${esc(t.name)}</h2>
+      <p><b>Copy it now: it is shown only this once.</b> Cerberus keeps only a fingerprint of it.</p>
+      ${block('Token', t.token, 'tk-token')}
+      ${block('Claude Code', claude, 'tk-claude')}
+      ${block('Other MCP clients (JSON)', json, 'tk-json')}
+      ${block('HTTP API', curl, 'tk-curl')}
+    </div>`;
+  },
+  async refresh() {
+    const d = await api('/tokens');
+    this.data = d;
+    if (!$('#tk-rows')) return;
+    $('#tk-rows').innerHTML = d.tokens.length ? d.tokens.map((t) => `<tr>
+        <td><b>${esc(t.name)}</b></td><td>${t.scope === 'write' ? 'Read and triage' : 'Read only'}</td>
+        <td class="nowrap" title="${clock(t.created, true)}">${ago(t.created)}</td>
+        <td class="nowrap">${t.last_used ? `<span title="${clock(t.last_used, true)}">${ago(t.last_used)}</span>` : '<span class="muted">Never</span>'}</td>
+        <td>${t.revoked ? `<span class="muted">Revoked ${ago(t.revoked)}</span>` : '<span class="dot on"></span>Active'}</td>
+        <td>${t.revoked ? '' : `<button type="button" class="small danger" data-act="revoke" data-id="${t.id}" data-name="${esc(t.name)}">Revoke</button>`}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="empty">No tokens yet.</td></tr>';
+  },
+  actions: {
+    async revoke(el) {
+      if (!confirm(`Revoke the token "${el.dataset.name}"? Anything using it stops working within 30 seconds.`)) return;
+      await api(`/tokens/${el.dataset.id}/revoke`, 'POST');
+      toast('Token revoked');
+      await pages.agents.refresh();
+    },
+    async copy(el) {
+      const box = $('#' + el.dataset.for);
+      try { await navigator.clipboard.writeText(box.value); } catch { box.select(); document.execCommand('copy'); }
+      toast('Copied');
+    },
+  },
+};
+
 /* --- notifications --- */
 pages.notifications = {
   render() {
@@ -1825,7 +1904,7 @@ pages.notifications = {
       } else if (f.kind.endsWith('textarea')) {
         // A secret list (headers with API keys) comes back masked; leave it as is to keep it.
         input = `<textarea id="${id}" data-key="${f.key}" rows="${f.key === 'body' ? 6 : 3}" class="mono" spellcheck="false"
-          ${req} placeholder="${f.key === 'headers' ? 'Authorization: Bearer ...' : f.key === 'body' ? '{"text": "{{subject}}: {{description}}"}' : ''}">${esc(value)}</textarea>`;
+          ${req} placeholder="${esc(f.key === 'headers' ? 'Authorization: Bearer ...' : f.key === 'body' ? '{"text": "{{subject}}: {{description}}"}' : '')}">${esc(value)}</textarea>`;
         return `<div class="wide"><label for="${id}">${esc(f.label)}</label>${input}</div>`;
       } else {
         const kind = f.kind === 'secret' ? 'password' : f.kind;
@@ -1918,7 +1997,8 @@ function startPageTimer() {
 }
 /* Settings: Detection, Connectors and Notifications, as sections of one page.
    #/settings/<section>; the older #/detection and the like still work. */
-const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications']];
+const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
+  ['agents', 'API & agents']];
 function settingsSection(name) {
   if (name === 'settings') {
     let last = '';

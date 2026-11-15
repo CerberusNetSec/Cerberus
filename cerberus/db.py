@@ -142,6 +142,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     alert_id INTEGER, suppression_id INTEGER, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS audit_log_alert ON audit_log(alert_id);
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created REAL NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, scope TEXT NOT NULL,
+    last_used REAL, revoked REAL
+);
 """
 
 # Columns added after the first release: (table, column, definition).
@@ -471,6 +476,34 @@ class Database(Store):
 
     def suppressions(self) -> list[dict]:
         return self.q("SELECT * FROM suppressions ORDER BY id DESC")
+
+    def audit_add(self, row: dict) -> int:
+        with self.transaction() as conn:
+            return conn.execute(
+                "INSERT INTO audit_log(ts, action, analyst, source, alert_id, suppression_id, detail) VALUES(?,?,?,?,?,?,?)",
+                (row["ts"], row["action"], row.get("analyst"), row.get("source"), row.get("alert_id"),
+                 row.get("suppression_id"), row.get("detail"))).lastrowid
+
+    def token_add(self, row: dict) -> int:
+        with self.transaction() as conn:
+            return conn.execute("INSERT INTO api_tokens(created, name, token_hash, scope) VALUES(?,?,?,?)",
+                                (row["created"], row["name"], row["token_hash"], row["scope"])).lastrowid
+
+    def tokens(self) -> list[dict]:
+        return self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens ORDER BY id DESC")
+
+    def token_by_hash(self, token_hash: str) -> dict | None:
+        rows = self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens "
+                      "WHERE token_hash = ? AND revoked IS NULL", (token_hash,))
+        return rows[0] if rows else None
+
+    def token_used(self, token_id: int, when: float) -> None:
+        self.x("UPDATE api_tokens SET last_used = ? WHERE id = ?", (when, token_id))
+
+    def token_revoke(self, token_id: int, when: float) -> dict | None:
+        if not self.x("UPDATE api_tokens SET revoked = ? WHERE id = ? AND revoked IS NULL", (when, token_id)):
+            return None
+        return self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens WHERE id = ?", (token_id,))[0]
 
     def audit_log(self, limit: int, alert_id: int = 0) -> list[dict]:
         if alert_id:

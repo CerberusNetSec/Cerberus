@@ -418,8 +418,17 @@ def encode_candidate(c, ts: float, uid: tuple[str, int]) -> tuple[str, bytes, by
     return f"{c.detector}|{c.entity}".encode("utf-8", "replace"), json.dumps(body, separators=(",", ":")).encode()
 
 
+def _tp_key(tp) -> str:
+    return f"{tp.topic}:{tp.partition}"
+
+
 class EventSource:
-    """Consuming one topic, and committing only what has been dealt with."""
+    """Consuming one topic, and committing only what has been dealt with.
+
+    Resuming from a checkpoint: resume holds, per partition, the position the saved
+    detector state was taken at. When the partition is assigned and that is behind the
+    committed position, the source goes back to it, and records before the committed
+    position are a replay (replaying()): already stored, to be seen by the detectors only."""
 
     def __init__(self, cfg, consumer=None, topic: str = "", group: str = ""):
         self.cfg = cfg
@@ -427,15 +436,59 @@ class EventSource:
         self.topic = topic or cfg.kafka_topic
         self.group = group or cfg.kafka_group
         self.position: dict = {}  # TopicPartition -> offset of the next record to process
+        self.resume: dict[str, int] = {}  # "topic:partition" -> where the checkpoint was taken
+        self.replay_until: dict = {}  # TopicPartition -> committed offset: below it, a replay
+        self.replayed = 0
 
     async def start(self) -> None:
         if self.consumer is None:
             from aiokafka import AIOKafkaConsumer
+            from aiokafka.abc import ConsumerRebalanceListener
+            source = self
+
+            class Listener(ConsumerRebalanceListener):
+                async def on_partitions_revoked(self, revoked):
+                    pass
+
+                async def on_partitions_assigned(self, assigned):
+                    await source.assigned(assigned)
+
             self.consumer = AIOKafkaConsumer(
-                self.topic, **_common(self.cfg), group_id=self.group,
+                **_common(self.cfg), group_id=self.group,
                 enable_auto_commit=False, auto_offset_reset="earliest", max_poll_records=5000,
                 fetch_max_bytes=64 * 1024 * 1024)
+            self.consumer.subscribe([self.topic], listener=Listener())
         await self.consumer.start()
+
+    async def assigned(self, assigned) -> None:
+        for tp in assigned:
+            back = self.resume.pop(_tp_key(tp), None)
+            if back is None:
+                continue
+            committed = await self.consumer.committed(tp)
+            if committed is not None and back < committed:
+                self.consumer.seek(tp, back)
+                self.replay_until[tp] = committed
+                log.info("%s partition %d: replaying %d records from the checkpoint to rebuild detector state",
+                         tp.topic, tp.partition, committed - back)
+
+    def replaying(self, record) -> bool:
+        if not self.replay_until:
+            return False
+        from aiokafka.structs import TopicPartition
+        tp = TopicPartition(record.topic, record.partition)
+        until = self.replay_until.get(tp)
+        if until is None:
+            return False
+        if record.offset < until:
+            self.replayed += 1
+            return True
+        del self.replay_until[tp]
+        return False
+
+    def positions(self) -> dict[str, int]:
+        """The position, per partition, as stored with a checkpoint."""
+        return {_tp_key(tp): offset for tp, offset in self.position.items()}
 
     async def stop(self) -> None:
         await self.consumer.stop()
@@ -454,6 +507,8 @@ class EventSource:
         return dict(self.position)
 
     async def commit(self, offsets: dict) -> None:
+        # Never move a partition's committed position back while it is being replayed.
+        offsets = {tp: o for tp, o in offsets.items() if tp not in self.replay_until}
         if offsets:
             await self.consumer.commit(offsets)
 

@@ -46,6 +46,35 @@ def _todo(*_args, **_kwargs):
     raise NotImplementedError
 
 
+class Leadership:
+    """A lock only one process holds at a time, for as long as it stays connected.
+    Blocking calls: run them in a thread."""
+
+    def try_acquire(self) -> bool:
+        """Take the lock if nobody holds it; True if this process now holds it."""
+        raise NotImplementedError
+
+    def still_held(self) -> bool:
+        """False once the lock may have passed to someone else (the connection is gone)."""
+        raise NotImplementedError
+
+    def release(self) -> None:
+        raise NotImplementedError
+
+
+class SingleProcess(Leadership):
+    """Storage only one process uses (SQLite): that process always leads."""
+
+    def try_acquire(self) -> bool:
+        return True
+
+    def still_held(self) -> bool:
+        return True
+
+    def release(self) -> None:
+        pass
+
+
 class Store:
     """The operations a storage backend provides. See cerberus/db.py for the SQLite one."""
 
@@ -80,6 +109,10 @@ class Store:
 
     def settings_with_prefix(self, prefix: str) -> dict:
         """Every setting whose key starts with prefix: {key: value}."""
+        raise NotImplementedError
+
+    def leadership(self, name: str) -> Leadership:
+        """The lock that decides which of several processes named name is active."""
         raise NotImplementedError
 
     async def aget_setting(self, key: str, default=None):

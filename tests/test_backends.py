@@ -182,3 +182,20 @@ def test_settings_by_prefix_on_clustered_storage(tmp_path, cluster):
     assert stores[0].settings_with_prefix("riskports_view:") == stores[1].settings_with_prefix("riskports_view:") == {
         "riskports_view:port:a": {"at": 1}, "riskports_view:port:b": [2]}
     stores[1].close()
+
+
+def test_one_leader_at_a_time(cluster):
+    """The processors' leadership lock: exclusive per name, free again when its holder goes."""
+    store = cluster()
+    a, b, other = store.leadership("processor:g"), store.leadership("processor:g"), store.leadership("processor:h")
+    try:
+        assert a.try_acquire() and a.still_held()
+        assert not b.try_acquire()
+        assert other.try_acquire()  # a different deployment's processors
+        a.release()  # the holder's connection ends, as when it exits or crashes
+        assert not a.still_held()
+        assert b.try_acquire()
+        assert not a.try_acquire()
+    finally:
+        for lock in (a, b, other):
+            lock.release()

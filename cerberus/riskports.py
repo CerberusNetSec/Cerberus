@@ -100,6 +100,7 @@ class RiskPorts(Detector):
         self.first_seen: dict[tuple, float] = {}  # (port, direction, internal source) -> when first seen allowed
         self.since = 0.0  # start of the history we hold
         self._unsaved: dict[tuple, list[int]] = {}  # (minute, port, direction) -> [allowed, blocked]
+        self.replaying = False  # set by the engine: the event in hand is already counted in storage
 
     def configure(self, settings: dict) -> None:
         super().configure(settings)
@@ -115,7 +116,8 @@ class RiskPorts(Detector):
         key = (port, way)
         slot = 0 if ev.action == "allow" else 1
         self.current.setdefault(key, [0, 0])[slot] += 1
-        self._unsaved.setdefault((self.minute * 60, port, way), [0, 0])[slot] += 1
+        if not self.replaying:
+            self._unsaved.setdefault((self.minute * 60, port, way), [0, 0])[slot] += 1
         hour = int(now // 3600)
         sources, destinations = self.talkers.setdefault(hour, {}).setdefault(key, (Counter(), Counter()))
         # Key by address and outcome, so the page can say who got through and who was stopped.

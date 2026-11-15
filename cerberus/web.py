@@ -160,6 +160,11 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     async def healthz():
         return {"ok": True}
 
+    @app.get("/readyz")
+    async def readyz():
+        """Ready for traffic. A standby processor answers 503 here (see leader.py)."""
+        return {"ok": True, "role": "active"}
+
     @app.get("/")
     async def index():
         return FileResponse(STATIC / "index.html")

@@ -20,7 +20,7 @@ from contextlib import contextmanager
 
 from .ch import ClickHouseEvents
 from .models import SEVERITIES
-from .storage import Batch, Store
+from .storage import Batch, Leadership, Store
 
 POOL = 6
 
@@ -74,12 +74,60 @@ ALERT_COLUMNS = ("id", "created", "last_seen", "detector", "severity", "title", 
                  "src_ip", "device", "count", "status", "details", "updated")
 
 
+class _AdvisoryLock(Leadership):
+    """A session-level advisory lock on a connection of its own. PostgreSQL frees it the
+    moment that session ends: at once if the holder exits or crashes, within about 25
+    seconds (TCP keepalives) if the holder's host or network disappears."""
+
+    CLASS = 7243  # first half of the two-part lock key; the second is a hash of the name
+
+    def __init__(self, url: str, name: str):
+        self.url = url
+        self.name = name
+        self.conn = None
+
+    def _connect(self):
+        import psycopg
+        conn = psycopg.connect(self.url, autocommit=True, connect_timeout=5, keepalives=1, keepalives_idle=10,
+                               keepalives_interval=5, keepalives_count=3)
+        # The server side too: notice a vanished holder and free its lock.
+        for setting in ("tcp_keepalives_idle = 10", "tcp_keepalives_interval = 5", "tcp_keepalives_count = 3",
+                        "statement_timeout = 5000"):
+            conn.execute(f"SET {setting}")
+        return conn
+
+    def try_acquire(self) -> bool:
+        if self.conn is None or self.conn.closed:
+            self.conn = self._connect()
+        row = self.conn.execute("SELECT pg_try_advisory_lock(%s, hashtext(%s))", (self.CLASS, self.name)).fetchone()
+        return bool(row[0])
+
+    def still_held(self) -> bool:
+        if self.conn is None or self.conn.closed:
+            return False
+        try:
+            # A session lock lasts as long as the session: alive means still held.
+            self.conn.execute("SELECT 1").fetchone()
+            return True
+        except Exception:
+            return False
+
+    def release(self) -> None:
+        if self.conn is not None and not self.conn.closed:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self.conn = None
+
+
 class PostgresStore(Store):
     def __init__(self, url: str, events: ClickHouseEvents):
         import psycopg  # optional dependency: only clustered storage needs it
         from psycopg.rows import dict_row
 
         self.events = events
+        self._url = url
         self._pool: queue.SimpleQueue = queue.SimpleQueue()
         self._conns = [psycopg.connect(url, autocommit=True, row_factory=dict_row) for _ in range(POOL)]
         for conn in self._conns:
@@ -125,6 +173,9 @@ class PostgresStore(Store):
             return json.loads(rows[0]["value"])
         except ValueError:
             return default
+
+    def leadership(self, name: str) -> Leadership:
+        return _AdvisoryLock(self._url, name)
 
     def settings_with_prefix(self, prefix: str) -> dict:
         out = {}

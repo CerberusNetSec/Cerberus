@@ -33,6 +33,7 @@ MAX_PENDING_EVENTS = 200_000  # events waiting to be written; beyond this the di
 STATE_KEY = "engine_state"  # settings row holding the detectors' working state
 STATE_VERSION = 1
 STATE_SAVE_SECONDS = 300
+CHECKPOINT_SECONDS = 60  # processor: how much a new leader replays from the bus at most
 # Detectors keyed on a source address; the ignore list applies to these.
 _SOURCE_KEYED = {"port_scan", "host_sweep", "deny_flood", "brute_force", "large_transfer", "threat",
                  "risky_egress", "lateral_movement", "beaconing", "password_spray", "distributed_guessing",
@@ -263,6 +264,7 @@ class Engine:
         self.dedup = None  # processor mode: a bus.Deduplicator
         self._committed: dict = {}
         self._committed_candidates: dict = {}
+        self._replaying = False  # the event or candidate in hand was already stored before a takeover
 
     # --- lifecycle -------------------------------------------------------
     def load(self, now: float | None = None) -> None:
@@ -312,20 +314,37 @@ class Engine:
         return self.families is None or det.partition in self.families
 
     def raise_alert(self, c: Candidate, now: float) -> None:
-        """The alert stage: fold the candidate into an alert, and let the correlator see it."""
-        self.alerts.raise_(c, now)
+        """The alert stage: fold the candidate into an alert, and let the correlator see it.
+        In a replay the alert is already stored (and notified): only the detectors that
+        read the alert stream learn from it again."""
+        if not self._replaying:
+            self.alerts.raise_(c, now)
         if self.hostile.enabled and self.runs(self.hostile):  # with a source worker, it marks there
             self.hostile.on_alert(c, now)
         if self.correlation.enabled:
-            self.correlation.on_alert(c, now, lambda found: self.alerts.raise_(found, now))
+            self.correlation.on_alert(c, now, lambda found: None if self._replaying else self.alerts.raise_(found, now))
 
     # --- working state ---------------------------------------------------
     def snapshot(self, now: float | None = None) -> dict:
-        """Everything the detectors have learned and are counting, as JSON-compatible data.
-        Call on the event-loop thread: it reads state the pipeline is changing."""
-        return {"version": STATE_VERSION, "saved": time.time() if now is None else now,
+        """Everything the detectors have learned and are counting, as JSON-compatible data,
+        with the bus position it matches (processor). Call on the event-loop thread: it
+        reads state the pipeline is changing."""
+        snap = {"version": STATE_VERSION, "saved": time.time() if now is None else now,
                 "detectors": {d.id: d.snapshot() for d in self.detectors},
                 "baselines": encode(self.baselines), "tops": encode(self._tops)}
+        if self.source:
+            snap["bus"] = {"events": self.source.positions(),
+                           "candidates": self.candidates.positions() if self.candidates else {}}
+        return snap
+
+    def prepare_resume(self) -> None:
+        """Processor, before its sources start: go back on the bus to where the saved state
+        was taken, so a new leader's detectors see every event the old one's had seen."""
+        bus = (self.db.get_setting(STATE_KEY) or {}).get("bus") or {}
+        if self.source:
+            self.source.resume = dict(bus.get("events") or {})
+        if self.candidates:
+            self.candidates.resume = dict(bus.get("candidates") or {})
 
     def restore(self, snap: dict, now: float) -> set[str]:
         """Load a snapshot; returns the ids of the detectors restored. A detector whose
@@ -385,17 +404,23 @@ class Engine:
                 await asyncio.sleep(2)
                 continue
             for record in records:
-                try:
-                    body = json.loads(record.value)
-                    uid = body.get("_uid")
-                    if uid and not self.candidate_dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
-                        continue
-                    self.raise_alert(Candidate.from_dict(body), float(body["_ts"]))
-                except Exception:
-                    self.parse_errors += 1
-                    if self.parse_errors <= 20:
-                        log.exception("failed to process an alert candidate")
+                self.take_candidate(record)
             await asyncio.sleep(0)
+
+    def take_candidate(self, record) -> None:
+        try:
+            body = json.loads(record.value)
+            uid = body.get("_uid")
+            if uid and not self.candidate_dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
+                return
+            self._replaying = self.candidates.replaying(record)
+            self.raise_alert(Candidate.from_dict(body), float(body["_ts"]))
+        except Exception:
+            self.parse_errors += 1
+            if self.parse_errors <= 20:
+                log.exception("failed to process an alert candidate")
+        finally:
+            self._replaying = False
 
     async def _consume(self) -> None:
         """Processor mode: parsed events from the collectors, through the bus."""
@@ -409,20 +434,33 @@ class Engine:
                 await asyncio.sleep(2)
                 continue
             for record in records:
-                try:
-                    body = json.loads(record.value)
-                    uid = body.get("_uid")
-                    if uid and self.dedup is not None and not self.dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
-                        continue  # a copy of an event already processed
-                    self.received += 1
-                    ev = Event.from_dict(body)
-                    if self.record(ev, ev.ts):
-                        self.detect(ev, ev.ts)
-                except Exception:
-                    self.parse_errors += 1
-                    if self.parse_errors <= 20:
-                        log.exception("failed to process an event from the bus")
+                self.take(record)
             await asyncio.sleep(0)
+
+    def take(self, record) -> None:
+        """Processor: one event from the bus through record and detect, or, in a replay
+        after a takeover, through detection only (it is already stored)."""
+        try:
+            body = json.loads(record.value)
+            uid = body.get("_uid")
+            if uid and self.dedup is not None and not self.dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
+                return  # a copy of an event already processed
+            ev = Event.from_dict(body)
+            if self.source.replaying(record):
+                self._replaying = self.risk_ports.replaying = True
+                if ev.device in self.devices:
+                    self._count_blocked(ev, ev.ts)
+                    self.detect(ev, ev.ts)
+                return
+            self.received += 1
+            if self.record(ev, ev.ts):
+                self.detect(ev, ev.ts)
+        except Exception:
+            self.parse_errors += 1
+            if self.parse_errors <= 20:
+                log.exception("failed to process an event from the bus")
+        finally:
+            self._replaying = self.risk_ports.replaying = False
 
     async def stop(self) -> None:
         for task in self._tasks:
@@ -523,13 +561,7 @@ class Engine:
         stat[0] += 1
         if blocked:
             stat[1] += 1
-            if not self._tops or self._tops[-1][0] != minute:
-                self._tops.append((minute, Counter(), Counter()))
-            _, sources, ports = self._tops[-1]
-            if ev.src_ip and (ev.src_ip in sources or len(sources) < TOP_KEYS_PER_MINUTE):
-                sources[ev.src_ip] += 1
-            if ev.dst_port is not None:
-                ports[(ev.proto, ev.dst_port)] += 1
+            self._count_blocked(ev, ts)
 
         # Every event is analysed; routine allowed traffic may be thinned out on disk,
         # because at scale it is nearly all of the volume and the least looked at.
@@ -549,6 +581,19 @@ class Engine:
         else:
             self.unstored += 1
         return True
+
+    def _count_blocked(self, ev: Event, ts: float) -> None:
+        """Top blocked sources and ports (kept in memory, in the saved state)."""
+        if ev.action != "block":
+            return
+        minute = int(ts // 60) * 60
+        if not self._tops or self._tops[-1][0] != minute:
+            self._tops.append((minute, Counter(), Counter()))
+        _, sources, ports = self._tops[-1]
+        if ev.src_ip and (ev.src_ip in sources or len(sources) < TOP_KEYS_PER_MINUTE):
+            sources[ev.src_ip] += 1
+        if ev.dst_port is not None:
+            ports[(ev.proto, ev.dst_port)] += 1
 
     def detect(self, ev: Event, ts: float, emit=None) -> None:
         """Stage 3: every detector that reads this kind of event. Candidates go to
@@ -622,16 +667,22 @@ class Engine:
             self.tick(now)
             self.notifier.tick()
 
-    def tick(self, now: float) -> None:
-        """Time-based work: windows expire, baselines roll, silent devices are noticed."""
+    def tick(self, now: float, replay: bool = False) -> None:
+        """Time-based work: windows expire, baselines roll, silent devices are noticed.
+        replay: a tick at a time a previous leader already covered (tests that tick on
+        the events' clock); what it finds was already raised."""
         emit = lambda c: self.raise_alert(c, now)  # noqa: E731
-        for det in self.detectors:
-            if not self.runs(det):
-                continue
-            try:
-                det.tick(now, emit if det.enabled else (lambda c: None))
-            except Exception:
-                log.exception("detector %s tick failed", det.id)
+        self._replaying = replay
+        try:
+            for det in self.detectors:
+                if not self.runs(det):
+                    continue
+                try:
+                    det.tick(now, emit if det.enabled else (lambda c: None))
+                except Exception:
+                    log.exception("detector %s tick failed", det.id)
+        finally:
+            self._replaying = False
         self.alerts.expire(now)
 
     async def _prune_loop(self) -> None:
@@ -644,7 +695,7 @@ class Engine:
                 )
             except Exception:
                 log.exception("prune failed")
-            if time.monotonic() - saved >= STATE_SAVE_SECONDS:
+            if time.monotonic() - saved >= (CHECKPOINT_SECONDS if self.source else STATE_SAVE_SECONDS):
                 saved = time.monotonic()
                 try:
                     await self.save_state_async()

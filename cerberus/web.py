@@ -482,6 +482,21 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                 "directions": (await port_memory(now))["top"](port),
                 "alerts": (await _port_alerts(now)).get(port, [])[:20]}
 
+    # --- MITRE ATT&CK --------------------------------------------------------
+    ATTACK_RANGES = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400, "all": 0}
+
+    @app.get("/api/attack")
+    async def attack(range: str = "30d", status: str = "real"):
+        """Alerts counted in the ATT&CK Enterprise matrix, by tactic and technique."""
+        from .attack import matrix
+        span = ATTACK_RANGES.get(range, ATTACK_RANGES["30d"])
+        status = status if status in ("real", "active", "all") else "real"
+        rows = await _run(db.alert_counts_by_detector, time.time() - span if span else 0, status)
+        for r in rows:
+            r["alerts"], r["occurrences"] = int(r["alerts"] or 0), int(r["occurrences"] or 0)
+        names = {d.id: d.name for d in engine.detectors}
+        return {"range": range if range in ATTACK_RANGES else "30d", "status": status, **matrix(rows, names)}
+
     @app.get("/api/alerts/counts")
     async def alert_counts():
         """Open alerts by severity: cheap enough for the navigation badge to poll."""
@@ -533,9 +548,11 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
 
     # --- alerts ----------------------------------------------------------
     @app.get("/api/alerts")
-    async def alerts(status: str = "open", severity: str = "", q: str = "", limit: int = 200, id: int = 0):
+    async def alerts(status: str = "open", severity: str = "", q: str = "", limit: int = 200, id: int = 0,
+                     detector: str = ""):
         rows = await _run(db.alerts_find, status=status, severity=severity, text=q,
-                          limit=max(1, min(limit, 1000)), alert_id=id)
+                          limit=max(1, min(limit, 1000)), alert_id=id,
+                          detectors=[d for d in detector.split(",") if d.strip()] or None)
         if any(r["status"] == "false_positive" for r in rows):
             # Who marked it, why, and how often it has come back since.
             every = await _run(db.suppressions)

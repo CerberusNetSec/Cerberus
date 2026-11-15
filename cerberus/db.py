@@ -567,15 +567,24 @@ class Database(Store):
         return where, params
 
     def alerts_find(self, *, status: str = "", severity: str = "", text: str = "", limit: int = 200,
-                    alert_id: int = 0) -> list[dict]:
+                    alert_id: int = 0, detectors: list[str] | None = None) -> list[dict]:
         if alert_id:
             where, params = ["id = ?"], [alert_id]
             more, extra = self._alert_filters("", "", severity, text)
             where, params = where + more, params + extra
         else:
             where, params = self._alert_filters("", status, severity, text)
+        if detectors:
+            detectors = list(detectors)[:50]
+            where.append(f"detector IN ({','.join('?' * len(detectors))})")
+            params = [*params, *detectors]
         sql = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "")
         return self.q(sql + " ORDER BY last_seen DESC, id DESC LIMIT ?", (*params, limit))
+
+    def alert_counts_by_detector(self, since: float, status: str) -> list[dict]:
+        where = {"active": "status IN ('open', 'ack')", "all": "1 = 1"}.get(status, "status != 'false_positive'")
+        return self.q(f"SELECT detector, severity, COUNT(*) AS alerts, SUM(count) AS occurrences, MAX(last_seen) AS last_seen "
+                      f"FROM alerts WHERE last_seen >= ? AND {where} GROUP BY detector, severity", (since,))
 
     def alerts_recent(self, limit: int) -> list[dict]:
         return self.q("SELECT id, created, last_seen, severity, title, description, status, count FROM alerts "

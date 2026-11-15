@@ -243,6 +243,7 @@ const state = {
   events: { hours: '24', type: '', action: '', ip: '', port: '', q: '', live: true, open: new Set(), rows: [] },
   devices: { q: '', status: '', connector: '', sort: 'recent', limit: 100 },
   riskports: { range: '24h', flagged: false, open: null },
+  attack: { range: '30d', status: 'real' },
   connectors: [],
 };
 const pages = {};
@@ -347,9 +348,13 @@ pages.alerts = {
   get interval() { return state.alerts.every * 1000; },
   render() {
     const s = state.alerts;
-    const linked = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('id'));
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    const linked = Number(params.get('id'));
     s.only = linked || null;
     if (linked) s.open.add(linked);
+    s.detectors = params.get('detector') || '';  // from a cell of the ATT&CK matrix
+    s.detectorLabel = params.get('label') || '';
+    if (params.get('status')) s.status = params.get('status');
     main.innerHTML = `
       <div class="page-head"><div><h1>Alerts</h1><p>Repeats of the same problem are folded into one alert and counted.</p></div>
         <button type="button" data-act="ack-all">Acknowledge all open</button></div>
@@ -365,6 +370,7 @@ pages.alerts = {
         </select>
         <input id="f-q" type="search" placeholder="Search title, IP, device" value="${esc(s.q)}">
         ${s.only ? '<a href="#/alerts">Showing one alert · show all</a>' : ''}
+        ${!s.only && s.detectors ? `<span class="tag">${esc(s.detectorLabel || s.detectors)}</span> <a href="#/alerts">show all</a>` : ''}
         <span class="spacer"></span>
         <label class="inline" for="f-every">Auto-refresh</label>
         <select id="f-every" aria-label="Auto-refresh the alerts and the count">
@@ -393,7 +399,8 @@ pages.alerts = {
   },
   async refresh() {
     const s = state.alerts;
-    const q = s.only ? new URLSearchParams({ id: s.only }) : new URLSearchParams({ status: s.status, severity: s.severity, q: s.q });
+    const q = s.only ? new URLSearchParams({ id: s.only })
+      : new URLSearchParams({ status: s.status, severity: s.severity, q: s.q, ...(s.detectors ? { detector: s.detectors } : {}) });
     const { alerts } = await api('/alerts?' + q);
     const body = $('#rows');
     if (!body) return;
@@ -471,6 +478,97 @@ pages.alerts = {
       await api('/ignore', 'POST', { ip, kind: 'source' });
       toast(`${ip} added to ignored sources`);
     },
+  },
+};
+
+/* --- MITRE ATT&CK matrix: alerts by tactic and technique --- */
+const ATTACK_RANGES = [['24h', '24 h'], ['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['all', 'All']];
+const ATTACK_STATUS = [['real', 'All but false positives'], ['active', 'Open and acknowledged'], ['all', 'All, with false positives']];
+/* Five steps of one hue on a log scale up to the busiest cell; 0 is neutral, never a light blue. */
+function heatStep(n, max) {
+  if (!n) return 0;
+  if (max <= 1) return 3;
+  return Math.min(5, 1 + Math.floor(4 * Math.log(n) / Math.log(max) + 1e-9));
+}
+function heatRanges(max) {
+  // The counts each step stands for, for the legend.
+  const out = [];
+  for (let step = 1; step <= 5; step++) {
+    const lo = step === 1 ? 1 : Math.ceil(Math.pow(max, (step - 1) / 4)), hi = step === 5 ? max : Math.ceil(Math.pow(max, step / 4)) - 1;
+    if (max <= 1) { if (step === 3) out.push([3, '1']); continue; }
+    if (hi >= lo) out.push([step, lo === hi ? String(lo) : `${lo}–${hi}`]);
+  }
+  return out;
+}
+pages.attack = {
+  interval: 30000,
+  render() {
+    const s = state.attack;
+    main.innerHTML = `
+      <div class="page-head"><div><h1>MITRE ATT&amp;CK</h1>
+        <p>Alerts placed in the ATT&amp;CK Enterprise matrix by the technique each detector looks for. Darker cells had more alerts;
+          a cell links to them. Tactics with no cells are ones Cerberus cannot see from network logs.</p></div>
+        <div class="row">
+          <select id="ak-status" aria-label="Which alerts">${ATTACK_STATUS.map(([v, l]) => `<option value="${v}" ${v === s.status ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <div class="seg" id="ak-range">${ATTACK_RANGES.map(([v, l]) => `<button type="button" data-range="${v}" class="${v === s.range ? 'on' : ''}">${l}</button>`).join('')}</div>
+        </div></div>
+      <div class="grid tiles" id="ak-tiles"></div>
+      <div class="card">
+        <div class="chart-head" style="margin-bottom:10px"><h2 style="margin:0">Alerts by tactic and technique</h2>
+          <div class="heat-legend" id="ak-legend" aria-label="Colour scale"></div></div>
+        <div class="matrix-wrap"><div class="matrix" id="ak-matrix"></div></div>
+      </div>
+      <div class="card" style="margin-top:16px" id="ak-other"></div>`;
+    $('#ak-range').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      s.range = b.dataset.range;
+      $$('#ak-range button').forEach((x) => x.classList.toggle('on', x === b));
+      this.refresh().catch(() => {});
+    });
+    $('#ak-status').addEventListener('change', () => { s.status = $('#ak-status').value; this.refresh().catch(() => {}); });
+  },
+  async refresh() {
+    const s = state.attack;
+    const d = await api(`/attack?range=${s.range}&status=${s.status}`);
+    if (!$('#ak-matrix')) return;
+    const busiest = d.tactics.flatMap((t) => t.techniques.map((c) => ({ ...c, tactic: t.name })))
+      .sort((a, b) => b.alerts - a.alerts)[0];
+    const tile = (label, value, sub) => `<div class="card tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+    $('#ak-tiles').innerHTML =
+      tile('Alerts in the matrix', num(d.total), esc(ATTACK_RANGES.find((r) => r[0] === d.range)[1].toLowerCase()) + (d.range === 'all' ? '' : ' · by last seen')) +
+      tile('Techniques with alerts', `${d.techniques_seen} <span class="muted">/ ${d.techniques_covered}</span>`, 'of those Cerberus detects') +
+      tile('Tactics covered', `${d.tactics_covered} <span class="muted">/ ${d.tactics.length}</span>`, 'ATT&amp;CK Enterprise tactics') +
+      tile('Most active technique', busiest && busiest.alerts ? esc(busiest.id) : '—',
+        busiest && busiest.alerts ? `${esc(busiest.name)} · ${num(busiest.alerts)} alert${busiest.alerts === 1 ? '' : 's'}` : 'no alerts in this period');
+    $('#ak-legend').innerHTML = d.max
+      ? `<span class="muted">Alerts</span><span class="heat-key"><i class="heat-0"></i>0</span>` +
+        heatRanges(d.max).map(([step, label]) => `<span class="heat-key"><i class="heat-${step}"></i>${label}</span>`).join('')
+      : '<span class="muted">No alerts in this period</span>';
+    const status = s.status === 'active' ? 'active' : 'all';
+    $('#ak-matrix').innerHTML = d.tactics.map((t) => `
+      <section class="tactic" aria-label="${esc(t.name)}">
+        <header><a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">${esc(t.name)}</a>
+          <span class="muted">${t.techniques.length ? `${num(t.alerts)} alert${t.alerts === 1 ? '' : 's'}` : ''}</span></header>
+        ${t.techniques.length ? t.techniques.map((c) => {
+          const step = heatStep(c.alerts, d.max);
+          const sev = Object.entries(c.severity).sort((a, b) => SEVS.indexOf(b[0]) - SEVS.indexOf(a[0]))
+            .map(([k, v]) => `${v} ${k}`).join(', ');
+          const tip = `${c.id} ${c.name}: ${c.alerts} alert${c.alerts === 1 ? '' : 's'}` +
+            (c.alerts ? ` (${sev}), ${c.occurrences} occurrence${c.occurrences === 1 ? '' : 's'}, last ${ago(c.last_seen)}` : '') +
+            `. Detected by: ${c.detectors.map((x) => x.name).join(', ')}.`;
+          const href = `#/alerts?detector=${encodeURIComponent(c.detectors.map((x) => x.id).join(','))}` +
+            `&label=${encodeURIComponent(`${c.id} ${c.name}`)}&status=${status}`;
+          return `<a class="technique heat-${step}" href="${href}" title="${esc(tip)}" aria-label="${esc(tip)}">
+            <span class="tid">${esc(c.id)}</span><span class="tname">${esc(c.name)}</span>
+            <span class="tcount">${num(c.alerts)}</span></a>`;
+        }).join('') : '<div class="technique none">No Cerberus detector</div>'}
+      </section>`).join('');
+    $('#ak-other').innerHTML = `<h2>Alerts outside ATT&amp;CK</h2>
+      <p class="muted" style="margin-top:-6px">Correlated compromise and network-health alerts have no ATT&amp;CK technique.</p>
+      ${d.other.length ? `<ul class="plain">${d.other.map((o) => `<li><a href="#/alerts?detector=${encodeURIComponent(o.detectors.map((x) => x.id).join(','))}&label=${encodeURIComponent(o.name)}&status=${status}">${esc(o.name)}</a>
+        <span class="muted">· ${num(o.alerts)} alert${o.alerts === 1 ? '' : 's'} · ${esc(o.detectors.map((x) => x.name).join(', '))}</span></li>`).join('')}</ul>`
+        : '<p class="muted">None in this period.</p>'}`;
   },
 };
 

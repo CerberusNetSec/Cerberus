@@ -174,6 +174,12 @@ class Store:
         """The audit trail, newest first (detail is a JSON string). Never pruned or edited."""
         raise NotImplementedError
 
+    def alert_counts_by_detector(self, since: float, status: str) -> list[dict]:
+        """Alerts active since (last seen at or after it), per detector and severity:
+        {detector, severity, alerts, occurrences, last_seen}. status: "real" (all but false
+        positives), "active" (open or acknowledged) or "all"."""
+        raise NotImplementedError
+
     def leadership(self, name: str) -> Leadership:
         """The lock that decides which of several processes named name is active."""
         raise NotImplementedError
@@ -236,7 +242,7 @@ class Store:
         raise NotImplementedError
 
     def alerts_find(self, *, status: str = "", severity: str = "", text: str = "", limit: int = 200,
-                    alert_id: int = 0) -> list[dict]:
+                    alert_id: int = 0, detectors: list[str] | None = None) -> list[dict]:
         """Alerts newest first. status: open, ack, resolved, active (not resolved) or any;
         severity: a minimum."""
         raise NotImplementedError

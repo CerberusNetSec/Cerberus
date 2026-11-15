@@ -174,8 +174,8 @@ and others) say so, and alerts with no ATT&CK technique (a correlated
 compromise, network health) are counted separately. A technique that ATT&CK
 lists under several tactics is shown once, under the one that fits the
 detector, so nothing is counted twice. To show only the tactics Cerberus has
-detectors for, tick **Settings → General → Hide ATT&CK tactics with no Cerberus
-detector**.
+detectors for, tick **Settings → General → Hide tactic columns Cerberus has no
+detector for**.
 
 ### High Risk Ports
 

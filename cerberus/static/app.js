@@ -394,7 +394,7 @@ pages.alerts = {
           ${Object.entries(a.details || {}).map(([k, v]) =>
             `<dt>${esc(k.replace(/_/g, ' '))}</dt><dd class="mono">${esc(Array.isArray(v) ? v.join(', ') : v)}</dd>`).join('')}
           ${a.src_ip ? `<dt>Events</dt><dd><a href="#/events" data-act="see-events" data-ip="${esc(a.src_ip)}">Show events for ${esc(a.src_ip)}</a></dd>` : ''}
-          ${Number.isInteger((a.details || {}).port) ? `<dt>Risk ports</dt><dd><a href="#/riskports?port=${a.details.port}">Show all traffic on port ${a.details.port}</a></dd>` : ''}
+          ${Number.isInteger((a.details || {}).port) ? `<dt>High Risk Ports</dt><dd><a href="#/riskports?port=${a.details.port}">Show all traffic on port ${a.details.port}</a></dd>` : ''}
           ${a.device ? `<dt>Topology</dt><dd><a href="#/topology?select=${encodeURIComponent(a.device)}">Show ${esc(a.device)} on the map</a></dd>` : ''}
           ${fpLines}
           ${a.src_ip && !fp ? `<dt>Expected source?</dt><dd><button type="button" class="small" data-act="ignore" data-ip="${esc(a.src_ip)}">Stop alerting on ${esc(a.src_ip)} as a source</button></dd>` : ''}
@@ -521,6 +521,8 @@ function seeEvents(el) {
 }
 
 /* --- high-risk ports --- */
+/* 3389, or 161/udp for a port listed for one protocol (or 53/tcp/udp for both). */
+const portText = (p) => (!p.protocols || p.protocols === 'any' ? String(p.port) : `${p.port}/${p.protocols}`);
 const WAYS = [['inbound', 'From the internet'], ['outbound', 'To the internet'], ['internal', 'Inside the network']];
 function sparkline(points, label) {
   const W = 132, H = 30, max = Math.max(1, ...points.map((p) => p[0] + p[1]));
@@ -536,9 +538,9 @@ pages.riskports = {
     const linked = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('port'));
     if (linked) s.open = linked;  // links from alerts open their port
     main.innerHTML = `
-      <div class="page-head"><div><h1>Risk ports</h1>
+      <div class="page-head"><div><h1>High Risk Ports</h1>
         <p>Traffic on the services attackers go for first: remote access, file sharing, clear-text protocols and databases.
-          Ports with something to look at are listed first. The list of ports is under Detection.</p></div>
+          Ports with something to look at are listed first. <a href="#/detection?focus=risk_ports">Edit the list of ports and protocols</a>.</p></div>
         <div class="row"><label class="check" style="margin:0"><input id="rp-flagged" type="checkbox" ${s.flagged ? 'checked' : ''}> Only ports with findings</label>
           <div class="seg" id="rp-range">${['1h', '6h', '24h', '7d'].map((r) =>
             `<button type="button" data-range="${r}" class="${r === s.range ? 'on' : ''}">${r}</button>`).join('')}</div></div></div>
@@ -587,7 +589,7 @@ pages.riskports = {
     const cell = (p, way) => p.totals[way][0] ? `<a href="#/events" data-act="see-events" data-port="${p.port}" data-action="allow" data-hours="${this.hours()}" title="Show these events">${num(p.totals[way][0])}</a>` : '<span class="muted">0</span>';
     $('#rp-rows').innerHTML = shown.length ? shown.map((p) => `
       <tr class="click ${s.open === p.port ? 'opened' : ''}" data-act="toggle" data-port="${p.port}" aria-expanded="${s.open === p.port}">
-        <td class="nowrap"><b>${esc(p.name)}</b> <span class="mono muted">${p.port}</span></td>
+        <td class="nowrap"><b>${esc(p.name)}</b> <span class="mono muted">${esc(portText(p))}</span></td>
         <td>${p.flags.length ? p.flags.map((f) => `<span class="flag ${esc(f.severity)}" title="${esc(f.text)}">${esc(f.label)}</span>`).join(' ') : '<span class="muted">Nothing unusual</span>'}</td>
         <td class="num">${cell(p, 'inbound')}</td><td class="num">${cell(p, 'outbound')}</td><td class="num">${cell(p, 'internal')}</td>
         <td class="num">${p.blocked ? num(p.blocked) : '<span class="muted">0</span>'}</td>
@@ -597,7 +599,7 @@ pages.riskports = {
       : `<tr><td colspan="8" class="empty">${d.ports.length ? 'No port has a finding in this range.'
         : !d.enabled ? 'High-risk port tracking is switched off under Detection.'
         : 'No traffic on these ports has been logged in this range. Firewalls must log connections (allowed as well as blocked) for anything to appear here.'}</td></tr>`;
-    $('#rp-quiet').textContent = d.quiet.length ? `No traffic seen on: ${d.quiet.map((q) => `${q.name} ${q.port}`).join(', ')}.` : '';
+    $('#rp-quiet').textContent = d.quiet.length ? `No traffic seen on: ${d.quiet.map((q) => `${q.name} ${portText(q)}`).join(', ')}.` : '';
     const chart = $('#rp-chart');
     const open = d.ports.find((p) => p.port === s.open);
     if (chart && open) {
@@ -1454,8 +1456,51 @@ pages.connectors = {
 };
 
 /* --- detection --- */
+/* The High Risk Ports list: one row per port and protocol. */
+const PROTOCOL_LABELS = [['any', 'Any'], ['tcp', 'TCP'], ['udp', 'UDP']];
+function portRow(e, catalog) {
+  const known = catalog[String(e.port)];
+  return `<tr>
+    <td><input type="number" class="pe-port mono" min="1" max="65535" value="${esc(e.port ?? '')}" aria-label="Port"></td>
+    <td><select class="pe-proto" aria-label="Protocol">${PROTOCOL_LABELS.map(([v, l]) =>
+      `<option value="${v}" ${v === e.proto ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+    <td><input class="pe-name" maxlength="40" value="${esc(e.name || '')}" placeholder="${esc(known ? known.name : 'Service name')}" aria-label="Service name"></td>
+    <td><button type="button" class="small ghost" data-act="port-remove" aria-label="Remove this port">Remove</button></td></tr>`;
+}
+function portsEditor(p) {
+  return `<div class="wide ports-editor" data-key="${esc(p.key)}" data-type="ports">
+    <h3>High Risk Ports</h3>
+    <p class="muted">Traffic to these ports is counted on the <a href="#/riskports">High Risk Ports</a> page and watched for surges.
+      One row per port and protocol: <b>Any</b> counts every protocol; <b>TCP</b> or <b>UDP</b> counts only that one
+      (and traffic whose protocol the device does not log). The service name is optional; leave it empty to use the built-in one.</p>
+    <div class="table-wrap"><table class="ports-table">
+      <thead><tr><th>Port</th><th>Protocol</th><th>Service name</th><th></th></tr></thead>
+      <tbody>${p.entries.map((e) => portRow(e, p.catalog)).join('')}</tbody></table></div>
+    <div class="row" style="margin-top:8px">
+      <button type="button" data-act="port-add">Add port</button>
+      <button type="button" class="ghost" data-act="port-defaults">Restore the default list</button>
+      <span class="muted" id="ports-count"></span></div>
+  </div>`;
+}
+function portEntries(editor) {
+  const out = [], seen = new Set();
+  for (const tr of $$('tbody tr', editor)) {
+    const raw = $('.pe-port', tr).value.trim();
+    if (!raw) continue;  // an empty new row
+    const port = Number(raw), proto = $('.pe-proto', tr).value;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`"${raw}" is not a port number (1 to 65535).`);
+    const key = `${port}/${proto}`;
+    if (seen.has(key)) throw new Error(`Port ${port} (${proto === 'any' ? 'any protocol' : proto.toUpperCase()}) is listed twice.`);
+    seen.add(key);
+    const name = $('.pe-name', tr).value.replace(/[,;=\n\r]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+    out.push(`${port}${proto === 'any' ? '' : '/' + proto}${name ? '=' + name : ''}`);
+  }
+  return out.join(',');
+}
+
 pages.detection = {
   render() {
+    this.focus = new URLSearchParams(location.hash.split('?')[1] || '').get('focus');
     main.innerHTML = `
       <div class="page-head"><div><h1>Detection</h1><p>Which patterns raise alerts, and how sensitive each one is.</p></div></div>
       <form id="det-form">
@@ -1481,7 +1526,9 @@ pages.detection = {
       <div class="setting" data-id="${esc(d.id)}">
         <div class="setting-head"><label class="check"><input type="checkbox" class="d-enabled" ${d.enabled ? 'checked' : ''}> ${esc(d.name)}</label></div>
         <p>${esc(d.description)}</p>
-        <div class="params">${d.params.map((p) => p.type === 'text'
+        <div class="params">${d.params.map((p) => p.type === 'ports'
+          ? portsEditor(p)
+          : p.type === 'text'
           ? `<div class="wide"><label>${esc(p.label)}<textarea rows="4" class="mono" spellcheck="false" data-key="${esc(p.key)}" data-type="str">${esc(p.value)}</textarea></label></div>`
           : p.type === 'bool'
           ? `<label class="check"><input type="checkbox" data-key="${esc(p.key)}" data-type="bool" ${p.value ? 'checked' : ''}> ${esc(p.label)}</label>`
@@ -1491,13 +1538,48 @@ pages.detection = {
     $('#g-cooldown').value = general.cooldown_minutes;
     $('#g-ignore').value = general.ignore_sources.join('\n');
     $('#g-ignore-dst').value = general.ignore_destinations.join('\n');
+    const ports = detectors.flatMap((d) => d.params).find((p) => p.type === 'ports');
+    this.ports = ports ? { catalog: ports.catalog, defaults: ports.default_entries } : null;
+    this.countPorts();
+    $$('.ports-editor').forEach((ed) => ed.addEventListener('input', (e) => {
+      if (e.target.classList.contains('pe-port')) {  // suggest the built-in name for the port typed
+        const known = this.ports && this.ports.catalog[String(Number(e.target.value))];
+        $('.pe-name', e.target.closest('tr')).placeholder = known ? known.name : 'Service name';
+      }
+      this.countPorts();
+    }));
+    if (this.focus) {
+      const el = $(`.setting[data-id="${CSS.escape(this.focus)}"]`);
+      if (el) { el.classList.add('focus'); el.scrollIntoView({ block: 'start' }); }
+      this.focus = null;
+    }
+  },
+  countPorts() {
+    const ed = $('.ports-editor');
+    if (ed) $('#ports-count').textContent = `${$$('tbody tr', ed).filter((tr) => $('.pe-port', tr).value.trim()).length} entries`;
+  },
+  actions: {
+    'port-add'(el) {
+      const body = $('tbody', el.closest('.ports-editor'));
+      body.insertAdjacentHTML('beforeend', portRow({ port: '', proto: 'tcp', name: '' }, pages.detection.ports.catalog));
+      $('tr:last-child .pe-port', body).focus();
+      pages.detection.countPorts();
+    },
+    'port-remove'(el) { el.closest('tr').remove(); pages.detection.countPorts(); },
+    'port-defaults'(el) {
+      if (!confirm('Replace the list with the built-in high risk ports? Your changes are lost when you save.')) return;
+      const { defaults, catalog } = pages.detection.ports;
+      $('tbody', el.closest('.ports-editor')).innerHTML = defaults.map((e) => portRow(e, catalog)).join('');
+      pages.detection.countPorts();
+    },
   },
   async save() {
     const detectors = {};
     $$('#det-list .setting').forEach((el) => {
       const cfg = { enabled: $('.d-enabled', el).checked };
       $$('[data-key]', el).forEach((inp) => {
-        cfg[inp.dataset.key] = inp.dataset.type === 'bool' ? inp.checked : inp.dataset.type === 'str' ? inp.value : Number(inp.value);
+        cfg[inp.dataset.key] = inp.dataset.type === 'ports' ? portEntries(inp)
+          : inp.dataset.type === 'bool' ? inp.checked : inp.dataset.type === 'str' ? inp.value : Number(inp.value);
       });
       detectors[el.dataset.id] = cfg;
     });

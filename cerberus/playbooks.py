@@ -203,7 +203,7 @@ PLAYBOOKS: dict[str, dict] = {
                "worm spreading, a new exposure, or a misconfigured system. Allowed traffic matters most; a rise "
                "in blocked traffic shows the firewall doing its job, but also that someone is trying.",
         "actions": [
-            "Open the Risk ports page and expand this port to see who the traffic is from and to.",
+            "Open the High Risk Ports page and expand this port to see who the traffic is from and to.",
             "If the connections are allowed from the internet, find the firewall rule that permits them and "
             "restrict it to the sources that need it.",
             "If one internal host accounts for most of it, identify the host; many destinations on SMB, RDP or "

@@ -66,7 +66,7 @@ stages and requires identical results.
 | `models.py` | `Event`, `Candidate`, address helpers |
 | `detectors.py` | Detector base class; scan, flood, brute force, link flap, rate baseline, silence, new device |
 | `security.py` | Exposure, risky egress, lateral movement, beaconing, credential attacks, admin access, watchlist, correlation |
-| `riskports.py` | High-risk port counters, surge alert, findings for the Risk ports page |
+| `riskports.py` | High-risk port counters, surge alert, findings for the High Risk Ports page; the port/protocol list (`parse_entries`, `format_entries`) |
 | `playbooks.py` | Per-alert explanation, ATT&CK technique and steps |
 | `engine.py` | Pipeline, device registry, alert folding, flush and prune loops |
 | `storage.py` | The storage contract (`Store`, `Batch`): every operation a backend provides |
@@ -213,7 +213,7 @@ stored.
 
 Two pieces of cross-detector state follow the families: `hostile_allowed`
 reads the alerts of source detectors, so a source worker feeds it its own
-candidates; and the Risk ports page reads the port detector's memory, so a
+candidates; and the High Risk Ports page reads the port detector's memory, so a
 port worker writes the per-minute port counters and publishes a summary under
 the setting `riskports_view:<worker>`, which the dashboard merges.
 

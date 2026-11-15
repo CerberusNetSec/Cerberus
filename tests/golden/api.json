@@ -7217,16 +7217,456 @@
      ]
     },
     {
-     "description": "Tracks traffic on ports that attackers target first, for the Risk ports page, and alerts when traffic on one of them rises far above what that port normally carries.",
+     "description": "Tracks traffic on ports that attackers target first, for the High Risk Ports page, and alerts when traffic on one of them rises far above what that port normally carries.",
      "enabled": true,
      "id": "risk_ports",
      "name": "High-risk port activity",
      "params": [
       {
+       "catalog": {
+        "110": {
+         "name": "POP3",
+         "why": "Clear-text mail retrieval."
+        },
+        "135": {
+         "name": "MS RPC",
+         "why": "Windows remote procedure calls; a route for remote code execution and lateral movement."
+        },
+        "137": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "138": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "139": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "143": {
+         "name": "IMAP",
+         "why": "Clear-text mail access."
+        },
+        "1433": {
+         "name": "MS SQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "1521": {
+         "name": "Oracle DB",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "161": {
+         "name": "SNMP",
+         "why": "Device management, often with default community strings."
+        },
+        "20": {
+         "name": "FTP data",
+         "why": "Clear-text file transfer: passwords and files cross the network unencrypted."
+        },
+        "2049": {
+         "name": "NFS",
+         "why": "File sharing with weak, host-based authentication."
+        },
+        "21": {
+         "name": "FTP",
+         "why": "Clear-text file transfer: passwords and files cross the network unencrypted."
+        },
+        "22": {
+         "name": "SSH",
+         "why": "Remote shell. Constantly brute-forced when reachable from the internet."
+        },
+        "23": {
+         "name": "Telnet",
+         "why": "Clear-text remote shell. Still the main way IoT botnets spread."
+        },
+        "25": {
+         "name": "SMTP",
+         "why": "Mail relay. From a workstation it usually means spam-sending malware."
+        },
+        "27017": {
+         "name": "MongoDB",
+         "why": "Database, frequently left open with no authentication."
+        },
+        "3306": {
+         "name": "MySQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "3389": {
+         "name": "RDP",
+         "why": "Windows remote desktop: the most common way in for ransomware operators."
+        },
+        "389": {
+         "name": "LDAP",
+         "why": "Directory access without encryption; credentials can be read in transit."
+        },
+        "445": {
+         "name": "SMB",
+         "why": "Windows file sharing: how ransomware and worms spread, and it leaks credentials when allowed out."
+        },
+        "512": {
+         "name": "rexec",
+         "why": "Legacy remote execution with clear-text or no authentication."
+        },
+        "513": {
+         "name": "rlogin",
+         "why": "Legacy remote login with clear-text or no authentication."
+        },
+        "5432": {
+         "name": "PostgreSQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "5900": {
+         "name": "VNC",
+         "why": "Remote desktop, often with weak or no password."
+        },
+        "5985": {
+         "name": "WinRM",
+         "why": "Windows remote management; used for lateral movement."
+        },
+        "5986": {
+         "name": "WinRM",
+         "why": "Windows remote management; used for lateral movement."
+        },
+        "6379": {
+         "name": "Redis",
+         "why": "In-memory database, usually with no authentication."
+        },
+        "69": {
+         "name": "TFTP",
+         "why": "File transfer with no authentication at all."
+        },
+        "80": {
+         "name": "HTTP",
+         "why": "Unencrypted web traffic: content and credentials are readable in transit."
+        },
+        "8080": {
+         "name": "HTTP (alt)",
+         "why": "Unencrypted web traffic, and a common port for admin panels and proxies."
+        },
+        "9200": {
+         "name": "Elasticsearch",
+         "why": "Search database, frequently left open with no authentication."
+        }
+       },
        "default": "20,21,22,23,25,69,80,110,135,137,138,139,143,161,389,445,512,513,1433,1521,2049,3306,3389,5432,5900,5985,5986,6379,8080,9200,27017",
+       "default_entries": [
+        {
+         "name": "",
+         "port": 20,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 21,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 22,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 23,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 25,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 69,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 80,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 110,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 135,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 137,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 138,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 139,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 143,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 161,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 445,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 512,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 513,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1433,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1521,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 2049,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3306,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5432,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5900,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5985,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5986,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 6379,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 8080,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 9200,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 27017,
+         "proto": "any"
+        }
+       ],
+       "entries": [
+        {
+         "name": "",
+         "port": 20,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 21,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 22,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 23,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 25,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 69,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 80,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 110,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 135,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 137,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 138,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 139,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 143,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 161,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 445,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 512,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 513,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1433,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1521,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 2049,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3306,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5432,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5900,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5985,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5986,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 6379,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 8080,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 9200,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 27017,
+         "proto": "any"
+        }
+       ],
        "key": "ports",
-       "label": "High-risk ports (comma separated)",
-       "type": "text",
+       "label": "High risk ports",
+       "type": "ports",
        "value": "20,21,22,23,25,69,80,110,135,137,138,139,143,161,389,445,512,513,1433,1521,2049,3306,3389,5432,5900,5985,5986,6379,8080,9200,27017"
       },
       {
@@ -7805,16 +8245,456 @@
      ]
     },
     {
-     "description": "Tracks traffic on ports that attackers target first, for the Risk ports page, and alerts when traffic on one of them rises far above what that port normally carries.",
+     "description": "Tracks traffic on ports that attackers target first, for the High Risk Ports page, and alerts when traffic on one of them rises far above what that port normally carries.",
      "enabled": true,
      "id": "risk_ports",
      "name": "High-risk port activity",
      "params": [
       {
+       "catalog": {
+        "110": {
+         "name": "POP3",
+         "why": "Clear-text mail retrieval."
+        },
+        "135": {
+         "name": "MS RPC",
+         "why": "Windows remote procedure calls; a route for remote code execution and lateral movement."
+        },
+        "137": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "138": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "139": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "143": {
+         "name": "IMAP",
+         "why": "Clear-text mail access."
+        },
+        "1433": {
+         "name": "MS SQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "1521": {
+         "name": "Oracle DB",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "161": {
+         "name": "SNMP",
+         "why": "Device management, often with default community strings."
+        },
+        "20": {
+         "name": "FTP data",
+         "why": "Clear-text file transfer: passwords and files cross the network unencrypted."
+        },
+        "2049": {
+         "name": "NFS",
+         "why": "File sharing with weak, host-based authentication."
+        },
+        "21": {
+         "name": "FTP",
+         "why": "Clear-text file transfer: passwords and files cross the network unencrypted."
+        },
+        "22": {
+         "name": "SSH",
+         "why": "Remote shell. Constantly brute-forced when reachable from the internet."
+        },
+        "23": {
+         "name": "Telnet",
+         "why": "Clear-text remote shell. Still the main way IoT botnets spread."
+        },
+        "25": {
+         "name": "SMTP",
+         "why": "Mail relay. From a workstation it usually means spam-sending malware."
+        },
+        "27017": {
+         "name": "MongoDB",
+         "why": "Database, frequently left open with no authentication."
+        },
+        "3306": {
+         "name": "MySQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "3389": {
+         "name": "RDP",
+         "why": "Windows remote desktop: the most common way in for ransomware operators."
+        },
+        "389": {
+         "name": "LDAP",
+         "why": "Directory access without encryption; credentials can be read in transit."
+        },
+        "445": {
+         "name": "SMB",
+         "why": "Windows file sharing: how ransomware and worms spread, and it leaks credentials when allowed out."
+        },
+        "512": {
+         "name": "rexec",
+         "why": "Legacy remote execution with clear-text or no authentication."
+        },
+        "513": {
+         "name": "rlogin",
+         "why": "Legacy remote login with clear-text or no authentication."
+        },
+        "5432": {
+         "name": "PostgreSQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "5900": {
+         "name": "VNC",
+         "why": "Remote desktop, often with weak or no password."
+        },
+        "5985": {
+         "name": "WinRM",
+         "why": "Windows remote management; used for lateral movement."
+        },
+        "5986": {
+         "name": "WinRM",
+         "why": "Windows remote management; used for lateral movement."
+        },
+        "6379": {
+         "name": "Redis",
+         "why": "In-memory database, usually with no authentication."
+        },
+        "69": {
+         "name": "TFTP",
+         "why": "File transfer with no authentication at all."
+        },
+        "80": {
+         "name": "HTTP",
+         "why": "Unencrypted web traffic: content and credentials are readable in transit."
+        },
+        "8080": {
+         "name": "HTTP (alt)",
+         "why": "Unencrypted web traffic, and a common port for admin panels and proxies."
+        },
+        "9200": {
+         "name": "Elasticsearch",
+         "why": "Search database, frequently left open with no authentication."
+        }
+       },
        "default": "20,21,22,23,25,69,80,110,135,137,138,139,143,161,389,445,512,513,1433,1521,2049,3306,3389,5432,5900,5985,5986,6379,8080,9200,27017",
+       "default_entries": [
+        {
+         "name": "",
+         "port": 20,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 21,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 22,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 23,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 25,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 69,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 80,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 110,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 135,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 137,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 138,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 139,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 143,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 161,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 445,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 512,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 513,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1433,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1521,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 2049,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3306,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5432,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5900,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5985,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5986,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 6379,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 8080,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 9200,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 27017,
+         "proto": "any"
+        }
+       ],
+       "entries": [
+        {
+         "name": "",
+         "port": 20,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 21,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 22,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 23,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 25,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 69,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 80,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 110,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 135,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 137,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 138,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 139,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 143,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 161,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 445,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 512,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 513,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1433,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1521,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 2049,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3306,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5432,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5900,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5985,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5986,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 6379,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 8080,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 9200,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 27017,
+         "proto": "any"
+        }
+       ],
        "key": "ports",
-       "label": "High-risk ports (comma separated)",
-       "type": "text",
+       "label": "High risk ports",
+       "type": "ports",
        "value": "20,21,22,23,25,69,80,110,135,137,138,139,143,161,389,445,512,513,1433,1521,2049,3306,3389,5432,5900,5985,5986,6379,8080,9200,27017"
       },
       {
@@ -8397,16 +9277,456 @@
      ]
     },
     {
-     "description": "Tracks traffic on ports that attackers target first, for the Risk ports page, and alerts when traffic on one of them rises far above what that port normally carries.",
+     "description": "Tracks traffic on ports that attackers target first, for the High Risk Ports page, and alerts when traffic on one of them rises far above what that port normally carries.",
      "enabled": true,
      "id": "risk_ports",
      "name": "High-risk port activity",
      "params": [
       {
+       "catalog": {
+        "110": {
+         "name": "POP3",
+         "why": "Clear-text mail retrieval."
+        },
+        "135": {
+         "name": "MS RPC",
+         "why": "Windows remote procedure calls; a route for remote code execution and lateral movement."
+        },
+        "137": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "138": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "139": {
+         "name": "NetBIOS",
+         "why": "Legacy Windows naming and file sharing; leaks names and credentials."
+        },
+        "143": {
+         "name": "IMAP",
+         "why": "Clear-text mail access."
+        },
+        "1433": {
+         "name": "MS SQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "1521": {
+         "name": "Oracle DB",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "161": {
+         "name": "SNMP",
+         "why": "Device management, often with default community strings."
+        },
+        "20": {
+         "name": "FTP data",
+         "why": "Clear-text file transfer: passwords and files cross the network unencrypted."
+        },
+        "2049": {
+         "name": "NFS",
+         "why": "File sharing with weak, host-based authentication."
+        },
+        "21": {
+         "name": "FTP",
+         "why": "Clear-text file transfer: passwords and files cross the network unencrypted."
+        },
+        "22": {
+         "name": "SSH",
+         "why": "Remote shell. Constantly brute-forced when reachable from the internet."
+        },
+        "23": {
+         "name": "Telnet",
+         "why": "Clear-text remote shell. Still the main way IoT botnets spread."
+        },
+        "25": {
+         "name": "SMTP",
+         "why": "Mail relay. From a workstation it usually means spam-sending malware."
+        },
+        "27017": {
+         "name": "MongoDB",
+         "why": "Database, frequently left open with no authentication."
+        },
+        "3306": {
+         "name": "MySQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "3389": {
+         "name": "RDP",
+         "why": "Windows remote desktop: the most common way in for ransomware operators."
+        },
+        "389": {
+         "name": "LDAP",
+         "why": "Directory access without encryption; credentials can be read in transit."
+        },
+        "445": {
+         "name": "SMB",
+         "why": "Windows file sharing: how ransomware and worms spread, and it leaks credentials when allowed out."
+        },
+        "512": {
+         "name": "rexec",
+         "why": "Legacy remote execution with clear-text or no authentication."
+        },
+        "513": {
+         "name": "rlogin",
+         "why": "Legacy remote login with clear-text or no authentication."
+        },
+        "5432": {
+         "name": "PostgreSQL",
+         "why": "Database. Should never be reachable from the internet."
+        },
+        "5900": {
+         "name": "VNC",
+         "why": "Remote desktop, often with weak or no password."
+        },
+        "5985": {
+         "name": "WinRM",
+         "why": "Windows remote management; used for lateral movement."
+        },
+        "5986": {
+         "name": "WinRM",
+         "why": "Windows remote management; used for lateral movement."
+        },
+        "6379": {
+         "name": "Redis",
+         "why": "In-memory database, usually with no authentication."
+        },
+        "69": {
+         "name": "TFTP",
+         "why": "File transfer with no authentication at all."
+        },
+        "80": {
+         "name": "HTTP",
+         "why": "Unencrypted web traffic: content and credentials are readable in transit."
+        },
+        "8080": {
+         "name": "HTTP (alt)",
+         "why": "Unencrypted web traffic, and a common port for admin panels and proxies."
+        },
+        "9200": {
+         "name": "Elasticsearch",
+         "why": "Search database, frequently left open with no authentication."
+        }
+       },
        "default": "20,21,22,23,25,69,80,110,135,137,138,139,143,161,389,445,512,513,1433,1521,2049,3306,3389,5432,5900,5985,5986,6379,8080,9200,27017",
+       "default_entries": [
+        {
+         "name": "",
+         "port": 20,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 21,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 22,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 23,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 25,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 69,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 80,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 110,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 135,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 137,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 138,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 139,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 143,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 161,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 445,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 512,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 513,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1433,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1521,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 2049,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3306,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5432,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5900,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5985,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5986,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 6379,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 8080,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 9200,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 27017,
+         "proto": "any"
+        }
+       ],
+       "entries": [
+        {
+         "name": "",
+         "port": 20,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 21,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 22,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 23,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 25,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 69,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 80,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 110,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 135,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 137,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 138,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 139,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 143,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 161,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 445,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 512,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 513,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1433,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 1521,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 2049,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3306,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 3389,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5432,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5900,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5985,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 5986,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 6379,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 8080,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 9200,
+         "proto": "any"
+        },
+        {
+         "name": "",
+         "port": 27017,
+         "proto": "any"
+        }
+       ],
        "key": "ports",
-       "label": "High-risk ports (comma separated)",
-       "type": "text",
+       "label": "High risk ports",
+       "type": "ports",
        "value": "20,21,22,23,25,69,80,110,135,137,138,139,143,161,389,445,512,513,1433,1521,2049,3306,3389,5432,5900,5985,5986,6379,8080,9200,27017"
       },
       {
@@ -40358,7 +41678,8 @@
     }
    },
    "name": "RDP",
-   "port": 3389
+   "port": 3389,
+   "protocols": "any"
   },
   "status": 200
  },
@@ -40445,6 +41766,7 @@
      ],
      "name": "RDP",
      "port": 3389,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -40719,6 +42041,7 @@
      ],
      "name": "SMB",
      "port": 445,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -40999,6 +42322,7 @@
      ],
      "name": "FTP",
      "port": 21,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -41273,6 +42597,7 @@
      ],
      "name": "Telnet",
      "port": 23,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -41540,6 +42865,7 @@
      "flags": [],
      "name": "HTTP",
      "port": 80,
+     "protocols": "any",
      "series": [
       [
        27,
@@ -41807,6 +43133,7 @@
      "flags": [],
      "name": "SSH",
      "port": 22,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -42074,6 +43401,7 @@
      "flags": [],
      "name": "HTTP (alt)",
      "port": 8080,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -42341,6 +43669,7 @@
      "flags": [],
      "name": "MS SQL",
      "port": 1433,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -42608,6 +43937,7 @@
      "flags": [],
      "name": "VNC",
      "port": 5900,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -42875,6 +44205,7 @@
      "flags": [],
      "name": "Redis",
      "port": 6379,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -43142,6 +44473,7 @@
      "flags": [],
      "name": "FTP data",
      "port": 20,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -43409,6 +44741,7 @@
      "flags": [],
      "name": "SMTP",
      "port": 25,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -43676,6 +45009,7 @@
      "flags": [],
      "name": "LDAP",
      "port": 389,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -43939,75 +45273,93 @@
    "quiet": [
     {
      "name": "TFTP",
-     "port": 69
+     "port": 69,
+     "protocols": "any"
     },
     {
      "name": "POP3",
-     "port": 110
+     "port": 110,
+     "protocols": "any"
     },
     {
      "name": "MS RPC",
-     "port": 135
+     "port": 135,
+     "protocols": "any"
     },
     {
      "name": "NetBIOS",
-     "port": 137
+     "port": 137,
+     "protocols": "any"
     },
     {
      "name": "NetBIOS",
-     "port": 138
+     "port": 138,
+     "protocols": "any"
     },
     {
      "name": "NetBIOS",
-     "port": 139
+     "port": 139,
+     "protocols": "any"
     },
     {
      "name": "IMAP",
-     "port": 143
+     "port": 143,
+     "protocols": "any"
     },
     {
      "name": "SNMP",
-     "port": 161
+     "port": 161,
+     "protocols": "any"
     },
     {
      "name": "rexec",
-     "port": 512
+     "port": 512,
+     "protocols": "any"
     },
     {
      "name": "rlogin",
-     "port": 513
+     "port": 513,
+     "protocols": "any"
     },
     {
      "name": "Oracle DB",
-     "port": 1521
+     "port": 1521,
+     "protocols": "any"
     },
     {
      "name": "NFS",
-     "port": 2049
+     "port": 2049,
+     "protocols": "any"
     },
     {
      "name": "MySQL",
-     "port": 3306
+     "port": 3306,
+     "protocols": "any"
     },
     {
      "name": "PostgreSQL",
-     "port": 5432
+     "port": 5432,
+     "protocols": "any"
     },
     {
      "name": "WinRM",
-     "port": 5985
+     "port": 5985,
+     "protocols": "any"
     },
     {
      "name": "WinRM",
-     "port": 5986
+     "port": 5986,
+     "protocols": "any"
     },
     {
      "name": "Elasticsearch",
-     "port": 9200
+     "port": 9200,
+     "protocols": "any"
     },
     {
      "name": "MongoDB",
-     "port": 27017
+     "port": 27017,
+     "protocols": "any"
     }
    ],
    "range": "1h",
@@ -44143,6 +45495,7 @@
      ],
      "name": "RDP",
      "port": 3389,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -44565,6 +45918,7 @@
      ],
      "name": "SMB",
      "port": 445,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -44993,6 +46347,7 @@
      ],
      "name": "FTP",
      "port": 21,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -45415,6 +46770,7 @@
      ],
      "name": "Telnet",
      "port": 23,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -45830,6 +47186,7 @@
      "flags": [],
      "name": "HTTP",
      "port": 80,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -46245,6 +47602,7 @@
      "flags": [],
      "name": "SSH",
      "port": 22,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -46660,6 +48018,7 @@
      "flags": [],
      "name": "HTTP (alt)",
      "port": 8080,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -47075,6 +48434,7 @@
      "flags": [],
      "name": "MS SQL",
      "port": 1433,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -47490,6 +48850,7 @@
      "flags": [],
      "name": "VNC",
      "port": 5900,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -47905,6 +49266,7 @@
      "flags": [],
      "name": "Redis",
      "port": 6379,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -48320,6 +49682,7 @@
      "flags": [],
      "name": "FTP data",
      "port": 20,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -48735,6 +50098,7 @@
      "flags": [],
      "name": "SMTP",
      "port": 25,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -49150,6 +50514,7 @@
      "flags": [],
      "name": "LDAP",
      "port": 389,
+     "protocols": "any",
      "series": [
       [
        0,
@@ -49561,75 +50926,93 @@
    "quiet": [
     {
      "name": "TFTP",
-     "port": 69
+     "port": 69,
+     "protocols": "any"
     },
     {
      "name": "POP3",
-     "port": 110
+     "port": 110,
+     "protocols": "any"
     },
     {
      "name": "MS RPC",
-     "port": 135
+     "port": 135,
+     "protocols": "any"
     },
     {
      "name": "NetBIOS",
-     "port": 137
+     "port": 137,
+     "protocols": "any"
     },
     {
      "name": "NetBIOS",
-     "port": 138
+     "port": 138,
+     "protocols": "any"
     },
     {
      "name": "NetBIOS",
-     "port": 139
+     "port": 139,
+     "protocols": "any"
     },
     {
      "name": "IMAP",
-     "port": 143
+     "port": 143,
+     "protocols": "any"
     },
     {
      "name": "SNMP",
-     "port": 161
+     "port": 161,
+     "protocols": "any"
     },
     {
      "name": "rexec",
-     "port": 512
+     "port": 512,
+     "protocols": "any"
     },
     {
      "name": "rlogin",
-     "port": 513
+     "port": 513,
+     "protocols": "any"
     },
     {
      "name": "Oracle DB",
-     "port": 1521
+     "port": 1521,
+     "protocols": "any"
     },
     {
      "name": "NFS",
-     "port": 2049
+     "port": 2049,
+     "protocols": "any"
     },
     {
      "name": "MySQL",
-     "port": 3306
+     "port": 3306,
+     "protocols": "any"
     },
     {
      "name": "PostgreSQL",
-     "port": 5432
+     "port": 5432,
+     "protocols": "any"
     },
     {
      "name": "WinRM",
-     "port": 5985
+     "port": 5985,
+     "protocols": "any"
     },
     {
      "name": "WinRM",
-     "port": 5986
+     "port": 5986,
+     "protocols": "any"
     },
     {
      "name": "Elasticsearch",
-     "port": 9200
+     "port": 9200,
+     "protocols": "any"
     },
     {
      "name": "MongoDB",
-     "port": 27017
+     "port": 27017,
+     "protocols": "any"
     }
    ],
    "range": "24h",

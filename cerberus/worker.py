@@ -10,7 +10,7 @@ time they were raised and a unique id; the processor folds them into alerts.
 The worker reads detector settings and ignore lists from shared storage every
 30 seconds, so changes made on the dashboard reach it. A port worker also
 writes the high-risk port counters and publishes a summary of what it holds
-for the Risk ports page.
+for the High Risk Ports page.
 
 State lives in memory and is rebuilt from the bus: whenever the partitions a
 worker holds change (it starts, or the consumer group rebalances), it starts
@@ -256,7 +256,7 @@ def merge_views(views, now: float) -> dict:
 
 
 def riskports_view(rp, now: float) -> dict:
-    """What the Risk ports page needs from a port worker's memory."""
+    """What the High Risk Ports page needs from a port worker's memory."""
     from .riskports import DIRECTIONS
     fresh: dict[str, int] = {}
     for (port, _way, _src), first in list(rp.first_seen.items()):

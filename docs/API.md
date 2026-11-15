@@ -37,7 +37,7 @@ credentials, SNMP community strings) are never returned: they read back as
 | `GET /api/audit?limit=&alert_id=` | The audit log, newest first: `action` (`false_positive`, `false_positive_again`, `suppression_removed`), `analyst`, `source` address, `alert_id`, `suppression_id`, `detail` (justification, detector, entity) |
 | `POST /api/ignore` | `{"ip": "10.0.0.5", "kind": "source"\|"destination"}` adds to an ignore list |
 | `GET /api/events?hours=&device=&type=&action=&ip=&port=&q=&before=&limit=` | Events, newest first. `ip` matches source or destination, `port` is the destination port, `q` is text in the message, `before` is an event id for paging. A search running over 10 seconds returns `504` |
-| `GET /api/riskports?range=` | High-risk ports: per port, totals by direction (`[allowed, blocked]`), series, findings, open alert count; plus summary figures and ports with no traffic |
+| `GET /api/riskports?range=` | High Risk Ports: per port, its `name`, `protocols` (`any`, `tcp`, `udp` or `tcp/udp`), totals by direction (`[allowed, blocked]`), series, findings, open alert count; plus summary figures and ports with no traffic |
 | `GET /api/riskports/port?port=3389` | Busiest sources and destinations per direction, and open alerts naming the port |
 | `GET /api/devices` | Log sources with SNMP polling status |
 | `PUT /api/devices` | `{"id", "name", "connector_pin", "snmp_mode": "default"\|"custom"\|"off", "snmp_community", "snmp_host"}` |
@@ -49,7 +49,7 @@ credentials, SNMP community strings) are never returned: they read back as
 | `GET /api/connectors` | Loaded connectors and load errors |
 | `POST /api/connectors/reload` | Re-read connector files |
 | `POST /api/connectors/test` | `{"raw": "<134>...", "connector": ""}` returns the parsed event |
-| `GET /api/detectors` | Each detector's settings schema and values, plus general settings |
+| `GET /api/detectors` | Each detector's settings schema and values, plus general settings. The High Risk Ports list (`risk_ports` → `ports`) has type `ports`, with `entries` (`[{port, proto, name}]`), `default_entries` and the built-in `catalog`; it is saved as a string, `PORT[/tcp\|/udp][=name]` separated by commas |
 | `PUT /api/detectors` | `{"detectors": {"port_scan": {"enabled": true, "ports": 25}}, "general": {"cooldown_minutes": 30, "ignore_sources": [], "ignore_destinations": []}}` |
 | `GET /api/channels` | Notification channels and the field list for each type |
 | `POST /api/channels`, `PUT /api/channels/{id}`, `DELETE /api/channels/{id}` | Manage channels |

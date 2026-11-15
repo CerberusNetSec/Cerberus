@@ -1,4 +1,4 @@
-"""The high-risk ports tracker, its alert, and the API the Risk ports page reads."""
+"""The high-risk ports tracker, its alert, and the API the High Risk Ports page reads."""
 import asyncio
 import sys
 import time
@@ -15,7 +15,7 @@ from cerberus.engine import Engine  # noqa: E402
 from cerberus.models import Event  # noqa: E402
 from cerberus.notifiers import Notifier  # noqa: E402
 from cerberus.playbooks import advice  # noqa: E402
-from cerberus.riskports import CATALOG, RiskPorts, direction, flags, parse_ports  # noqa: E402
+from cerberus.riskports import CATALOG, RiskPorts, direction, flags, format_entries, parse_entries, parse_ports  # noqa: E402
 from cerberus.snmp_poller import SnmpPoller  # noqa: E402
 from cerberus.web import create_app  # noqa: E402
 from tools import simulate  # noqa: E402
@@ -170,7 +170,7 @@ def test_api_end_to_end(tmp_path):
     assert data["ports"][0]["port"] == 3389 and data["ports"][-1]["flags"] == []
     s = data["summary"]
     assert (s["exposed"], s["exposed_ports"], s["egress"], s["cleartext"]) == (12, 1, 42, 90) and s["flagged"] == 3
-    assert {"port": 5432, "name": "PostgreSQL"} in data["quiet"] and all(q["port"] not in ports for q in data["quiet"])
+    assert {"port": 5432, "name": "PostgreSQL", "protocols": "any"} in data["quiet"] and all(q["port"] not in ports for q in data["quiet"])
 
     detail = client.get("/api/riskports/port?port=3389").json()
     sources = detail["directions"]["inbound"]["sources"]
@@ -186,3 +186,61 @@ def test_api_end_to_end(tmp_path):
     engine.apply_settings(stored, engine.general_settings())
     assert {p["port"] for p in client.get("/api/riskports?range=1h").json()["ports"]} == {3389, 445}
     db.close()
+
+
+def test_port_list_by_port_and_protocol():
+    entries = parse_entries("161/udp=SNMP agents, 22/TCP,3389\n53/tcp;53/udp, 22/tcp, 8443/tcp=Admin portal,"
+                            "x/tcp, 70000, 25/icmp, 9000/udp=a=b")
+    assert entries == [
+        {"port": 161, "proto": "udp", "name": "SNMP agents"}, {"port": 22, "proto": "tcp", "name": ""},
+        {"port": 3389, "proto": "any", "name": ""}, {"port": 53, "proto": "tcp", "name": ""},
+        {"port": 53, "proto": "udp", "name": ""}, {"port": 8443, "proto": "tcp", "name": "Admin portal"},
+        {"port": 9000, "proto": "udp", "name": "a b"}]
+    assert format_entries(entries) == "161/udp=SNMP agents,22/tcp,3389,53/tcp,53/udp,8443/tcp=Admin portal,9000/udp=a b"
+    assert parse_entries(format_entries(entries)) == entries
+    assert parse_ports("21 22 23") == [21, 22, 23]  # lists saved by earlier versions
+
+
+def test_protocol_decides_what_counts():
+    rp = RiskPorts()
+    rp.configure({"ports": "161/udp,22/tcp,3389,53/tcp,53/udp,8443/tcp=Admin portal"})
+    assert rp.cfg["ports"] == "161/udp,22/tcp,3389,53/tcp,53/udp,8443/tcp=Admin portal"
+    t = 100 * 3600.0
+
+    def send(port, proto):
+        ev = flow("192.168.1.5", "192.168.9.9", port, ts=t)
+        ev.proto = proto
+        rp.process(ev, t, lambda c: None)
+    for port, proto in [(161, "udp"), (161, "tcp"), (22, "tcp"), (22, "udp"), (3389, "udp"), (3389, "tcp"),
+                        (53, "udp"), (53, "tcp"), (53, "icmp"), (8443, "tcp"), (161, "")]:
+        send(port, proto)
+    counted = {port: v[0] for (port, _way), v in rp.last_hour(t + 30).items()}
+    # 161: udp, and the one without a protocol; 22: tcp only; 3389: both; 53: tcp and udp.
+    assert counted == {161: 2, 22: 1, 3389: 2, 53: 2, 8443: 1}
+    assert (rp.label(8443), rp.port_text(8443), rp.protocol_text(53)) == ("Admin portal", "8443/tcp", "tcp/udp")
+    assert (rp.label(3389), rp.port_text(3389), rp.port_text(53)) == ("RDP", "3389", "53")
+    assert rp.label(161) == "SNMP" and rp.port_text(161) == "161/udp"
+
+
+def test_the_list_is_edited_through_the_detection_settings(tmp_path):
+    cfg = Config.from_env()
+    cfg.data_dir, cfg.auth_enabled = tmp_path, False
+    db = Database(tmp_path / "cerberus.db")
+    notifier = Notifier(db)
+    engine = Engine(cfg, db, ConnectorRegistry(), notifier)
+    engine.load()
+    client = TestClient(create_app(cfg, db, engine, notifier, SnmpPoller(engine, db)))
+    param = next(p for d in client.get("/api/detectors").json()["detectors"] if d["id"] == "risk_ports"
+                 for p in d["params"] if p["key"] == "ports")
+    assert param["type"] == "ports" and param["entries"] == param["default_entries"]
+    assert param["catalog"]["3389"]["name"] == "RDP"
+    saved = client.put("/api/detectors", json={"detectors": {"risk_ports": {
+        "ports": "3389/tcp,8443/tcp=Admin portal,bogus"}}}).json()
+    param = next(p for d in saved["detectors"] if d["id"] == "risk_ports" for p in d["params"] if p["key"] == "ports")
+    assert param["value"] == "3389/tcp,8443/tcp=Admin portal"
+    assert engine.risk_ports.ports == {3389, 8443} and db.get_setting("detectors")["risk_ports"]["ports"] == param["value"]
+    quiet = client.get("/api/riskports?range=1h").json()["quiet"]
+    assert quiet == [{"port": 3389, "name": "RDP", "protocols": "tcp"},
+                     {"port": 8443, "name": "Admin portal", "protocols": "tcp"}]
+    db.close()
+

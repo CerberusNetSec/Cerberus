@@ -3,9 +3,15 @@ go for first (remote access, file sharing, clear-text protocols, databases).
 
 RiskPorts is a detector like the others - it watches every event and raises an
 alert when traffic on one of these ports jumps well above its own history -
-but it also keeps the counts the "Risk ports" page is drawn from: per port and
-direction, allowed and blocked, minute by minute, with the busiest sources and
-destinations.
+but it also keeps the counts the "High Risk Ports" page is drawn from: per port
+and direction, allowed and blocked, minute by minute, with the busiest sources
+and destinations.
+
+The list is the detector's "ports" setting, edited on the Detection page: one
+entry per port and protocol, PORT[/tcp|/udp][=service name], separated by
+commas or new lines. No protocol means any. Counts are kept per port: a port
+listed for TCP only counts TCP traffic (and traffic whose protocol the device
+did not log).
 """
 from __future__ import annotations
 
@@ -64,11 +70,54 @@ def direction(src_ip: str, dst_ip: str | None, nat_dst: str = "") -> str:
     return "internal"
 
 
+PROTOCOLS = ("any", "tcp", "udp")
+NAME_MAX = 40
+
+
+def clean_name(name: str) -> str:
+    """A service name that survives the list format: no separators, short."""
+    for ch in ",;=\n\r":
+        name = name.replace(ch, " ")
+    return " ".join(name.split())[:NAME_MAX]
+
+
+def parse_entries(text: str) -> list[dict]:
+    """The port list as [{port, proto, name}], in order, without duplicates. Accepts
+    the plain "21,22 23" lists of earlier versions; anything unreadable is dropped."""
+    out: list[dict] = []
+    seen: set = set()
+    items: list[str] = []
+    for part in str(text).replace(";", ",").replace("\n", ",").split(","):
+        part = part.strip()
+        if "=" not in part and " " in part:
+            items += part.split()  # "21 22 23" from an older setting
+        elif part:
+            items.append(part)
+    for item in items:
+        spec, _, name = item.partition("=")
+        number, _, proto = spec.strip().partition("/")
+        number, proto = number.strip(), (proto.strip().lower() or "any")
+        if not number.isdigit() or not 0 < int(number) < 65536 or proto not in PROTOCOLS:
+            continue
+        key = (int(number), proto)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"port": int(number), "proto": proto, "name": clean_name(name)})
+    return out
+
+
+def format_entries(entries: list[dict]) -> str:
+    return ",".join(f"{e['port']}{'' if e['proto'] == 'any' else '/' + e['proto']}"
+                    f"{'=' + e['name'] if e.get('name') else ''}" for e in entries)
+
+
 def parse_ports(text: str) -> list[int]:
-    out = []
-    for part in str(text).replace(";", ",").replace("\n", ",").replace(" ", ",").split(","):
-        if part.isdigit() and 0 < int(part) < 65536 and int(part) not in out:
-            out.append(int(part))
+    """Just the port numbers in a port list, in order."""
+    out: list[int] = []
+    for e in parse_entries(text):
+        if e["port"] not in out:
+            out.append(e["port"])
     return out
 
 
@@ -77,10 +126,10 @@ class RiskPorts(Detector):
     partition = "port"
     id = "risk_ports"
     name = "High-risk port activity"
-    description = ("Tracks traffic on ports that attackers target first, for the Risk ports page, and alerts when "
-                   "traffic on one of them rises far above what that port normally carries.")
+    description = ("Tracks traffic on ports that attackers target first, for the High Risk Ports page, and alerts "
+                   "when traffic on one of them rises far above what that port normally carries.")
     params = [
-        ("ports", ",".join(str(p) for p in CATALOG), "High-risk ports (comma separated)"),
+        ("ports", ",".join(str(p) for p in CATALOG), "High risk ports"),
         ("spike_ratio", 4.0, "Alert when an hour's traffic is this many times the usual"),
         ("spike_min", 100, "... and at least this many connections in the hour"),
         ("history_hours", 6, "Hours of history needed before judging a spike"),
@@ -91,7 +140,7 @@ class RiskPorts(Detector):
 
     def __init__(self):
         super().__init__()
-        self.ports = set(parse_ports(self.cfg["ports"]))
+        self._set_list()
         self.minute = 0
         self.current: dict[tuple, list[int]] = {}  # (port, direction) -> [allowed, blocked] in this minute
         self.recent: deque = deque(maxlen=60)  # (minute, {key: [allowed, blocked]}) for closed minutes
@@ -104,13 +153,56 @@ class RiskPorts(Detector):
 
     def configure(self, settings: dict) -> None:
         super().configure(settings)
-        self.ports = set(parse_ports(self.cfg["ports"]))
+        self._set_list()
+
+    def _set_list(self) -> None:
+        entries = parse_entries(self.cfg["ports"])
+        self.cfg["ports"] = format_entries(entries)  # stored in one canonical form
+        self.entries = entries
+        self.ports = {e["port"] for e in entries}
+        # port -> protocols it counts (None: any)
+        self.protocols: dict[int, set | None] = {}
+        self.names: dict[int, str] = {}
+        for e in entries:
+            if e["proto"] == "any" or self.protocols.get(e["port"], set()) is None:
+                self.protocols[e["port"]] = None
+            else:
+                self.protocols.setdefault(e["port"], set()).add(e["proto"])
+            if e["name"] and e["port"] not in self.names:
+                self.names[e["port"]] = e["name"]
+
+    def label(self, port: int) -> str:
+        """The service's name: as listed, else the built-in one, else "port N"."""
+        return self.names.get(port) or service_name(port)
+
+    def protocol_text(self, port: int) -> str:
+        """"any", "tcp", "udp" or "tcp/udp" (both listed)."""
+        protos = self.protocols.get(port)
+        return "any" if protos is None else "/".join(sorted(protos))
+
+    def port_text(self, port: int) -> str:
+        """3389, or 161/udp when listed for one protocol."""
+        protos = self.protocols.get(port)
+        return str(port) if protos is None or len(protos) > 1 else f"{port}/{next(iter(protos))}"
+
+    def schema(self) -> dict:
+        out = super().schema()
+        for param in out["params"]:
+            if param["key"] == "ports":
+                param["type"] = "ports"
+                param["entries"] = self.entries
+                param["default_entries"] = parse_entries(param["default"])
+                param["catalog"] = {str(p): {"name": n, "why": w} for p, (n, w) in CATALOG.items()}
+        return out
 
     # --- counting -------------------------------------------------------------
     def process(self, ev, now, emit):
         port = ev.dst_port
         if port not in self.ports or ev.event_type != "traffic" or not ev.src_ip or ev.action not in ("allow", "block"):
             return
+        protos = self.protocols.get(port)
+        if protos is not None and ev.proto and ev.proto not in protos:
+            return  # listed for another protocol
         self._roll(now)
         way = direction(ev.src_ip, ev.dst_ip, ev.extra.get("nat_dst_ip", ""))
         key = (port, way)
@@ -221,7 +313,7 @@ class RiskPorts(Detector):
             port, way = s["port"], s["direction"]
             if not self._may_emit((port, way, s["outcome"]), now):
                 continue
-            label = f"{service_name(port)} ({port})"
+            label = f"{self.label(port)} ({self.port_text(port)})"
             allowed = s["outcome"] == "allowed"
             sources = self.top(port, way, now, 1)["sources"]
             lead = sources[0]["ip"] if sources else None
@@ -265,10 +357,11 @@ def service_name(port: int) -> str:
     return CATALOG.get(port, (f"port {port}", ""))[0]
 
 
-def flags(port: int, totals: dict[str, list[int]], spikes: list[dict], new_sources: int) -> list[dict]:
+def flags(port: int, totals: dict[str, list[int]], spikes: list[dict], new_sources: int,
+          name: str = "") -> list[dict]:
     """Why a port needs a look, worst first. totals: direction -> [allowed, blocked] over the range shown."""
     out = []
-    name = service_name(port)
+    name = name or service_name(port)
     if totals["inbound"][0]:
         out.append({"kind": "exposed", "severity": "medium" if port in WEB else "high",
                     "label": "Open to the internet",

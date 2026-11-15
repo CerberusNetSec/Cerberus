@@ -19,7 +19,7 @@ every address and hostname in them is simulated.
 | | |
 |---|---|
 | [![Dashboard](docs/screenshots/dashboard.png)](docs/screenshots/dashboard.png) **Dashboard**: message rate, hosts ranked by risk, alerts by attack stage | [![Alert guidance](docs/screenshots/alert-guidance.png)](docs/screenshots/alert-guidance.png) **Alert**: why it matters and what to do |
-| [![Risk ports](docs/screenshots/risk-ports.png)](docs/screenshots/risk-ports.png) **Risk ports**: traffic and findings on RDP, SMB, Telnet, FTP, HTTP and others | [![Topology](docs/screenshots/topology.png)](docs/screenshots/topology.png) **Topology**: the map built from SNMP, with alert counts per device |
+| [![High Risk Ports](docs/screenshots/risk-ports.png)](docs/screenshots/risk-ports.png) **High Risk Ports**: traffic and findings on RDP, SMB, Telnet, FTP, HTTP and others | [![Topology](docs/screenshots/topology.png)](docs/screenshots/topology.png) **Topology**: the map built from SNMP, with alert counts per device |
 | [![Alerts](docs/screenshots/alerts.png)](docs/screenshots/alerts.png) **Alerts** | [![Events](docs/screenshots/events.png)](docs/screenshots/events.png) **Events** |
 | [![Devices](docs/screenshots/devices.png)](docs/screenshots/devices.png) **Devices** | [![Detection](docs/screenshots/detection.png)](docs/screenshots/detection.png) **Detection settings** |
 | [![Sites](docs/screenshots/sites.png)](docs/screenshots/sites.png) **Sites** (central console): every site's health and alerts in one place | |
@@ -104,9 +104,9 @@ straight to the alert.
 | Correlation: likely compromised host | one internal host shows three different kinds of attack behaviour in 24 h | 3 kinds |
 | Correlation: hostile address allowed in | an internet address that was scanning or guessing passwords is later allowed through to an internal host | 24 h |
 
-### Risk ports
+### High Risk Ports
 
-The **Risk ports** page is a standing view of the services attackers go for
+The **High Risk Ports** page is a standing view of the services attackers go for
 first: remote access (RDP, SSH, Telnet, VNC, WinRM), file sharing (SMB,
 NetBIOS, NFS, FTP, TFTP), clear-text protocols (HTTP, POP3, IMAP, LDAP) and
 databases. For each port it shows allowed connections from the internet, to
@@ -123,9 +123,17 @@ any open alerts that name the port. Ports with a finding are listed first:
 
 Click a port for why it is on the list, a chart, the busiest sources and
 destinations in each direction, and links to the matching events and alerts.
-Alerts that involve a port link back here. The port list and the surge
-thresholds are under **Detection → High-risk port activity**; add your own
-ports there. Blocked probes from the internet on these ports are constant
+Alerts that involve a port link back here.
+
+The list is yours to change: **Edit the list of ports and protocols** on the
+page (or **Detection → High-risk port activity**) has one row per port and
+protocol. **Any** counts every protocol on that port; **TCP** or **UDP**
+counts only that one, plus traffic whose protocol the device did not log, so
+nothing slips through unlabelled. Give a port your own service name (an
+in-house admin portal on 8443/tcp, say), remove ports you do not care about,
+or restore the built-in list. A port narrowed to one protocol is shown as
+`161/udp` on the page and in its alerts. Lists saved by earlier versions (port
+numbers only) keep working and mean any protocol. Blocked probes from the internet on these ports are constant
 background noise and are counted but not treated as a finding unless they
 surge.
 
@@ -324,7 +332,7 @@ When one processor cannot keep up with detection, run **detection workers**
 | `source` | source address | port scans, host sweeps, floods, brute force, password spraying, threats, large transfers, risky egress, lateral movement, beaconing, hostile addresses allowed in |
 | `target` | target host | services exposed to the internet |
 | `pair` | address pair | watchlist |
-| `port` | port | high-risk ports (and the Risk ports page) |
+| `port` | port | high-risk ports (and the High Risk Ports page) |
 | `account` | account | one account guessed from many addresses |
 
 Set `CERBERUS_DETECTION_WORKERS=all` (or some of the families) on the

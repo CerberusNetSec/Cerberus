@@ -142,6 +142,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     alert_id INTEGER, suppression_id INTEGER, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS audit_log_alert ON audit_log(alert_id);
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created REAL NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, scope TEXT NOT NULL,
+    last_used REAL, revoked REAL
+);
 """
 
 # Columns added after the first release: (table, column, definition).
@@ -150,6 +155,7 @@ MIGRATIONS = [
     ("devices", "snmp_community", "TEXT DEFAULT ''"),
     ("devices", "snmp_host", "TEXT DEFAULT ''"),
     ("alerts", "updated", "REAL DEFAULT 0"),  # when the row last changed; what a site reports from
+    ("outbox", "payload", "TEXT"),  # the alert as JSON, for webhooks and API calls (0.11.0)
 ]
 
 
@@ -420,8 +426,8 @@ class Database(Store):
              batch.new_alerts),
             ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=?, updated=? WHERE id=?",
              batch.alert_updates),
-            ("INSERT INTO outbox(created, channel_id, subject, body, next_try) VALUES(?,?,?,?,?)",
-             [(*n, n[0]) for n in batch.notices]),
+            ("INSERT INTO outbox(created, channel_id, subject, body, payload, next_try) VALUES(?,?,?,?,?,?)",
+             [(*n[:4], n[4] if len(n) > 4 else None, n[0]) for n in batch.notices]),
             ("UPDATE suppressions SET hits = hits + ?, last_hit = ? WHERE id = ?", batch.suppression_hits),
         ])
 
@@ -471,6 +477,34 @@ class Database(Store):
     def suppressions(self) -> list[dict]:
         return self.q("SELECT * FROM suppressions ORDER BY id DESC")
 
+    def audit_add(self, row: dict) -> int:
+        with self.transaction() as conn:
+            return conn.execute(
+                "INSERT INTO audit_log(ts, action, analyst, source, alert_id, suppression_id, detail) VALUES(?,?,?,?,?,?,?)",
+                (row["ts"], row["action"], row.get("analyst"), row.get("source"), row.get("alert_id"),
+                 row.get("suppression_id"), row.get("detail"))).lastrowid
+
+    def token_add(self, row: dict) -> int:
+        with self.transaction() as conn:
+            return conn.execute("INSERT INTO api_tokens(created, name, token_hash, scope) VALUES(?,?,?,?)",
+                                (row["created"], row["name"], row["token_hash"], row["scope"])).lastrowid
+
+    def tokens(self) -> list[dict]:
+        return self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens ORDER BY id DESC")
+
+    def token_by_hash(self, token_hash: str) -> dict | None:
+        rows = self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens "
+                      "WHERE token_hash = ? AND revoked IS NULL", (token_hash,))
+        return rows[0] if rows else None
+
+    def token_used(self, token_id: int, when: float) -> None:
+        self.x("UPDATE api_tokens SET last_used = ? WHERE id = ?", (when, token_id))
+
+    def token_revoke(self, token_id: int, when: float) -> dict | None:
+        if not self.x("UPDATE api_tokens SET revoked = ? WHERE id = ? AND revoked IS NULL", (when, token_id)):
+            return None
+        return self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens WHERE id = ?", (token_id,))[0]
+
     def audit_log(self, limit: int, alert_id: int = 0) -> list[dict]:
         if alert_id:
             return self.q("SELECT * FROM audit_log WHERE alert_id = ? ORDER BY id DESC LIMIT ?", (alert_id, limit))
@@ -478,7 +512,7 @@ class Database(Store):
 
     # --- notification outbox --------------------------------------------------
     def outbox_due(self, now: float, limit: int) -> list[dict]:
-        return self.q("SELECT id, created, channel_id, subject, body, attempts FROM outbox "
+        return self.q("SELECT id, created, channel_id, subject, body, attempts, payload FROM outbox "
                       "WHERE done = 0 AND next_try <= ? ORDER BY id LIMIT ?", (now, limit))
 
     def outbox_done(self, outbox_id: int, now: float, error: str | None) -> None:
@@ -566,15 +600,24 @@ class Database(Store):
         return where, params
 
     def alerts_find(self, *, status: str = "", severity: str = "", text: str = "", limit: int = 200,
-                    alert_id: int = 0) -> list[dict]:
+                    alert_id: int = 0, detectors: list[str] | None = None) -> list[dict]:
         if alert_id:
             where, params = ["id = ?"], [alert_id]
             more, extra = self._alert_filters("", "", severity, text)
             where, params = where + more, params + extra
         else:
             where, params = self._alert_filters("", status, severity, text)
+        if detectors:
+            detectors = list(detectors)[:50]
+            where.append(f"detector IN ({','.join('?' * len(detectors))})")
+            params = [*params, *detectors]
         sql = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "")
         return self.q(sql + " ORDER BY last_seen DESC, id DESC LIMIT ?", (*params, limit))
+
+    def alert_counts_by_detector(self, since: float, status: str) -> list[dict]:
+        where = {"active": "status IN ('open', 'ack')", "all": "1 = 1"}.get(status, "status != 'false_positive'")
+        return self.q(f"SELECT detector, severity, COUNT(*) AS alerts, SUM(count) AS occurrences, MAX(last_seen) AS last_seen "
+                      f"FROM alerts WHERE last_seen >= ? AND {where} GROUP BY detector, severity", (since,))
 
     def alerts_recent(self, limit: int) -> list[dict]:
         return self.q("SELECT id, created, last_seen, severity, title, description, status, count FROM alerts "

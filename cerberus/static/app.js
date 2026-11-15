@@ -243,6 +243,7 @@ const state = {
   events: { hours: '24', type: '', action: '', ip: '', port: '', q: '', live: true, open: new Set(), rows: [] },
   devices: { q: '', status: '', connector: '', sort: 'recent', limit: 100 },
   riskports: { range: '24h', flagged: false, open: null },
+  attack: { range: '30d', status: 'real' },
   connectors: [],
 };
 const pages = {};
@@ -347,9 +348,13 @@ pages.alerts = {
   get interval() { return state.alerts.every * 1000; },
   render() {
     const s = state.alerts;
-    const linked = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('id'));
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    const linked = Number(params.get('id'));
     s.only = linked || null;
     if (linked) s.open.add(linked);
+    s.detectors = params.get('detector') || '';  // from a cell of the ATT&CK matrix
+    s.detectorLabel = params.get('label') || '';
+    if (params.get('status')) s.status = params.get('status');
     main.innerHTML = `
       <div class="page-head"><div><h1>Alerts</h1><p>Repeats of the same problem are folded into one alert and counted.</p></div>
         <button type="button" data-act="ack-all">Acknowledge all open</button></div>
@@ -365,6 +370,7 @@ pages.alerts = {
         </select>
         <input id="f-q" type="search" placeholder="Search title, IP, device" value="${esc(s.q)}">
         ${s.only ? '<a href="#/alerts">Showing one alert · show all</a>' : ''}
+        ${!s.only && s.detectors ? `<span class="tag">${esc(s.detectorLabel || s.detectors)}</span> <a href="#/alerts">show all</a>` : ''}
         <span class="spacer"></span>
         <label class="inline" for="f-every">Auto-refresh</label>
         <select id="f-every" aria-label="Auto-refresh the alerts and the count">
@@ -393,7 +399,8 @@ pages.alerts = {
   },
   async refresh() {
     const s = state.alerts;
-    const q = s.only ? new URLSearchParams({ id: s.only }) : new URLSearchParams({ status: s.status, severity: s.severity, q: s.q });
+    const q = s.only ? new URLSearchParams({ id: s.only })
+      : new URLSearchParams({ status: s.status, severity: s.severity, q: s.q, ...(s.detectors ? { detector: s.detectors } : {}) });
     const { alerts } = await api('/alerts?' + q);
     const body = $('#rows');
     if (!body) return;
@@ -471,6 +478,97 @@ pages.alerts = {
       await api('/ignore', 'POST', { ip, kind: 'source' });
       toast(`${ip} added to ignored sources`);
     },
+  },
+};
+
+/* --- MITRE ATT&CK matrix: alerts by tactic and technique --- */
+const ATTACK_RANGES = [['24h', '24 h'], ['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['all', 'All']];
+const ATTACK_STATUS = [['real', 'All but false positives'], ['active', 'Open and acknowledged'], ['all', 'All, with false positives']];
+/* Five steps of one hue on a log scale up to the busiest cell; 0 is neutral, never a light blue. */
+function heatStep(n, max) {
+  if (!n) return 0;
+  if (max <= 1) return 3;
+  return Math.min(5, 1 + Math.floor(4 * Math.log(n) / Math.log(max) + 1e-9));
+}
+function heatRanges(max) {
+  // The counts each step stands for, for the legend.
+  const out = [];
+  for (let step = 1; step <= 5; step++) {
+    const lo = step === 1 ? 1 : Math.ceil(Math.pow(max, (step - 1) / 4)), hi = step === 5 ? max : Math.ceil(Math.pow(max, step / 4)) - 1;
+    if (max <= 1) { if (step === 3) out.push([3, '1']); continue; }
+    if (hi >= lo) out.push([step, lo === hi ? String(lo) : `${lo}–${hi}`]);
+  }
+  return out;
+}
+pages.attack = {
+  interval: 30000,
+  render() {
+    const s = state.attack;
+    main.innerHTML = `
+      <div class="page-head"><div><h1>MITRE ATT&amp;CK</h1>
+        <p>Alerts placed in the ATT&amp;CK Enterprise matrix by the technique each detector looks for. Darker cells had more alerts;
+          a cell links to them. Tactics with no cells are ones Cerberus cannot see from network logs.</p></div>
+        <div class="row">
+          <select id="ak-status" aria-label="Which alerts">${ATTACK_STATUS.map(([v, l]) => `<option value="${v}" ${v === s.status ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <div class="seg" id="ak-range">${ATTACK_RANGES.map(([v, l]) => `<button type="button" data-range="${v}" class="${v === s.range ? 'on' : ''}">${l}</button>`).join('')}</div>
+        </div></div>
+      <div class="grid tiles" id="ak-tiles"></div>
+      <div class="card">
+        <div class="chart-head" style="margin-bottom:10px"><h2 style="margin:0">Alerts by tactic and technique</h2>
+          <div class="heat-legend" id="ak-legend" aria-label="Colour scale"></div></div>
+        <div class="matrix-wrap"><div class="matrix" id="ak-matrix"></div></div>
+      </div>
+      <div class="card" style="margin-top:16px" id="ak-other"></div>`;
+    $('#ak-range').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      s.range = b.dataset.range;
+      $$('#ak-range button').forEach((x) => x.classList.toggle('on', x === b));
+      this.refresh().catch(() => {});
+    });
+    $('#ak-status').addEventListener('change', () => { s.status = $('#ak-status').value; this.refresh().catch(() => {}); });
+  },
+  async refresh() {
+    const s = state.attack;
+    const d = await api(`/attack?range=${s.range}&status=${s.status}`);
+    if (!$('#ak-matrix')) return;
+    const busiest = d.tactics.flatMap((t) => t.techniques.map((c) => ({ ...c, tactic: t.name })))
+      .sort((a, b) => b.alerts - a.alerts)[0];
+    const tile = (label, value, sub) => `<div class="card tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+    $('#ak-tiles').innerHTML =
+      tile('Alerts in the matrix', num(d.total), esc(ATTACK_RANGES.find((r) => r[0] === d.range)[1].toLowerCase()) + (d.range === 'all' ? '' : ' · by last seen')) +
+      tile('Techniques with alerts', `${d.techniques_seen} <span class="muted">/ ${d.techniques_covered}</span>`, 'of those Cerberus detects') +
+      tile('Tactics covered', `${d.tactics_covered} <span class="muted">/ ${d.tactics.length}</span>`, 'ATT&amp;CK Enterprise tactics') +
+      tile('Most active technique', busiest && busiest.alerts ? esc(busiest.id) : '—',
+        busiest && busiest.alerts ? `${esc(busiest.name)} · ${num(busiest.alerts)} alert${busiest.alerts === 1 ? '' : 's'}` : 'no alerts in this period');
+    $('#ak-legend').innerHTML = d.max
+      ? `<span class="muted">Alerts</span><span class="heat-key"><i class="heat-0"></i>0</span>` +
+        heatRanges(d.max).map(([step, label]) => `<span class="heat-key"><i class="heat-${step}"></i>${label}</span>`).join('')
+      : '<span class="muted">No alerts in this period</span>';
+    const status = s.status === 'active' ? 'active' : 'all';
+    $('#ak-matrix').innerHTML = d.tactics.map((t) => `
+      <section class="tactic" aria-label="${esc(t.name)}">
+        <header><a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">${esc(t.name)}</a>
+          <span class="muted">${t.techniques.length ? `${num(t.alerts)} alert${t.alerts === 1 ? '' : 's'}` : ''}</span></header>
+        ${t.techniques.length ? t.techniques.map((c) => {
+          const step = heatStep(c.alerts, d.max);
+          const sev = Object.entries(c.severity).sort((a, b) => SEVS.indexOf(b[0]) - SEVS.indexOf(a[0]))
+            .map(([k, v]) => `${v} ${k}`).join(', ');
+          const tip = `${c.id} ${c.name}: ${c.alerts} alert${c.alerts === 1 ? '' : 's'}` +
+            (c.alerts ? ` (${sev}), ${c.occurrences} occurrence${c.occurrences === 1 ? '' : 's'}, last ${ago(c.last_seen)}` : '') +
+            `. Detected by: ${c.detectors.map((x) => x.name).join(', ')}.`;
+          const href = `#/alerts?detector=${encodeURIComponent(c.detectors.map((x) => x.id).join(','))}` +
+            `&label=${encodeURIComponent(`${c.id} ${c.name}`)}&status=${status}`;
+          return `<a class="technique heat-${step}" href="${href}" title="${esc(tip)}" aria-label="${esc(tip)}">
+            <span class="tid">${esc(c.id)}</span><span class="tname">${esc(c.name)}</span>
+            <span class="tcount">${num(c.alerts)}</span></a>`;
+        }).join('') : '<div class="technique none">No Cerberus detector</div>'}
+      </section>`).join('');
+    $('#ak-other').innerHTML = `<h2>Alerts outside ATT&amp;CK</h2>
+      <p class="muted" style="margin-top:-6px">Correlated compromise and network-health alerts have no ATT&amp;CK technique.</p>
+      ${d.other.length ? `<ul class="plain">${d.other.map((o) => `<li><a href="#/alerts?detector=${encodeURIComponent(o.detectors.map((x) => x.id).join(','))}&label=${encodeURIComponent(o.name)}&status=${status}">${esc(o.name)}</a>
+        <span class="muted">· ${num(o.alerts)} alert${o.alerts === 1 ? '' : 's'} · ${esc(o.detectors.map((x) => x.name).join(', '))}</span></li>`).join('')}</ul>`
+        : '<p class="muted">None in this period.</p>'}`;
   },
 };
 
@@ -1689,6 +1787,85 @@ pages.syslog = {
   },
 };
 
+/* --- API tokens for agents and scripts (Settings -> API & agents) --- */
+pages.agents = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>API &amp; agents</h1>
+        <p>Tokens let AI agents and scripts watch Cerberus: through its MCP server (for agents) or its HTTP API.
+          A <b>read</b> token can see everything the dashboard shows. A <b>read and triage</b> token can also acknowledge,
+          resolve and mark false positives, and what it does is recorded in the audit log against the token.
+          No token can change settings, channels or tokens.</p></div></div>
+      <form class="card" id="tk-form">
+        <h2>New token</h2>
+        <div class="form-grid">
+          <div><label for="tk-name">Name (who or what will use it)</label><input id="tk-name" maxlength="60" placeholder="SOC agent" required></div>
+          <div><label for="tk-scope">Access</label><select id="tk-scope">
+            <option value="read">Read only (recommended)</option><option value="write">Read and triage</option></select></div>
+        </div>
+        <div class="actions"><button class="primary" type="submit">Create token</button></div>
+      </form>
+      <div id="tk-new"></div>
+      <div class="card table-wrap" style="margin-top:16px"><h2>Tokens</h2><table>
+        <thead><tr><th>Name</th><th>Access</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+        <tbody id="tk-rows"></tbody></table></div>
+      <p class="muted small" style="margin-top:12px">Alert and event text comes from your devices' logs, which attackers can write to.
+        The MCP server tells agents to treat it as data, not instructions; give agents read-only tokens unless they need to triage.</p>`;
+    $('#tk-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(async () => {
+        const t = await api('/tokens', 'POST', { name: $('#tk-name').value, scope: $('#tk-scope').value });
+        $('#tk-name').value = '';
+        this.showNew(t);
+        await this.refresh();
+      });
+    });
+  },
+  base() { return (this.data && this.data.public_url) || location.origin; },
+  showNew(t) {
+    const base = this.base(), mcpUrl = `${base}/mcp`;
+    const claude = `claude mcp add --transport http cerberus ${mcpUrl} --header "Authorization: Bearer ${t.token}"`;
+    const json = JSON.stringify({ mcpServers: { cerberus: { type: 'http', url: mcpUrl, headers: { Authorization: `Bearer ${t.token}` } } } }, null, 2);
+    const curl = `curl -H "Authorization: Bearer ${t.token}" "${base}/api/alerts?status=open"`;
+    const block = (label, text, id) => `<label for="${id}">${label}</label>
+      <div class="copy-row"><textarea id="${id}" class="mono" rows="${text.split('\n').length}" readonly spellcheck="false">${esc(text)}</textarea>
+      <button type="button" class="small" data-act="copy" data-for="${id}">Copy</button></div>`;
+    $('#tk-new').innerHTML = `<div class="card note-strong" style="margin-top:16px">
+      <h2>Token for ${esc(t.name)}</h2>
+      <p><b>Copy it now: it is shown only this once.</b> Cerberus keeps only a fingerprint of it.</p>
+      ${block('Token', t.token, 'tk-token')}
+      ${block('Claude Code', claude, 'tk-claude')}
+      ${block('Other MCP clients (JSON)', json, 'tk-json')}
+      ${block('HTTP API', curl, 'tk-curl')}
+    </div>`;
+  },
+  async refresh() {
+    const d = await api('/tokens');
+    this.data = d;
+    if (!$('#tk-rows')) return;
+    $('#tk-rows').innerHTML = d.tokens.length ? d.tokens.map((t) => `<tr>
+        <td><b>${esc(t.name)}</b></td><td>${t.scope === 'write' ? 'Read and triage' : 'Read only'}</td>
+        <td class="nowrap" title="${clock(t.created, true)}">${ago(t.created)}</td>
+        <td class="nowrap">${t.last_used ? `<span title="${clock(t.last_used, true)}">${ago(t.last_used)}</span>` : '<span class="muted">Never</span>'}</td>
+        <td>${t.revoked ? `<span class="muted">Revoked ${ago(t.revoked)}</span>` : '<span class="dot on"></span>Active'}</td>
+        <td>${t.revoked ? '' : `<button type="button" class="small danger" data-act="revoke" data-id="${t.id}" data-name="${esc(t.name)}">Revoke</button>`}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="empty">No tokens yet.</td></tr>';
+  },
+  actions: {
+    async revoke(el) {
+      if (!confirm(`Revoke the token "${el.dataset.name}"? Anything using it stops working within 30 seconds.`)) return;
+      await api(`/tokens/${el.dataset.id}/revoke`, 'POST');
+      toast('Token revoked');
+      await pages.agents.refresh();
+    },
+    async copy(el) {
+      const box = $('#' + el.dataset.for);
+      try { await navigator.clipboard.writeText(box.value); } catch { box.select(); document.execCommand('copy'); }
+      toast('Copied');
+    },
+  },
+};
+
 /* --- notifications --- */
 pages.notifications = {
   render() {
@@ -1724,6 +1901,11 @@ pages.notifications = {
       if (f.kind.startsWith('select:')) {
         input = `<select id="${id}" data-key="${f.key}">${f.kind.slice(7).split(',').map((o) =>
           `<option ${o === value ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+      } else if (f.kind.endsWith('textarea')) {
+        // A secret list (headers with API keys) comes back masked; leave it as is to keep it.
+        input = `<textarea id="${id}" data-key="${f.key}" rows="${f.key === 'body' ? 6 : 3}" class="mono" spellcheck="false"
+          ${req} placeholder="${esc(f.key === 'headers' ? 'Authorization: Bearer ...' : f.key === 'body' ? '{"text": "{{subject}}: {{description}}"}' : '')}">${esc(value)}</textarea>`;
+        return `<div class="wide"><label for="${id}">${esc(f.label)}</label>${input}</div>`;
       } else {
         const kind = f.kind === 'secret' ? 'password' : f.kind;
         input = `<input id="${id}" data-key="${f.key}" type="${kind}" value="${esc(value)}" ${req} autocomplete="${f.kind === 'secret' ? 'new-password' : 'off'}">`;
@@ -1739,6 +1921,7 @@ pages.notifications = {
             `<option ${s === (channel ? channel.min_severity : 'medium') ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
           ${spec.fields.map(field).join('')}
         </div>
+        ${spec.help ? `<p class="muted small">${esc(spec.help)}</p>` : ''}
         <label class="check"><input id="c-enabled" type="checkbox" ${!channel || channel.enabled ? 'checked' : ''}> Enabled</label>
         <div class="actions"><button class="primary" type="submit">Save channel</button>
           <button type="button" data-act="cancel">Cancel</button></div>
@@ -1814,7 +1997,8 @@ function startPageTimer() {
 }
 /* Settings: Detection, Connectors and Notifications, as sections of one page.
    #/settings/<section>; the older #/detection and the like still work. */
-const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications']];
+const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
+  ['agents', 'API & agents']];
 function settingsSection(name) {
   if (name === 'settings') {
     let last = '';

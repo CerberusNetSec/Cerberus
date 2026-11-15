@@ -95,7 +95,8 @@ def test_divided_by_its_key_a_detector_finds_the_same(detector_id):
     divided = run(detector_id, SHARDS)
     assert divided == whole
     # Make sure the reference traffic exercises it, so the comparison means something.
-    if detector_id not in ("admin_access", "risk_ports", "brute_force", "link_flap", "notable", "threat"):
+    if detector_id not in ("admin_access", "risk_ports", "brute_force", "link_flap", "notable", "threat",
+                           "plaintext_secret"):  # the reference traffic carries no secrets
         assert whole, f"{detector_id} raised nothing on the reference traffic"
 
 

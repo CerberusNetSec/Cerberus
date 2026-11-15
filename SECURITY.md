@@ -37,6 +37,16 @@ response time and no bounty.
 - **Alerts contain addresses, usernames and rule names** from your network, and
   notifications send them to third-party services (your mail server, Telegram,
   Pushbullet). Choose channels accordingly.
+- **API tokens are bearer credentials** too. Give agents and scripts read-only
+  tokens unless they must triage; no token can change settings, channels or
+  tokens. Cerberus stores only a hash, records what write tokens do in the
+  audit log, and a token can be revoked at once under Settings → API & agents.
+- **Agents read attacker-writable text.** Alert and event text comes from
+  device logs, which anyone who can reach a device can write to. The MCP
+  server tells agents to treat it as data; do not give an agent tools elsewhere
+  that it could be talked into using.
+- **Plaintext secrets found in logs are redacted** before events are stored
+  (on by default). Turning redaction off keeps them in storage.
 - **Site tokens are bearer credentials.** Anyone holding one can post alerts as
   that site to the central console. Serve the console over HTTPS only, keep
   token files out of version control, and rotate a token that may have leaked.

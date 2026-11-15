@@ -301,6 +301,18 @@ PLAYBOOKS: dict[str, dict] = {
         "actions": ["Open the Events page for this device and look at what the extra messages are.",
                     "Check Top blocked sources on the dashboard for a single address behind the spike."],
     },
+    "plaintext_secret": {
+        "stage": "Credential Access", "technique": ("T1552", "Unsecured Credentials"),
+        "why": "A password or key that crosses the network in clear, or sits in a log, can be read by anyone with "
+               "access to that traffic or those logs, and used later without any further attack.",
+        "actions": [
+            "Treat the credential as exposed: rotate the password, key or token now, before anything else.",
+            "Find what sent it ({src} or the device that logged it) and change it to use an encrypted connection, "
+            "and to keep credentials out of URLs and query strings.",
+            "Check who else stores these logs (log servers, proxies, SIEM) and remove the secret there too.",
+            "If it is an API key, review its provider's audit log for use you do not recognise.",
+        ],
+    },
     "device_silent": {
         "stage": "Defense Evasion", "technique": ("T1562", "Impair Defenses"),
         "why": "A device that stops logging is either down or has had its logging turned off. Attackers disable "

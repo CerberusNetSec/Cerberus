@@ -15,6 +15,43 @@ curl -c jar -H 'Content-Type: application/json' -d '{"password":"change-me"}' ht
 curl -b jar 'http://host:8080/api/alerts?status=open&severity=high'
 ```
 
+**API tokens** (Settings → API & agents) are for agents and scripts: send
+`Authorization: Bearer cerb_...`. A **read** token may make any `GET` request
+except `/api/tokens`. A **write** token may also `POST /api/alerts/status` and
+`POST /api/alerts/false-positive` (recorded in the audit log against the token).
+Anything else answers `403`; a missing, wrong or revoked token `401`
+(revocation takes effect within 30 seconds).
+
+## MCP server
+
+`POST /mcp` is a Model Context Protocol server (streamable HTTP, JSON
+responses; protocol versions 2025-06-18, 2025-03-26 and 2024-11-05), with the
+same bearer token. `GET /mcp` answers `405`: there is no server-sent stream.
+Requests from a browser on another site (an `Origin` header that is not this
+host) are refused. Tools: `get_status`, `list_alerts`, `get_alert`,
+`search_events`, `list_devices`, `get_attack_matrix`, `get_high_risk_ports`,
+and, with a write token, `set_alert_status` and `mark_false_positive`.
+
+## Webhook payload
+
+Webhook channels POST this; custom API calls send it when their body template
+is empty, and `{{payload}}` inserts it:
+
+```json
+{"event": "alert", "source": "cerberus", "version": "0.11.0", "id": 42,
+ "title": "Port scan from 192.168.1.77", "description": "...", "severity": "high",
+ "detector": "port_scan", "device": "OPNsense.lan", "src_ip": "192.168.1.77",
+ "created": "2026-11-15T10:00:00+00:00", "created_epoch": 1794708000.0, "details": {"target": "192.168.10.5"},
+ "stage": "Discovery", "technique": "T1046 Network Service Discovery", "actions": ["..."],
+ "link": "https://cerberus.example/#/alerts?id=42", "subject": "[Cerberus HIGH] Port scan from 192.168.1.77",
+ "text": "the e-mail style message"}
+```
+
+`event` is `alert`, `summary` (alerts held back by a channel's rate limit,
+with `count`) or `test`. With a signing secret: `X-Cerberus-Timestamp: <unix
+time>` and `X-Cerberus-Signature: sha256=<hex HMAC-SHA256(secret, timestamp +
+"." + body)>`; also `X-Cerberus-Event` and a unique `X-Cerberus-Delivery`.
+
 Errors are `{"detail": "message"}` with a 4xx/5xx status. Secrets (channel
 credentials, SNMP community strings) are never returned: they read back as
 `********`, and sending that value back leaves the stored one unchanged.
@@ -29,8 +66,10 @@ credentials, SNMP community strings) are never returned: they read back as
 | `GET /api/me` | `{signed_in, auth, version}` |
 | `POST /api/login`, `POST /api/logout` | Session |
 | `GET /api/summary?range=1h\|6h\|24h\|7d` | Dashboard: message-rate series, open alerts by severity, hosts by risk, alerts by attack stage, top blocked sources and ports, collector health |
-| `GET /api/alerts?status=&severity=&q=&limit=&id=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `false_positive`, `active` (open or acknowledged) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions); a false positive also carries `false_positive` (who, when, why, findings held back since) |
+| `GET /api/alerts?status=&severity=&q=&limit=&id=&detector=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `false_positive`, `active` (open or acknowledged) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions); a false positive also carries `false_positive` (who, when, why, findings held back since) |
 | `POST /api/alerts/status` | `{"ids": [1,2], "status": "ack"}` or `{"all_open": true, "status": "ack"}` |
+| `GET /api/attack?range=24h\|7d\|30d\|90d\|all&status=real\|active\|all` | The MITRE ATT&CK matrix: per tactic, each technique Cerberus detects with its alert count, occurrences, severities, last seen and detectors; plus alerts outside ATT&CK. `status=real` leaves out false positives |
+| `GET /api/tokens`, `POST /api/tokens`, `POST /api/tokens/{id}/revoke` | API tokens (dashboard session only): `{"name", "scope": "read"\|"write"}`; the token is in the creation answer, once |
 | `GET /api/alerts/counts` | Open alerts by severity and in total, for the navigation badge: `{"open": {"high": 2}, "total": 2}` |
 | `POST /api/alerts/false-positive` | `{"id": 7, "analyst": "name", "justification": "at least 10 characters"}`: marks the alert a false positive and suppresses its detector and entity; audited. `400` without a name or justification, `404` for an unknown alert |
 | `GET /api/suppressions` | Every suppression, active and removed, with `hits` and `last_hit` |

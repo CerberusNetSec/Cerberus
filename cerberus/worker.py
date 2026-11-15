@@ -201,7 +201,7 @@ class DetectionWorker:
         return {"name": self.name, "role": "detector", "family": self.family, "version": __version__,
                 "sent": time.time(), "uptime": int(time.time() - self.started), "received": self.received,
                 "candidates": self.candidates, "duplicates": self.dedup.duplicates, "errors": self.errors,
-                "rebuilds": self.rebuilds, "replayed": self.source.replayed,
+                "rebuilds": self.rebuilds, "replayed": self.source.replayed, "stale_dropped": self.source.stale_dropped,
                 "published": self.publisher.published, "spooled": self.publisher.spooled,
                 "spool_bytes": self.publisher.spool.size(), "spool_dropped": self.publisher.spool.dropped,
                 "bus_down": self.publisher.down, "bus_error": self.publisher.last_error}

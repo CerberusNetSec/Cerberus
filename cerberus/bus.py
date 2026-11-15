@@ -439,6 +439,10 @@ class EventSource:
         self.resume: dict[str, int] = {}  # "topic:partition" -> where the checkpoint was taken
         self.replay_until: dict = {}  # TopicPartition -> committed offset: below it, a replay
         self.replayed = 0
+        # TopicPartition -> where a seek sent it. Records fetched before the seek can still
+        # arrive afterwards; batch() drops them until the partition starts there.
+        self.seeked: dict = {}
+        self.stale_dropped = 0  # records fetched before a seek, dropped
         self.on_assign = None  # optional: async (consumer, assigned partitions) -> None, instead of resume
 
     async def start(self) -> None:
@@ -462,6 +466,20 @@ class EventSource:
         await self.consumer.start()
 
     async def assigned(self, assigned) -> None:
+        # Nothing from these partitions until it is settled where to start: the consumer can
+        # otherwise hand out records from the committed position while this runs, and they
+        # would be processed before the replay that should come first.
+        assigned = list(assigned)
+        pause, resume = getattr(self.consumer, "pause", None), getattr(self.consumer, "resume", None)
+        if pause and assigned:
+            pause(*assigned)
+        try:
+            await self._assigned(assigned)
+        finally:
+            if resume and assigned:
+                resume(*assigned)
+
+    async def _assigned(self, assigned) -> None:
         if self.on_assign is not None:
             await self.on_assign(assigned)
             return
@@ -472,6 +490,7 @@ class EventSource:
             committed = await self.consumer.committed(tp)
             if committed is not None and back < committed:
                 self.consumer.seek(tp, back)
+                self.seeked[tp] = back
                 self.replay_until[tp] = committed
                 log.info("%s partition %d: replaying %d records from the checkpoint to rebuild detector state",
                          tp.topic, tp.partition, committed - back)
@@ -503,6 +522,7 @@ class EventSource:
             if committed is None or at is None or at.offset >= committed:
                 continue
             self.consumer.seek(tp, at.offset)
+            self.seeked[tp] = at.offset
             self.replay_until[tp] = committed
             total += committed - at.offset
         return total
@@ -519,10 +539,28 @@ class EventSource:
         got = await self.consumer.getmany(timeout_ms=timeout_ms, max_records=5000)
         out = []
         for tp, records in got.items():
+            records = self.after_seek(tp, records)
             out += records
             if records:
                 self.position[tp] = records[-1].offset + 1
         return out
+
+    def after_seek(self, tp, records: list) -> list:
+        """Records of one partition as fetched, less any fetched from before a seek that
+        sent it back (those would be processed out of order, and their later copies then
+        ignored as duplicates): until the partition delivers from where the seek put it,
+        its records are dropped and the seek repeated."""
+        want = self.seeked.get(tp)
+        if want is None or not records:
+            return records
+        if records[0].offset != want:
+            log.debug("%s partition %d: dropping %d records fetched before going back to %d",
+                      tp.topic, tp.partition, len(records), want)
+            self.stale_dropped += len(records)
+            self.consumer.seek(tp, want)
+            return []
+        del self.seeked[tp]
+        return records
 
     def snapshot(self) -> dict:
         return dict(self.position)

@@ -308,6 +308,7 @@ def test_a_new_leader_after_a_crash_finds_and_stores_exactly_the_same(tmp_path):
         last_offset = -1
         while last_offset < stop_after:
             for tp, records in (await engine.source.consumer.getmany(timeout_ms=2000, max_records=500)).items():
+                records = engine.source.after_seek(tp, records)  # as EventSource.batch() does
                 for record in records:
                     ev_ts = json.loads(record.value)["ts"]
                     until = engine.source.replay_until.get(TopicPartition(tp.topic, tp.partition))
@@ -387,6 +388,7 @@ def test_a_replaced_worker_rebuilds_its_windows_from_the_bus(tmp_path):
             got = await worker.source.consumer.getmany(timeout_ms=1000, max_records=500)
             idle = 0 if got else idle + 1
             for tp, records in got.items():
+                records = worker.source.after_seek(tp, records)  # as EventSource.batch() does
                 key = TopicPartition(tp.topic, tp.partition)
                 for record in records:
                     ts = json.loads(record.value)["ts"]
@@ -424,3 +426,22 @@ def test_a_replaced_worker_rebuilds_its_windows_from_the_bus(tmp_path):
     assert whole and first and second
     assert replayed > 0 and rebuilds == 1
     assert sorted(first + second) == whole
+
+
+@pytest.mark.parametrize("scenario", ["worker", "processor"])
+def test_a_slow_assignment_still_replays_before_anything_live(tmp_path, monkeypatch, scenario):
+    """The consumer can fetch from the committed position while the assignment callback is
+    still deciding where to start. Taking two seconds there must change nothing: the new
+    partitions are paused until the replay position is set. (Without that, records were
+    processed live with empty state first, and their later copies ignored.)"""
+    from cerberus.bus import EventSource
+    original = EventSource._assigned
+
+    async def slow(self, assigned):
+        await asyncio.sleep(2)
+        await original(self, assigned)
+    monkeypatch.setattr(EventSource, "_assigned", slow)
+    if scenario == "worker":
+        test_a_replaced_worker_rebuilds_its_windows_from_the_bus(tmp_path)
+    else:
+        test_a_new_leader_after_a_crash_finds_and_stores_exactly_the_same(tmp_path)

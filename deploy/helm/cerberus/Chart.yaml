@@ -11,4 +11,5 @@ home: https://github.com/CerberusNetSec/Cerberus
 sources:
   - https://github.com/CerberusNetSec/Cerberus
 keywords: [syslog, security, siem, network, detection, mitre-attack]
-license: Apache-2.0
+annotations:
+  artifacthub.io/license: Apache-2.0

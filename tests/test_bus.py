@@ -357,3 +357,70 @@ def test_a_new_leader_after_a_crash_finds_and_stores_exactly_the_same(tmp_path):
     total = asyncio.run(go())
     assert total == expected["events"]["rows"]
     assert golden.summarise_store(Database(store_path)) == expected
+
+
+def test_a_replaced_worker_rebuilds_its_windows_from_the_bus(tmp_path):
+    """Worker A runs the source family on the first half of the traffic and goes; a new
+    worker B in the same group rebuilds its windows by replaying the partition up to
+    what A committed, then carries on. A and B together raise exactly what one worker
+    raises over the whole run: nothing missed, nothing twice."""
+    from aiokafka.structs import TopicPartition
+
+    from cerberus.worker import DetectionWorker
+
+    cfg = bus_config(tmp_path)
+    cfg.detection_workers = ("source",)
+
+    async def run_worker(group: str, stop_ts: float | None = None) -> list:
+        wcfg = bus_config(tmp_path)
+        wcfg.kafka_topic, wcfg.kafka_group = cfg.kafka_topic, group
+        wcfg.detection_workers, wcfg.detection_family = ("source",), "source"
+        db = Database(tmp_path / f"{group}-{uuid.uuid4().hex[:6]}.db")
+        engine = Engine(wcfg, db, ConnectorRegistry(), Notifier(db))
+        engine.families = {"source"}
+        watch = {d.id: d.settings() for d in engine.detectors}
+        engine.apply_settings(watch, engine.general_settings())
+        worker = DetectionWorker(wcfg, db, engine, publisher=None)
+        await worker.source.start()
+        found, next_tick, idle, done = [], golden.START + golden.TICK, 0, False
+        while idle < 6 and not done:
+            got = await worker.source.consumer.getmany(timeout_ms=1000, max_records=500)
+            idle = 0 if got else idle + 1
+            for tp, records in got.items():
+                key = TopicPartition(tp.topic, tp.partition)
+                for record in records:
+                    ts = json.loads(record.value)["ts"]
+                    if stop_ts is not None and ts > stop_ts:
+                        done = True  # gone: this record and the rest are left for the next worker
+                        break
+                    until = worker.source.replay_until.get(key)
+                    in_replay = until is not None and record.offset < until
+                    while next_tick <= ts:
+                        found += worker.tick(next_tick, replay=in_replay)
+                        next_tick += golden.TICK
+                    found += worker.handle([record])
+                    worker.source.position[key] = record.offset + 1
+                await worker.source.commit(worker.source.snapshot())
+                if done:
+                    break
+        if not done:
+            found += worker.tick(next_tick)
+        replayed, rebuilds = worker.source.replayed, worker.rebuilds
+        await worker.source.stop()
+        db.close()
+        alerts = sorted((b["detector"], b["entity"], b["severity"], b["title"], b["_ts"])
+                        for b in (json.loads(v) for _t, _k, v in found))
+        return alerts, replayed, rebuilds
+
+    async def go():
+        await collect(cfg, tmp_path)
+        whole, _, _ = await run_worker(cfg.kafka_group + "-whole")
+        middle = whole[len(whole) // 2][4]  # A goes halfway through the alerts
+        first, _, _ = await run_worker(cfg.kafka_group + "-ab", stop_ts=middle)
+        second, replayed, rebuilds = await run_worker(cfg.kafka_group + "-ab")
+        return whole, first, second, replayed, rebuilds
+
+    whole, first, second, replayed, rebuilds = asyncio.run(go())
+    assert whole and first and second
+    assert replayed > 0 and rebuilds == 1
+    assert sorted(first + second) == whole

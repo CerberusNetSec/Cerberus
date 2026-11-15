@@ -12,13 +12,17 @@ The worker reads detector settings and ignore lists from shared storage every
 writes the high-risk port counters and publishes a summary of what it holds
 for the Risk ports page.
 
-State lives in memory: when a worker restarts, or partitions move between
-workers, the sliding windows for the moved keys start again (the high-risk port
-history is reloaded from storage).
+State lives in memory and is rebuilt from the bus: whenever the partitions a
+worker holds change (it starts, or the consumer group rebalances), it starts
+from empty state and replays the last CERBERUS_WORKER_REPLAY_MINUTES of its
+partitions up to the committed position. The replay rebuilds the windows,
+including which alerts were already raised, without sending anything; the
+high-risk port history is reloaded from storage.
 """
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import secrets
@@ -54,6 +58,30 @@ class DetectionWorker:
         self.started = time.time()
         self.hostile = engine.by_id["hostile_allowed"] if self.family == "source" else None
         self._tasks: list[asyncio.Task] = []
+        self._empty = engine.snapshot()  # the state a worker starts from
+        self._owned: set = set()
+        self.rebuilds = 0
+        self.source.on_assign = self._assigned
+
+    # --- rebuilding state from the bus ------------------------------------------------------
+    def reset(self, now: float) -> None:
+        """Back to empty detector state (the port family reloads its history from storage)."""
+        self.engine.restore(copy.deepcopy(self._empty), now)
+        if self.family == "port":
+            self.engine.risk_ports.restore_rows(self.store.port_minutes_since(int(now - 27 * 3600)), now)
+            self.engine.risk_ports._unsaved = {}
+
+    async def _assigned(self, assigned) -> None:
+        assigned = set(assigned)
+        if assigned == self._owned:
+            return
+        self._owned = assigned
+        now = time.time()
+        await asyncio.to_thread(self.reset, now)
+        self.rebuilds += 1
+        replay = await self.source.rewind(assigned, self.cfg.worker_replay_minutes * 60)
+        log.info("worker %s: %d partition(s); rebuilding state from %d record(s) on the bus", self.name,
+                 len(assigned), replay)
 
     # --- detection ----------------------------------------------------------------------
     def handle(self, records) -> list[tuple]:
@@ -61,15 +89,17 @@ class DetectionWorker:
         out: list[tuple] = []
         topic = candidates_topic(self.cfg)
 
-        def emit_at(ts):
+        def emit_at(ts, replay):
             def emit(c):
+                if self.hostile is not None and self.hostile.enabled:
+                    self.hostile.on_alert(c, ts)
+                if replay:
+                    return  # raised before; the replay only rebuilds state
                 self.seq += 1
                 out.append((topic, *encode_candidate(c, ts, (self.run_id, self.seq))))
                 self.candidates += 1
-                # The source family's own alerts mark hostile addresses, as the processor
-                # does in one process: every detector that marks one is in this family.
-                if self.hostile is not None and self.hostile.enabled:
-                    self.hostile.on_alert(c, ts)
+                # The source family's own alerts mark hostile addresses (above), as the
+                # processor does in one process: every detector that marks one is in this family.
             return emit
 
         for record in records:
@@ -80,18 +110,24 @@ class DetectionWorker:
                     continue
                 self.received += 1
                 ev = Event.from_dict(body)
-                self.engine.detect(ev, ev.ts, emit=emit_at(ev.ts))
+                replay = self.source.replaying(record) if hasattr(self.source, "replaying") else False
+                if self.family == "port":
+                    self.engine.risk_ports.replaying = replay  # already counted in storage
+                self.engine.detect(ev, ev.ts, emit=emit_at(ev.ts, replay))
             except Exception:
                 self.errors += 1
                 if self.errors <= 20:
                     log.exception("failed to process an event")
         return out
 
-    def tick(self, now: float) -> list[tuple]:
+    def tick(self, now: float, replay: bool = False) -> list[tuple]:
+        """replay: a tick at a time already covered (tests that tick on the events' clock)."""
         out: list[tuple] = []
         topic = candidates_topic(self.cfg)
 
         def emit(c):
+            if replay:
+                return
             self.seq += 1
             out.append((topic, *encode_candidate(c, now, (self.run_id, self.seq))))
             self.candidates += 1
@@ -164,6 +200,7 @@ class DetectionWorker:
         return {"name": self.name, "role": "detector", "family": self.family, "version": __version__,
                 "sent": time.time(), "uptime": int(time.time() - self.started), "received": self.received,
                 "candidates": self.candidates, "duplicates": self.dedup.duplicates, "errors": self.errors,
+                "rebuilds": self.rebuilds, "replayed": self.source.replayed,
                 "published": self.publisher.published, "spooled": self.publisher.spooled,
                 "spool_bytes": self.publisher.spool.size(), "spool_dropped": self.publisher.spool.dropped,
                 "bus_down": self.publisher.down, "bus_error": self.publisher.last_error}

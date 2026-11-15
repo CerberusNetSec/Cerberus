@@ -439,6 +439,7 @@ class EventSource:
         self.resume: dict[str, int] = {}  # "topic:partition" -> where the checkpoint was taken
         self.replay_until: dict = {}  # TopicPartition -> committed offset: below it, a replay
         self.replayed = 0
+        self.on_assign = None  # optional: async (consumer, assigned partitions) -> None, instead of resume
 
     async def start(self) -> None:
         if self.consumer is None:
@@ -461,6 +462,9 @@ class EventSource:
         await self.consumer.start()
 
     async def assigned(self, assigned) -> None:
+        if self.on_assign is not None:
+            await self.on_assign(assigned)
+            return
         for tp in assigned:
             back = self.resume.pop(_tp_key(tp), None)
             if back is None:
@@ -485,6 +489,23 @@ class EventSource:
             return True
         del self.replay_until[tp]
         return False
+
+    async def rewind(self, assigned, seconds: float) -> int:
+        """Go back seconds on each partition (by the time records were published), marking
+        what lies before the committed position as a replay. Returns the records to replay."""
+        self.replay_until = {}
+        since = int((time.time() - seconds) * 1000)
+        found = await self.consumer.offsets_for_times({tp: since for tp in assigned}) if assigned else {}
+        total = 0
+        for tp in assigned:
+            committed = await self.consumer.committed(tp)
+            at = found.get(tp)
+            if committed is None or at is None or at.offset >= committed:
+                continue
+            self.consumer.seek(tp, at.offset)
+            self.replay_until[tp] = committed
+            total += committed - at.offset
+        return total
 
     def positions(self) -> dict[str, int]:
         """The position, per partition, as stored with a checkpoint."""

@@ -113,6 +113,7 @@ class Config:
     # Detection families run by detection workers rather than the processor (scale-out).
     detection_workers: tuple = ()
     detection_family: str = ""  # in CERBERUS_MODE=detector: which family this worker runs
+    worker_replay_minutes: int = 60  # how far back a worker rebuilds its windows from the bus
     # Ingest options for any mode that receives syslog.
     syslog_tls_port: int = 0
     syslog_tls_cert: str = ""
@@ -161,6 +162,7 @@ class Config:
             collector_silent_seconds=max(30, _int("CERBERUS_COLLECTOR_SILENT_SECONDS", 90)),
             detection_workers=_families(env("CERBERUS_DETECTION_WORKERS", "")),
             detection_family=env("CERBERUS_DETECTION_FAMILY", "").strip().lower(),
+            worker_replay_minutes=max(0, _int("CERBERUS_WORKER_REPLAY_MINUTES", 60)),
             syslog_tls_port=_int("CERBERUS_SYSLOG_TLS_PORT", 0),
             syslog_tls_cert=env("CERBERUS_SYSLOG_TLS_CERT", ""),
             syslog_tls_key=env("CERBERUS_SYSLOG_TLS_KEY", ""),

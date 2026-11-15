@@ -38,7 +38,7 @@ class Batch:
     # Changed alerts: (last_seen, count, severity, description, details, updated, id).
     alert_updates: list[tuple] = field(default_factory=list)
     # Notifications to send, written with the alerts they are about: (created, channel_id,
-    # subject, body). Sent from the outbox once stored.
+    # subject, body[, payload JSON]). Sent from the outbox once stored.
     notices: list[tuple] = field(default_factory=list)
     # Findings held back by a false-positive suppression: (hits to add, last hit, suppression id).
     suppression_hits: list[tuple] = field(default_factory=list)
@@ -141,7 +141,7 @@ class Store:
     # --- notification outbox -------------------------------------------------------------
     def outbox_due(self, now: float, limit: int) -> list[dict]:
         """Notifications waiting to be sent whose time has come, oldest first:
-        {id, created, channel_id, subject, body, attempts}."""
+        {id, created, channel_id, subject, body, attempts, payload}."""
         raise NotImplementedError
 
     def outbox_done(self, outbox_id: int, now: float, error: str | None) -> None:

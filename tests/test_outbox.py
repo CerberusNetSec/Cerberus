@@ -27,7 +27,7 @@ def setup(tmp_path, monkeypatch, fail=False):
     engine.load()
     sent = []
 
-    async def fake_send(channel, subject, body, client):
+    async def fake_send(channel, subject, body, client, payload=None):
         if fail:
             raise RuntimeError("unreachable")
         sent.append(subject)

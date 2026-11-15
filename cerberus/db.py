@@ -150,6 +150,7 @@ MIGRATIONS = [
     ("devices", "snmp_community", "TEXT DEFAULT ''"),
     ("devices", "snmp_host", "TEXT DEFAULT ''"),
     ("alerts", "updated", "REAL DEFAULT 0"),  # when the row last changed; what a site reports from
+    ("outbox", "payload", "TEXT"),  # the alert as JSON, for webhooks and API calls (0.11.0)
 ]
 
 
@@ -420,8 +421,8 @@ class Database(Store):
              batch.new_alerts),
             ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=?, updated=? WHERE id=?",
              batch.alert_updates),
-            ("INSERT INTO outbox(created, channel_id, subject, body, next_try) VALUES(?,?,?,?,?)",
-             [(*n, n[0]) for n in batch.notices]),
+            ("INSERT INTO outbox(created, channel_id, subject, body, payload, next_try) VALUES(?,?,?,?,?,?)",
+             [(*n[:4], n[4] if len(n) > 4 else None, n[0]) for n in batch.notices]),
             ("UPDATE suppressions SET hits = hits + ?, last_hit = ? WHERE id = ?", batch.suppression_hits),
         ])
 
@@ -478,7 +479,7 @@ class Database(Store):
 
     # --- notification outbox --------------------------------------------------
     def outbox_due(self, now: float, limit: int) -> list[dict]:
-        return self.q("SELECT id, created, channel_id, subject, body, attempts FROM outbox "
+        return self.q("SELECT id, created, channel_id, subject, body, attempts, payload FROM outbox "
                       "WHERE done = 0 AND next_try <= ? ORDER BY id LIMIT ?", (now, limit))
 
     def outbox_done(self, outbox_id: int, now: float, error: str | None) -> None:

@@ -6656,6 +6656,45 @@
     "critical"
    ],
    "types": {
+    "api": {
+     "fields": [
+      {
+       "default": "POST",
+       "key": "method",
+       "kind": "select:POST,PUT,PATCH,GET",
+       "label": "Method"
+      },
+      {
+       "default": "",
+       "key": "url",
+       "kind": "text",
+       "label": "URL (placeholders allowed, URL-encoded)"
+      },
+      {
+       "default": "",
+       "key": "headers",
+       "kind": "secret-textarea",
+       "label": "Headers, one per line: Name: value (placeholders allowed)"
+      },
+      {
+       "default": "application/json",
+       "key": "content_type",
+       "kind": "select:application/json,application/x-www-form-urlencoded,text/plain",
+       "label": "Body type"
+      },
+      {
+       "default": "",
+       "key": "body",
+       "kind": "textarea",
+       "label": "Body template (empty: the standard JSON payload)"
+      }
+     ],
+     "help": "Placeholders: {{title}} {{description}} {{severity}} {{detector}} {{device}} {{src_ip}} {{id}} {{created}} {{stage}} {{technique}} {{link}} {{subject}} {{text}}, and {{payload}} for the whole alert as JSON. They are escaped for where they are: JSON-escaped in a JSON body (write \"{{title}}\" inside quotes), URL-encoded in the URL and form bodies. Add |raw, |json or |url to choose.",
+     "label": "Custom API call",
+     "required": [
+      "url"
+     ]
+    },
     "pushbullet": {
      "fields": [
       {
@@ -6677,6 +6716,7 @@
        "label": "Channel tag (optional)"
       }
      ],
+     "help": "",
      "label": "Pushbullet",
      "required": [
       "access_token"
@@ -6727,6 +6767,7 @@
        "label": "Recipients (comma-separated)"
       }
      ],
+     "help": "",
      "label": "Email (SMTP)",
      "required": [
       "host",
@@ -6749,10 +6790,38 @@
        "label": "Chat IDs (comma-separated)"
       }
      ],
+     "help": "",
      "label": "Telegram",
      "required": [
       "token",
       "chat_id"
+     ]
+    },
+    "webhook": {
+     "fields": [
+      {
+       "default": "",
+       "key": "url",
+       "kind": "text",
+       "label": "URL (https:// recommended)"
+      },
+      {
+       "default": "",
+       "key": "secret",
+       "kind": "secret",
+       "label": "Signing secret (optional): adds an HMAC-SHA256 signature header"
+      },
+      {
+       "default": "",
+       "key": "headers",
+       "kind": "secret-textarea",
+       "label": "Extra headers (optional), one per line: Name: value"
+      }
+     ],
+     "help": "POSTs each alert as JSON (see docs/API.md, \"Webhook payload\"). With a signing secret, X-Cerberus-Signature is sha256=HMAC(secret, timestamp + \".\" + body) and X-Cerberus-Timestamp the Unix time it was sent: check both, and reject old timestamps.",
+     "label": "Webhook",
+     "required": [
+      "url"
      ]
     }
    }
@@ -6785,6 +6854,45 @@
     "critical"
    ],
    "types": {
+    "api": {
+     "fields": [
+      {
+       "default": "POST",
+       "key": "method",
+       "kind": "select:POST,PUT,PATCH,GET",
+       "label": "Method"
+      },
+      {
+       "default": "",
+       "key": "url",
+       "kind": "text",
+       "label": "URL (placeholders allowed, URL-encoded)"
+      },
+      {
+       "default": "",
+       "key": "headers",
+       "kind": "secret-textarea",
+       "label": "Headers, one per line: Name: value (placeholders allowed)"
+      },
+      {
+       "default": "application/json",
+       "key": "content_type",
+       "kind": "select:application/json,application/x-www-form-urlencoded,text/plain",
+       "label": "Body type"
+      },
+      {
+       "default": "",
+       "key": "body",
+       "kind": "textarea",
+       "label": "Body template (empty: the standard JSON payload)"
+      }
+     ],
+     "help": "Placeholders: {{title}} {{description}} {{severity}} {{detector}} {{device}} {{src_ip}} {{id}} {{created}} {{stage}} {{technique}} {{link}} {{subject}} {{text}}, and {{payload}} for the whole alert as JSON. They are escaped for where they are: JSON-escaped in a JSON body (write \"{{title}}\" inside quotes), URL-encoded in the URL and form bodies. Add |raw, |json or |url to choose.",
+     "label": "Custom API call",
+     "required": [
+      "url"
+     ]
+    },
     "pushbullet": {
      "fields": [
       {
@@ -6806,6 +6914,7 @@
        "label": "Channel tag (optional)"
       }
      ],
+     "help": "",
      "label": "Pushbullet",
      "required": [
       "access_token"
@@ -6856,6 +6965,7 @@
        "label": "Recipients (comma-separated)"
       }
      ],
+     "help": "",
      "label": "Email (SMTP)",
      "required": [
       "host",
@@ -6878,10 +6988,38 @@
        "label": "Chat IDs (comma-separated)"
       }
      ],
+     "help": "",
      "label": "Telegram",
      "required": [
       "token",
       "chat_id"
+     ]
+    },
+    "webhook": {
+     "fields": [
+      {
+       "default": "",
+       "key": "url",
+       "kind": "text",
+       "label": "URL (https:// recommended)"
+      },
+      {
+       "default": "",
+       "key": "secret",
+       "kind": "secret",
+       "label": "Signing secret (optional): adds an HMAC-SHA256 signature header"
+      },
+      {
+       "default": "",
+       "key": "headers",
+       "kind": "secret-textarea",
+       "label": "Extra headers (optional), one per line: Name: value"
+      }
+     ],
+     "help": "POSTs each alert as JSON (see docs/API.md, \"Webhook payload\"). With a signing secret, X-Cerberus-Signature is sha256=HMAC(secret, timestamp + \".\" + body) and X-Cerberus-Timestamp the Unix time it was sent: check both, and reject old timestamps.",
+     "label": "Webhook",
+     "required": [
+      "url"
      ]
     }
    }

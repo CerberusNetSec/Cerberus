@@ -782,7 +782,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
 
     # --- notification channels -------------------------------------------
     def _types():
-        return {k: {"label": v["label"], "required": v["required"],
+        return {k: {"label": v["label"], "required": v["required"], "help": v.get("help", ""),
                     "fields": [{"key": f[0], "label": f[1], "kind": f[2], "default": f[3]} for f in v["fields"]]}
                 for k, v in CHANNEL_TYPES.items()}
 
@@ -827,10 +827,10 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     @app.post("/api/channels/{channel_id}/test")
     async def channel_test(channel_id: int):
         channel = await _channel(channel_id)
-        error = await notifier.deliver(
-            channel, "[Cerberus] Test notification",
-            "This is a test from Cerberus. If you can read it, this channel works.",
-            retry=False)
+        from .notifiers import SAMPLE, payload_for
+        subject, text = "[Cerberus] Test notification", "This is a test from Cerberus. If you can read it, this channel works."
+        error = await notifier.deliver(channel, subject, text, retry=False,
+                                       payload=payload_for(SAMPLE, subject, text, notifier.link({}), event="test"))
         if error:
             raise _bad(error, 502)
         return {"ok": True}

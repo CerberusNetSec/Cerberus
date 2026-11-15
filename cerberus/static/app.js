@@ -1724,6 +1724,11 @@ pages.notifications = {
       if (f.kind.startsWith('select:')) {
         input = `<select id="${id}" data-key="${f.key}">${f.kind.slice(7).split(',').map((o) =>
           `<option ${o === value ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+      } else if (f.kind.endsWith('textarea')) {
+        // A secret list (headers with API keys) comes back masked; leave it as is to keep it.
+        input = `<textarea id="${id}" data-key="${f.key}" rows="${f.key === 'body' ? 6 : 3}" class="mono" spellcheck="false"
+          ${req} placeholder="${f.key === 'headers' ? 'Authorization: Bearer ...' : f.key === 'body' ? '{"text": "{{subject}}: {{description}}"}' : ''}">${esc(value)}</textarea>`;
+        return `<div class="wide"><label for="${id}">${esc(f.label)}</label>${input}</div>`;
       } else {
         const kind = f.kind === 'secret' ? 'password' : f.kind;
         input = `<input id="${id}" data-key="${f.key}" type="${kind}" value="${esc(value)}" ${req} autocomplete="${f.kind === 'secret' ? 'new-password' : 'off'}">`;
@@ -1739,6 +1744,7 @@ pages.notifications = {
             `<option ${s === (channel ? channel.min_severity : 'medium') ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
           ${spec.fields.map(field).join('')}
         </div>
+        ${spec.help ? `<p class="muted small">${esc(spec.help)}</p>` : ''}
         <label class="check"><input id="c-enabled" type="checkbox" ${!channel || channel.enabled ? 'checked' : ''}> Enabled</label>
         <div class="actions"><button class="primary" type="submit">Save channel</button>
           <button type="button" data-act="cancel">Cancel</button></div>

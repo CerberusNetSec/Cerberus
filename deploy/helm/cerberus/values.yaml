@@ -11,7 +11,7 @@
 mode: standalone  # standalone | scaleOut
 
 image:
-  repository: ghcr.io/wrcrooks/cerberus
+  repository: ghcr.io/cerberusnetsec/cerberus
   tag: ""  # defaults to the chart's appVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []

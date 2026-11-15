@@ -16,7 +16,7 @@ set. The SQLite file is only read, never changed.
 
 Inside the container image the same tool runs as:
 
-    docker run --rm -v cerberus_cerberus-data:/data:ro ghcr.io/wrcrooks/cerberus:<version> \\
+    docker run --rm -v cerberus_cerberus-data:/data:ro ghcr.io/cerberusnetsec/cerberus:<version> \\
         python tools/migrate.py --from /data/cerberus.db --postgres ... --clickhouse ...
 """
 from __future__ import annotations

@@ -21,8 +21,8 @@ resources:
   - service.yaml
 images:
   - name: cerberus
-    newName: ghcr.io/wrcrooks/cerberus
-    newTag: "0.12.0"
+    newName: ghcr.io/cerberusnetsec/cerberus
+    newTag: "1.0.0"
 configMapGenerator:
   - name: cerberus-collector
     literals:

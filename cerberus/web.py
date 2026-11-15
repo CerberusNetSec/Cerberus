@@ -165,6 +165,18 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         """Ready for traffic. A standby processor answers 503 here (see leader.py)."""
         return {"ok": True, "role": "active"}
 
+    from .bus import collector_name
+    from .metrics import add_endpoint, common, processor_samples
+
+    async def samples():
+        try:
+            pending = await _run(db.outbox_pending)
+        except Exception:
+            pending = None
+        return (common("processor" if engine.source else "all", collector_name(cfg))
+                + processor_samples(engine, notifier, heartbeats, pending))
+    add_endpoint(app, cfg.metrics_token, samples)
+
     @app.get("/")
     async def index():
         return FileResponse(STATIC / "index.html")

@@ -83,3 +83,38 @@ def test_api_ready_on_the_active_processor(tmp_path, monkeypatch):
     client, db = build(tmp_path, monkeypatch)
     assert client.get("/readyz").json() == {"ok": True, "role": "active"}
     db.close()
+
+
+def test_metrics_on_the_active_processor_and_a_standby(tmp_path, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_api_contract import build  # noqa: E402
+    client, db = build(tmp_path, monkeypatch)
+    text = client.get("/metrics").text
+    assert "# TYPE cerberus_events_received_total counter" in text
+    assert "cerberus_active 1" in text and "cerberus_outbox_pending 0" in text
+    assert 'cerberus_info{version="' in text
+    db.close()
+    standby = TestClient(leader.standby_app("p-2", {"since": 1.0}, metrics_token="s3cret"))
+    assert standby.get("/metrics").status_code == 401
+    text = standby.get("/metrics", headers={"Authorization": "Bearer s3cret"}).text
+    assert "cerberus_active 0" in text and 'name="p-2"' in text
+
+
+def test_metrics_render_escapes_labels():
+    from cerberus.metrics import render
+    out = render([("m", "gauge", "help", True, {"name": "a\"b\\c"})])  # a"b\c
+    assert out.splitlines()[-1] == 'm{name="a\\"b\\\\c"} 1'
+
+
+def test_metrics_on_a_collector(tmp_path):
+    from cerberus.bus import Publisher
+    from cerberus.collector import Collector, status_app
+    from cerberus.config import Config
+    from cerberus.connectors import ConnectorRegistry
+
+    cfg = Config.from_env()
+    cfg.data_dir, cfg.collector_name = tmp_path, "edge-1"
+    collector = Collector(cfg, ConnectorRegistry(), Publisher(cfg, tmp_path / "spool", object(), name="edge-1"))
+    text = TestClient(status_app(collector)).get("/metrics").text
+    assert 'role="collector"' in text and "cerberus_collector_messages_received_total 0" in text
+    assert "cerberus_bus_down 0" in text

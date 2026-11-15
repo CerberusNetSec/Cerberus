@@ -28,15 +28,21 @@ CHECK_TIMEOUT = 10.0
 LOST_EXIT_CODE = 75  # EX_TEMPFAIL: restart me
 
 
-def standby_app(name: str, state: dict):
+def standby_app(name: str, state: dict, metrics_token: str = ""):
     from fastapi import FastAPI
     from fastapi.responses import JSONResponse
+
+    from .metrics import add_endpoint, common
 
     app = FastAPI(title="Cerberus (standby)", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/healthz")
     async def healthz():
         return {"ok": True, "role": "standby", "name": name, "since": state["since"]}
+
+    async def samples():
+        return common("processor", name, active=0)
+    add_endpoint(app, metrics_token, samples)
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def standby(path: str):
@@ -50,14 +56,14 @@ async def _call(fn, timeout: float = CHECK_TIMEOUT):
     return await asyncio.wait_for(asyncio.to_thread(fn), timeout)
 
 
-async def wait_for_leadership(lock, serve=None, name: str = "") -> bool:
+async def wait_for_leadership(lock, serve=None, name: str = "", metrics_token: str = "") -> bool:
     """Wait until this process holds the lock: True. serve(app) -> (server, task) runs a
     standby server meanwhile; if that server stops (the process is told to shut down)
     before the lock is taken, returns False."""
     state = {"since": time.time()}
     server = task = None
     if serve is not None:
-        server, task = serve(standby_app(name, state))
+        server, task = serve(standby_app(name, state, metrics_token))
     logged = False
     try:
         while True:

@@ -90,6 +90,12 @@ async def run_worker(cfg: Config) -> None:
     async def status():
         return worker.status()
 
+    from .metrics import PUBLISHER, WORKER, add_endpoint, common, from_status
+
+    async def samples():
+        return common("detector", worker.name) + from_status(worker.status(), WORKER + PUBLISHER)
+    add_endpoint(app, cfg.metrics_token, samples)
+
     server = uvicorn.Server(uvicorn.Config(app, host=cfg.bind, port=cfg.web_port, log_level="warning", access_log=False))
     log.info("Cerberus %s detection worker %s; status on http://%s:%d/status", __version__, worker.name, cfg.bind,
              cfg.web_port)
@@ -127,7 +133,7 @@ async def amain() -> None:
             server = uvicorn.Server(uvicorn.Config(app, host=cfg.bind, port=cfg.web_port, log_level="warning",
                                                    access_log=False))
             return server, asyncio.create_task(server.serve())
-        if not await wait_for_leadership(leadership, serve, collector_name(cfg)):
+        if not await wait_for_leadership(leadership, serve, collector_name(cfg), cfg.metrics_token):
             db.close()
             log.info("stopped while standby")
             return

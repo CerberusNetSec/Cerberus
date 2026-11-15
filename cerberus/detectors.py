@@ -721,6 +721,41 @@ class TopologyChange(Detector):
     ]
 
 
+# Families of detectors that share a key and can run in detection workers. The
+# "device" family (baselines, silence, new devices, link flaps, notable events,
+# admin access) stays with the processor, which already sees every event by device;
+# correlation reads the alert stream there too.
+WORKER_FAMILIES = ("source", "target", "pair", "port", "account")
+
+
+def family_detectors(family: str) -> list[Detector]:
+    return [d for d in build_detectors() if d.partition == family]
+
+
+def family_event_types(family: str) -> frozenset:
+    """The event types a family's detectors read: what collectors send to its topic."""
+    types: set = set()
+    for det in family_detectors(family):
+        if det.event_types is None:
+            return frozenset({"*"})
+        types |= det.event_types
+    return frozenset(types)
+
+
+def family_key(family: str, ev: Event) -> str:
+    """The key events of a family's topic are divided by."""
+    return family_detectors_cached(family)[0].partition_key(ev)
+
+
+_FAMILY_CACHE: dict = {}
+
+
+def family_detectors_cached(family: str) -> list[Detector]:
+    if family not in _FAMILY_CACHE:
+        _FAMILY_CACHE[family] = family_detectors(family)
+    return _FAMILY_CACHE[family]
+
+
 def build_detectors() -> list[Detector]:
     from .security import build_security_detectors  # imported here: security.py builds on this module
 

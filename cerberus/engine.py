@@ -254,9 +254,15 @@ class Engine:
         self._rate: deque = deque(maxlen=7)
         self._tasks: list[asyncio.Task] = []
         self.receiver = None  # set by __main__, for the health figures on the dashboard
+        # Which detector partitions this engine runs: None for all. The processor leaves out the
+        # families detection workers run; a worker runs only its own.
+        self.families: set | None = None
+        self.candidates = None  # processor with workers: a bus.EventSource of their alert candidates
+        self.candidate_dedup = None
         self.source = None  # processor mode: a bus.EventSource; events come from collectors
         self.dedup = None  # processor mode: a bus.Deduplicator
         self._committed: dict = {}
+        self._committed_candidates: dict = {}
 
     # --- lifecycle -------------------------------------------------------
     def load(self, now: float | None = None) -> None:
@@ -302,10 +308,13 @@ class Engine:
         return {"ignore_sources": self.ignore_sources, "ignore_destinations": self.ignore_destinations,
                 "cooldown_minutes": int(self.alerts.cooldown // 60)}
 
+    def runs(self, det) -> bool:
+        return self.families is None or det.partition in self.families
+
     def raise_alert(self, c: Candidate, now: float) -> None:
         """The alert stage: fold the candidate into an alert, and let the correlator see it."""
         self.alerts.raise_(c, now)
-        if self.hostile.enabled:
+        if self.hostile.enabled and self.runs(self.hostile):  # with a source worker, it marks there
             self.hostile.on_alert(c, now)
         if self.correlation.enabled:
             self.correlation.on_alert(c, now, lambda found: self.alerts.raise_(found, now))
@@ -358,8 +367,35 @@ class Engine:
     async def start(self) -> None:
         await asyncio.to_thread(self.load)
         intake = self._consume() if self.source else self._pipeline()
-        for coro in (intake, self._flush_loop(), self._tick_loop(), self._prune_loop()):
+        loops = [intake, self._flush_loop(), self._tick_loop(), self._prune_loop()]
+        if self.candidates:
+            loops.append(self._consume_candidates())
+        for coro in loops:
             self._tasks.append(asyncio.create_task(coro))
+
+    async def _consume_candidates(self) -> None:
+        """Processor with detection workers: their alert candidates, into the alert stage."""
+        while True:
+            try:
+                records = await self.candidates.batch()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("reading alert candidates from the message bus failed")
+                await asyncio.sleep(2)
+                continue
+            for record in records:
+                try:
+                    body = json.loads(record.value)
+                    uid = body.get("_uid")
+                    if uid and not self.candidate_dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
+                        continue
+                    self.raise_alert(Candidate.from_dict(body), float(body["_ts"]))
+                except Exception:
+                    self.parse_errors += 1
+                    if self.parse_errors <= 20:
+                        log.exception("failed to process an alert candidate")
+            await asyncio.sleep(0)
 
     async def _consume(self) -> None:
         """Processor mode: parsed events from the collectors, through the bus."""
@@ -518,14 +554,16 @@ class Engine:
         """Stage 3: every detector that reads this kind of event. Candidates go to
         emit, by default the alert stage."""
         emit = emit or (lambda c: self.raise_alert(c, ts))
-        self.baselines.observe(ev, ts)
+        if self.families is None or "device" in self.families:
+            self.baselines.observe(ev, ts)
         ignored = self._ignored(ev.src_ip)
         ignored_dst = self._ignore_dst_nets and (
             self._ignored(ev.dst_ip, True) or self._ignored(ev.extra.get("nat_dst_ip"), True))
         readers = self._for_type.get(ev.event_type)
         if readers is None:
             readers = self._for_type[ev.event_type] = [
-                d for d in self.detectors if d.event_types is None or ev.event_type in d.event_types]
+                d for d in self.detectors
+                if (d.event_types is None or ev.event_type in d.event_types) and self.runs(d)]
         for det in readers:
             if det.enabled and not (ignored and det.id in _SOURCE_KEYED) and not (ignored_dst and det.id in _DEST_KEYED):
                 det.process(ev, ts, emit)
@@ -535,6 +573,7 @@ class Engine:
         # The bus position that matches what is about to be written: nothing below
         # awaits before the buffers are swapped, so no event slips between the two.
         offsets = self.source.snapshot() if self.source else {}
+        candidate_offsets = self.candidates.snapshot() if self.candidates else {}
         events, self._events = self._events, []
         stats, self._stats = self._stats, {}
         devices = [d for d in self.devices.values() if d.dirty]
@@ -563,6 +602,9 @@ class Engine:
             # Only now that the events are stored may the bus forget them.
             await self.source.commit(offsets)
             self._committed = offsets
+        if candidate_offsets and candidate_offsets != self._committed_candidates:
+            await self.candidates.commit(candidate_offsets)  # the alerts they became are stored
+            self._committed_candidates = candidate_offsets
 
     async def _flush_loop(self) -> None:
         while True:
@@ -584,6 +626,8 @@ class Engine:
         """Time-based work: windows expire, baselines roll, silent devices are noticed."""
         emit = lambda c: self.raise_alert(c, now)  # noqa: E731
         for det in self.detectors:
+            if not self.runs(det):
+                continue
             try:
                 det.tick(now, emit if det.enabled else (lambda c: None))
             except Exception:

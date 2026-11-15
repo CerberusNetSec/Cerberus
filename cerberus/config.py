@@ -23,6 +23,24 @@ def _secret(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+FAMILIES = ("source", "target", "pair", "port", "account")
+
+
+def _families(text: str) -> tuple:
+    """CERBERUS_DETECTION_WORKERS: "all", or some of the worker families, comma-separated."""
+    text = text.strip().lower()
+    if not text:
+        return ()
+    if text == "all":
+        return FAMILIES
+    wanted = tuple(dict.fromkeys(f.strip() for f in text.replace(" ", ",").split(",") if f.strip()))
+    unknown = [f for f in wanted if f not in FAMILIES]
+    if unknown:
+        raise ValueError(f"CERBERUS_DETECTION_WORKERS: unknown famil{'ies' if len(unknown) > 1 else 'y'} "
+                         f"{', '.join(unknown)} (choose from {', '.join(FAMILIES)}, or all)")
+    return wanted
+
+
 def _networks(text: str) -> list[str]:
     """Comma- or space-separated IPs/CIDRs; anything else is a configuration error."""
     import ipaddress
@@ -92,6 +110,9 @@ class Config:
     collector_name: str = ""
     spool_mb: int = 1024
     collector_silent_seconds: int = 90
+    # Detection families run by detection workers rather than the processor (scale-out).
+    detection_workers: tuple = ()
+    detection_family: str = ""  # in CERBERUS_MODE=detector: which family this worker runs
     # Ingest options for any mode that receives syslog.
     syslog_tls_port: int = 0
     syslog_tls_cert: str = ""
@@ -127,7 +148,7 @@ class Config:
             site_silent_minutes=_int("CERBERUS_SITE_SILENT_MINUTES", 5),
             postgres_url=_secret("CERBERUS_POSTGRES_URL"),
             clickhouse_url=_secret("CERBERUS_CLICKHOUSE_URL"),
-            mode=env("CERBERUS_MODE", "all").lower() if env("CERBERUS_MODE", "all").lower() in ("all", "collector", "processor") else "all",
+            mode=env("CERBERUS_MODE", "all").lower() if env("CERBERUS_MODE", "all").lower() in ("all", "collector", "processor", "detector") else "all",
             kafka_bootstrap=env("CERBERUS_KAFKA_BOOTSTRAP", ""),
             kafka_topic=env("CERBERUS_KAFKA_TOPIC", "cerberus.events"),
             kafka_group=env("CERBERUS_KAFKA_GROUP", "cerberus-processor"),
@@ -138,6 +159,8 @@ class Config:
             collector_name=env("CERBERUS_COLLECTOR_NAME", "") or socket.gethostname(),
             spool_mb=max(10, _int("CERBERUS_SPOOL_MB", 1024)),
             collector_silent_seconds=max(30, _int("CERBERUS_COLLECTOR_SILENT_SECONDS", 90)),
+            detection_workers=_families(env("CERBERUS_DETECTION_WORKERS", "")),
+            detection_family=env("CERBERUS_DETECTION_FAMILY", "").strip().lower(),
             syslog_tls_port=_int("CERBERUS_SYSLOG_TLS_PORT", 0),
             syslog_tls_cert=env("CERBERUS_SYSLOG_TLS_CERT", ""),
             syslog_tls_key=env("CERBERUS_SYSLOG_TLS_KEY", ""),

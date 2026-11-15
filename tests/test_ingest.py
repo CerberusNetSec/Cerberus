@@ -203,11 +203,11 @@ def test_spool_keeps_order_through_an_outage(tmp_path):
 
 def test_spool_survives_a_restart_and_has_a_limit(tmp_path):
     spool = Spool(tmp_path / "spool", limit_bytes=60_000)
-    spool.append(records(100))
+    spool.append([("events", k, v) for k, v in records(100)])
     spool.close()
     again = Spool(tmp_path / "spool", limit_bytes=60_000)  # a collector restarted while the bus was down
     assert again.events() == 100
-    big = [(b"fw", b"x" * 500)] * 30_000  # far over the limit: whole oldest files go
+    big = [("events", b"fw", b"x" * 500)] * 30_000  # far over the limit: whole oldest files go
     again.append(big)
     assert again.size() <= 60_000 + 30_000 * 600 and again.dropped > 0
     assert again.events() + again.dropped == 30_100
@@ -275,3 +275,14 @@ def test_deduplicator_recognises_copies_and_forgets_slowly():
     assert not e.fresh("r", 10)
     e.fresh("r", 10 + Deduplicator.WINDOW)
     assert e.fresh("r", 10) and e.unverifiable == 1
+
+
+def test_spool_files_from_0_5_0_still_read(tmp_path):
+    """0.5.0 spooled [key, value] lines, all for the event topic."""
+    d = tmp_path / 'spool'
+    d.mkdir()
+    lines = [json.dumps(['fw', json.dumps({'n': n})]) for n in (1, 2)]
+    (d / '000000000001.jsonl').write_bytes(''.join(line + chr(10) for line in lines).encode())
+    path, rows = Spool(d, 10**6).oldest('cerberus.events')
+    assert rows == [('cerberus.events', b'fw', json.dumps({'n': 1}).encode()),
+                    ('cerberus.events', b'fw', json.dumps({'n': 2}).encode())]

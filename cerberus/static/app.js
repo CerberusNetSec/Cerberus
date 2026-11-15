@@ -517,6 +517,7 @@ pages.attack = {
         <div class="chart-head" style="margin-bottom:10px"><h2 style="margin:0">Alerts by tactic and technique</h2>
           <div class="heat-legend" id="ak-legend" aria-label="Colour scale"></div></div>
         <div class="matrix-wrap"><div class="matrix" id="ak-matrix"></div></div>
+        <p class="muted small" id="ak-hidden" style="margin:6px 0 0"></p>
       </div>
       <div class="card" style="margin-top:16px" id="ak-other"></div>`;
     $('#ak-range').addEventListener('click', (e) => {
@@ -546,7 +547,11 @@ pages.attack = {
         heatRanges(d.max).map(([step, label]) => `<span class="heat-key"><i class="heat-${step}"></i>${label}</span>`).join('')
       : '<span class="muted">No alerts in this period</span>';
     const status = s.status === 'active' ? 'active' : 'all';
-    $('#ak-matrix').innerHTML = d.tactics.map((t) => `
+    const shown = d.hide_uncovered ? d.tactics.filter((t) => t.techniques.length) : d.tactics;
+    $('#ak-matrix').style.setProperty('--tactics', shown.length);
+    $('#ak-hidden').textContent = d.hide_uncovered && shown.length < d.tactics.length
+      ? `${d.tactics.length - shown.length} tactics with no Cerberus detector are hidden (Settings → General).` : '';
+    $('#ak-matrix').innerHTML = shown.map((t) => `
       <section class="tactic" aria-label="${esc(t.name)}">
         <header><a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">${esc(t.name)}</a>
           <span class="muted">${t.techniques.length ? `${num(t.alerts)} alert${t.alerts === 1 ? '' : 's'}` : ''}</span></header>
@@ -1719,6 +1724,30 @@ pages.detection = {
   },
 };
 
+/* --- Settings -> General: display options --- */
+pages.general = {
+  render() {
+    main.innerHTML = `
+      <div class="page-head"><div><h1>General</h1><p>Options for how Cerberus shows things, for everyone who uses it.</p></div></div>
+      <form class="card" id="gen-form">
+        <h2>MITRE ATT&amp;CK page</h2>
+        <label class="check"><input type="checkbox" id="gen-attack-hide"> Hide tactic columns Cerberus has no detector for</label>
+        <p class="muted small" style="margin:4px 0 0 24px">Reconnaissance, Execution, Collection and other tactics that cannot be seen
+          from network logs. Showing them makes the gaps in coverage visible; hiding them leaves more room for the rest.</p>
+        <div class="actions"><button class="primary" type="submit">Save changes</button></div>
+      </form>`;
+    $('#gen-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(async () => {
+        const d = await api('/display', 'PUT', { display: { attack_hide_uncovered: $('#gen-attack-hide').checked } });
+        this.show(d);
+      }, 'Saved');
+    });
+  },
+  async refresh() { this.show(await api('/display')); },
+  show(d) { $('#gen-attack-hide').checked = d.display.attack_hide_uncovered; },
+};
+
 /* --- syslog listeners (Settings → Syslog) --- */
 const LISTENERS = [['udp', 'UDP', 'Plain syslog (RFC 3164/5424). Most devices send this by default.'],
   ['tcp', 'TCP', 'Plain syslog over TCP: nothing is lost to a full network, and it gets through Docker Desktop.'],
@@ -1997,13 +2026,13 @@ function startPageTimer() {
 }
 /* Settings: Detection, Connectors and Notifications, as sections of one page.
    #/settings/<section>; the older #/detection and the like still work. */
-const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
+const SETTINGS_TABS = [['general', 'General'], ['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
   ['agents', 'API & agents']];
 function settingsSection(name) {
   if (name === 'settings') {
     let last = '';
     try { last = localStorage.getItem('cerberus.settingsTab') || ''; } catch { /* first one */ }
-    return SETTINGS_TABS.some(([id]) => id === last) ? last : 'detection';
+    return SETTINGS_TABS.some(([id]) => id === last) ? last : 'general';
   }
   const id = name.startsWith('settings/') ? name.slice(9) : name;
   return SETTINGS_TABS.some(([t]) => t === id) ? id : null;

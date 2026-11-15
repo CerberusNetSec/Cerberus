@@ -72,3 +72,20 @@ def test_matrix_counts_and_links(tmp_path):
     assert sorted(r["detector"] for r in rows) == ["port_scan", "port_scan", "risk_ports"]
     json.dumps(d)
     db.close()
+
+
+def test_hiding_tactics_with_no_detector_is_a_setting(tmp_path):
+    cfg = Config.from_env()
+    cfg.data_dir, cfg.auth_enabled = tmp_path, False
+    db = Database(tmp_path / "c.db")
+    notifier = Notifier(db)
+    engine = Engine(cfg, db, ConnectorRegistry(), notifier)
+    engine.load()
+    client = TestClient(web.create_app(cfg, db, engine, notifier, SnmpPoller(engine, db)))
+    assert client.get("/api/display").json() == {"display": {"attack_hide_uncovered": False}}
+    assert client.get("/api/attack").json()["hide_uncovered"] is False
+    assert client.put("/api/display", json={"display": {"attack_hide_uncovered": True, "unknown": 1}}).json() == {
+        "display": {"attack_hide_uncovered": True}}
+    d = client.get("/api/attack").json()
+    assert d["hide_uncovered"] is True and len(d["tactics"]) == 14  # the page hides them; the data stays whole
+    db.close()

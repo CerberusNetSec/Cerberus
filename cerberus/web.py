@@ -539,6 +539,26 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                 "directions": (await port_memory(now))["top"](port),
                 "alerts": (await _port_alerts(now)).get(port, [])[:20]}
 
+    # --- display options (Settings -> General) ---------------------------------
+    DISPLAY_DEFAULTS = {"attack_hide_uncovered": False}
+
+    async def display_options() -> dict:
+        saved = await db.aget_setting("display") or {}
+        return {k: bool(saved.get(k, v)) if isinstance(v, bool) else saved.get(k, v) for k, v in DISPLAY_DEFAULTS.items()}
+
+    @app.get("/api/display")
+    async def display_get():
+        return {"display": await display_options()}
+
+    @app.put("/api/display")
+    async def display_put(body: dict = Body(...)):
+        given = body.get("display", body)
+        if not isinstance(given, dict):
+            raise _bad("invalid display options")
+        options = {**await display_options(), **{k: bool(v) for k, v in given.items() if k in DISPLAY_DEFAULTS}}
+        await db.aset_setting("display", options)
+        return {"display": options}
+
     # --- MITRE ATT&CK --------------------------------------------------------
     ATTACK_RANGES = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400, "all": 0}
 
@@ -552,7 +572,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         for r in rows:
             r["alerts"], r["occurrences"] = int(r["alerts"] or 0), int(r["occurrences"] or 0)
         names = {d.id: d.name for d in engine.detectors}
-        return {"range": range if range in ATTACK_RANGES else "30d", "status": status, **matrix(rows, names)}
+        return {"range": range if range in ATTACK_RANGES else "30d", "status": status,
+                "hide_uncovered": (await display_options())["attack_hide_uncovered"], **matrix(rows, names)}
 
     @app.get("/api/alerts/counts")
     async def alert_counts():

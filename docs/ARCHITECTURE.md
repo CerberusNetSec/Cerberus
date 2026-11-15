@@ -122,7 +122,7 @@ same alerts as an uninterrupted one.
 ## Extending
 
 **A new log format** needs no code: write a connector YAML (schema in the
-README) and use the Connectors page to test a sample line.
+README) and use Settings → Connectors to test a sample line.
 
 **A new detector:**
 

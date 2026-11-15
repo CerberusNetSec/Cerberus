@@ -439,7 +439,7 @@ pages.alerts = {
     },
     async ignore(el) {
       const ip = el.dataset.ip;
-      if (!confirm(`Stop the source-based detectors alerting on ${ip}?\n\nUse this for scanners, management servers and other machines whose behaviour you have confirmed is expected. You can undo it under Detection → General.`)) return;
+      if (!confirm(`Stop the source-based detectors alerting on ${ip}?\n\nUse this for scanners, management servers and other machines whose behaviour you have confirmed is expected. You can undo it under Settings → Detection → General.`)) return;
       await api('/ignore', 'POST', { ip, kind: 'source' });
       toast(`${ip} added to ignored sources`);
     },
@@ -540,7 +540,7 @@ pages.riskports = {
     main.innerHTML = `
       <div class="page-head"><div><h1>High Risk Ports</h1>
         <p>Traffic on the services attackers go for first: remote access, file sharing, clear-text protocols and databases.
-          Ports with something to look at are listed first. <a href="#/detection?focus=risk_ports">Edit the list of ports and protocols</a>.</p></div>
+          Ports with something to look at are listed first. <a href="#/settings/detection?focus=risk_ports">Edit the list of ports and protocols</a>.</p></div>
         <div class="row"><label class="check" style="margin:0"><input id="rp-flagged" type="checkbox" ${s.flagged ? 'checked' : ''}> Only ports with findings</label>
           <div class="seg" id="rp-range">${['1h', '6h', '24h', '7d'].map((r) =>
             `<button type="button" data-range="${r}" class="${r === s.range ? 'on' : ''}">${r}</button>`).join('')}</div></div></div>
@@ -597,7 +597,7 @@ pages.riskports = {
         <td class="nowrap">${p.alerts ? `${sevBadge(p.alert_severity)} ${p.alerts}` : ''}</td>
       </tr>${s.open === p.port ? this.detailRow(p) : ''}`).join('')
       : `<tr><td colspan="8" class="empty">${d.ports.length ? 'No port has a finding in this range.'
-        : !d.enabled ? 'High-risk port tracking is switched off under Detection.'
+        : !d.enabled ? 'High-risk port tracking is switched off under Settings → Detection.'
         : 'No traffic on these ports has been logged in this range. Firewalls must log connections (allowed as well as blocked) for anything to appear here.'}</td></tr>`;
     $('#rp-quiet').textContent = d.quiet.length ? `No traffic seen on: ${d.quiet.map((q) => `${q.name} ${portText(q)}`).join(', ')}.` : '';
     const chart = $('#rp-chart');
@@ -619,7 +619,7 @@ pages.riskports = {
       : `<p class="muted">No ${role} recorded.</p>`;
     const ways = WAYS.filter(([way]) => p.totals[way][0] + p.totals[way][1]);
     return `<tr class="detail"><td colspan="8">
-      <div class="advice"><p><b>Why this port is watched.</b> ${esc(p.why || 'Added to the list under Detection.')}</p>
+      <div class="advice"><p><b>Why this port is watched.</b> ${esc(p.why || 'Added to the list under Settings → Detection.')}</p>
         ${p.flags.length ? `<p><b>Findings</b></p><ul>${p.flags.map((f) => `<li><span class="flag ${esc(f.severity)}">${esc(f.label)}</span> ${esc(f.text)}</li>`).join('')}</ul>` : ''}</div>
       <div class="chart" id="rp-chart"></div>
       ${t ? `<div class="grid rp-ways">${ways.map(([way, label]) => `<div>
@@ -1696,14 +1696,39 @@ function setNavCount(n) {
   el.hidden = !n;
   el.textContent = n > 99 ? '99+' : n;
 }
+/* Settings: Detection, Connectors and Notifications, as sections of one page.
+   #/settings/<section>; the older #/detection and the like still work. */
+const SETTINGS_TABS = [['detection', 'Detection'], ['connectors', 'Connectors'], ['notifications', 'Notifications']];
+function settingsSection(name) {
+  if (name === 'settings') {
+    let last = '';
+    try { last = localStorage.getItem('cerberus.settingsTab') || ''; } catch { /* first one */ }
+    return SETTINGS_TABS.some(([id]) => id === last) ? last : 'detection';
+  }
+  const id = name.startsWith('settings/') ? name.slice(9) : name;
+  return SETTINGS_TABS.some(([t]) => t === id) ? id : null;
+}
+function settingsChrome(tab) {
+  // The section's own heading becomes the tabs; its description stays.
+  const head = $('.page-head', main);
+  const title = head && $('h1', head);
+  if (title) title.remove();
+  main.insertAdjacentHTML('afterbegin', `<div class="page-head"><div><h1>Settings</h1></div></div>
+    <nav class="tabs" aria-label="Settings sections">${SETTINGS_TABS.map(([id, label]) =>
+      `<a href="#/settings/${id}" class="${id === tab ? 'on' : ''}" ${id === tab ? 'aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`);
+  try { localStorage.setItem('cerberus.settingsTab', tab); } catch { /* not kept */ }
+}
+
 function route() {
   const name = location.hash.replace(/^#\/?/, '').split('?')[0] || 'dashboard';
-  current = pages[name] ? name : 'dashboard';
+  const tab = settingsSection(name);
+  current = tab || (pages[name] ? name : 'dashboard');
   const page = pages[current];
-  $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === current));
+  $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === (tab ? 'settings' : current)));
   clearInterval(timer);
   page.loaded = false;
   page.render();
+  if (tab) settingsChrome(tab);
   const run = () => page.refresh().catch((err) => {
     if (err.message !== 'Not signed in') console.warn(err);
   });

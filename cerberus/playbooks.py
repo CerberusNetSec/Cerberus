@@ -28,7 +28,7 @@ PLAYBOOKS: dict[str, dict] = {
         "internal": [
             "Identify {src} and its owner. If it is not an authorised scanner, treat it as compromised.",
             _ISOLATE, _EVENTS,
-            "If it is an authorised scanner, add it to the ignored sources under Detection.",
+            "If it is an authorised scanner, add it to the ignored sources under Settings → Detection.",
         ],
         "external": [
             "No action is needed for a single scan that was blocked.",
@@ -219,7 +219,7 @@ PLAYBOOKS: dict[str, dict] = {
         "actions": [
             "Look up the destination address and port: who owns it, and is it something you use?",
             "Find out which process on {src} is making the connection.",
-            "If it is known software, add the destination to the ignore list under Detection.",
+            "If it is known software, add the destination to the ignore list under Settings → Detection.",
             "If it is not explained, block the destination and isolate {src} for examination.",
         ],
     },

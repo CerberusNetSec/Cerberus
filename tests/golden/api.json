@@ -227,7 +227,7 @@
       "actions": [
        "Look up the destination address and port: who owns it, and is it something you use?",
        "Find out which process on 192.168.3.61 is making the connection.",
-       "If it is known software, add the destination to the ignore list under Detection.",
+       "If it is known software, add the destination to the ignore list under Settings \u2192 Detection.",
        "If it is not explained, block the destination and isolate 192.168.3.61 for examination."
       ],
       "stage": "Command and Control",
@@ -509,7 +509,7 @@
        "Identify 192.168.1.77 and its owner. If it is not an authorised scanner, treat it as compromised.",
        "Isolate 192.168.1.77 from the network (quarantine VLAN, or shut its switch port) until it has been examined.",
        "Review every event for 192.168.1.77 on the Events page to see what else it has been doing.",
-       "If it is an authorised scanner, add it to the ignored sources under Detection."
+       "If it is an authorised scanner, add it to the ignored sources under Settings \u2192 Detection."
       ],
       "stage": "Discovery",
       "technique": {
@@ -1989,7 +1989,7 @@
       "actions": [
        "Look up the destination address and port: who owns it, and is it something you use?",
        "Find out which process on 192.168.3.61 is making the connection.",
-       "If it is known software, add the destination to the ignore list under Detection.",
+       "If it is known software, add the destination to the ignore list under Settings \u2192 Detection.",
        "If it is not explained, block the destination and isolate 192.168.3.61 for examination."
       ],
       "stage": "Command and Control",
@@ -2271,7 +2271,7 @@
        "Identify 192.168.1.77 and its owner. If it is not an authorised scanner, treat it as compromised.",
        "Isolate 192.168.1.77 from the network (quarantine VLAN, or shut its switch port) until it has been examined.",
        "Review every event for 192.168.1.77 on the Events page to see what else it has been doing.",
-       "If it is an authorised scanner, add it to the ignored sources under Detection."
+       "If it is an authorised scanner, add it to the ignored sources under Settings \u2192 Detection."
       ],
       "stage": "Discovery",
       "technique": {
@@ -3840,7 +3840,7 @@
        "Identify 192.168.1.77 and its owner. If it is not an authorised scanner, treat it as compromised.",
        "Isolate 192.168.1.77 from the network (quarantine VLAN, or shut its switch port) until it has been examined.",
        "Review every event for 192.168.1.77 on the Events page to see what else it has been doing.",
-       "If it is an authorised scanner, add it to the ignored sources under Detection."
+       "If it is an authorised scanner, add it to the ignored sources under Settings \u2192 Detection."
       ],
       "stage": "Discovery",
       "technique": {
@@ -4818,7 +4818,7 @@
       "actions": [
        "Look up the destination address and port: who owns it, and is it something you use?",
        "Find out which process on 192.168.3.61 is making the connection.",
-       "If it is known software, add the destination to the ignore list under Detection.",
+       "If it is known software, add the destination to the ignore list under Settings \u2192 Detection.",
        "If it is not explained, block the destination and isolate 192.168.3.61 for examination."
       ],
       "stage": "Command and Control",
@@ -5100,7 +5100,7 @@
        "Identify 192.168.1.77 and its owner. If it is not an authorised scanner, treat it as compromised.",
        "Isolate 192.168.1.77 from the network (quarantine VLAN, or shut its switch port) until it has been examined.",
        "Review every event for 192.168.1.77 on the Events page to see what else it has been doing.",
-       "If it is an authorised scanner, add it to the ignored sources under Detection."
+       "If it is an authorised scanner, add it to the ignored sources under Settings \u2192 Detection."
       ],
       "stage": "Discovery",
       "technique": {
@@ -6528,7 +6528,7 @@
        "Identify 192.168.1.77 and its owner. If it is not an authorised scanner, treat it as compromised.",
        "Isolate 192.168.1.77 from the network (quarantine VLAN, or shut its switch port) until it has been examined.",
        "Review every event for 192.168.1.77 on the Events page to see what else it has been doing.",
-       "If it is an authorised scanner, add it to the ignored sources under Detection."
+       "If it is an authorised scanner, add it to the ignored sources under Settings \u2192 Detection."
       ],
       "stage": "Discovery",
       "technique": {

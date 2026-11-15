@@ -43,7 +43,7 @@ docker compose up -d --build
   `docker logs cerberus`.
 
 Then point your devices at the host (below) and add a channel under
-**Notifications**. To see it working before you touch a real device:
+**Settings → Notifications**. To see it working before you touch a real device:
 
 ```sh
 python tools/simulate.py            # port scan, brute force, exposed RDP, lateral movement, C2, ...
@@ -79,7 +79,7 @@ works as normal.
 
 ## What it detects
 
-Every threshold is editable under **Detection**, and each detector can be
+Every threshold is editable under **Settings → Detection**, and each detector can be
 switched off.
 
 ### Security detections
@@ -126,7 +126,7 @@ destinations in each direction, and links to the matching events and alerts.
 Alerts that involve a port link back here.
 
 The list is yours to change: **Edit the list of ports and protocols** on the
-page (or **Detection → High-risk port activity**) has one row per port and
+page (or **Settings → Detection → High-risk port activity**) has one row per port and
 protocol. **Any** counts every protocol on that port; **TCP** or **UDP**
 counts only that one, plus traffic whose protocol the device did not log, so
 nothing slips through unlabelled. Give a port your own service name (an
@@ -179,7 +179,7 @@ same thing from the internet, where it is background noise. Repeats of one
 problem fold into a single alert with a count (30 minutes by default), and you
 are notified once per alert, again only if it escalates.
 
-**Ignored sources** (Detection → General) exempts addresses such as a
+**Ignored sources** (Settings → Detection → General) exempts addresses such as a
 vulnerability scanner from the source-based detectors.
 
 What the detectors have learned (rate baselines, sliding windows, admin
@@ -208,7 +208,7 @@ positive**. You give your name and a justification (at least 10 characters).
   name is what the analyst types.
 
 To silence everything from an address instead, use **Stop alerting on ... as
-a source** (Detection → General).
+a source** (Settings → Detection → General).
 
 ## Topology (SNMP)
 
@@ -482,7 +482,7 @@ one container, one data volume.
 
 ## Notifications
 
-Add channels in the UI; each has a minimum severity and a **Send test** button.
+Add channels under **Settings → Notifications**; each has a minimum severity and a **Send test** button.
 
 - **Email (SMTP)**: server, port, STARTTLS/SSL/none, optional login, any number of recipients.
 - **Telegram**: create a bot with @BotFather, send it a message, and use the bot token plus your chat ID (several IDs may be comma-separated; group IDs work too).
@@ -499,7 +499,7 @@ the data volume, or PostgreSQL) and are never returned by the API.
 A connector is a YAML file that turns one vendor's log text into normalised
 fields. Built-ins are in `cerberus/connectors_builtin/`. Put your own in the
 `connectors/` folder of the data volume (a file with the same `id` replaces a
-built-in), then press **Reload definitions** on the Connectors page. That page
+built-in), then press **Reload definitions** under Settings → Connectors. That page
 also has a box to paste a raw log line and see exactly how it parses.
 
 ```yaml

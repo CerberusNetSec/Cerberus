@@ -10,9 +10,11 @@ import secrets
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import quote
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -26,6 +28,8 @@ from .playbooks import STAGES, advice, detector_stage
 from .riskports import CATALOG, CLEARTEXT, DIRECTIONS, WEB, flags
 from .snmp_poller import MASK as SNMP_MASK
 from .snmp_poller import SnmpPoller, parse_target
+from .accounts import (PASSWORD_MIN, ROLES, USERNAME, Oidc, SsoError, allows, check_password, hash_password, mask,
+                       oidc_settings, password_problem, required_role)
 from .storage import NotFound, QueryTimeout, Store
 from .topology import build_topology
 
@@ -38,11 +42,14 @@ SESSION_CACHE_SECONDS = 30  # how long a replica trusts its memory of a session 
 RISK_WEIGHT = {"info": 0, "low": 1, "medium": 3, "high": 7, "critical": 15}
 RANGES = {"1h": (3600, 60), "6h": (6 * 3600, 300), "24h": (86400, 900), "7d": (7 * 86400, 3600)}
 SEARCH_SECONDS = 10  # an event search running longer than this is cancelled
-OPEN_PATHS = {"/api/login", "/api/logout", "/api/me", "/api/federation/report"}  # the last checks its own token
+OPEN_PATHS = {"/api/login", "/api/logout", "/api/me", "/api/federation/report",  # the last checks its own token
+              "/api/auth/oidc/login", "/api/auth/oidc/callback"}
+CHANGES = ("POST", "PUT", "PATCH", "DELETE")
+# Changes recorded in the audit log by the endpoint itself (with more detail), or not at all.
+AUDITED_ELSEWHERE = ("/api/login", "/api/logout", "/api/federation/report", "/api/alerts/false-positive",
+                     "/api/suppressions/remove", "/api/tokens", "/api/me/password")
 TOKEN_PREFIX = "cerb_"
-# What an API token may do beyond reading (GET): with write scope, triage alerts. Settings,
-# channels and tokens themselves always need the dashboard.
-TOKEN_WRITE_PATHS = {"/api/alerts/status", "/api/alerts/false-positive"}
+# API tokens act as a viewer (read) or an analyst (write) and never manage tokens.
 TOKEN_NEVER = ("/api/tokens",)
 
 
@@ -54,15 +61,41 @@ def _hash(password: str, salt: bytes) -> bytes:
     return hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
 
 
+# Who is asking (request.state.who): kind, role, name, and for accounts user_id and username.
+BUILTIN = {"kind": "session", "user_id": 0, "username": "admin", "name": "admin (built-in)", "role": "admin",
+           "local": False, "source": "builtin"}
+OPEN = {"kind": "open", "user_id": None, "username": "open", "name": "open (no sign-in)", "role": "admin",
+        "local": False, "source": "open"}
+
+
+def _who(row: dict) -> dict:
+    return {"kind": "session", "user_id": row["id"], "username": row["username"],
+            "name": row.get("display_name") or row["username"], "role": row["role"],
+            "local": row["source"] == "local", "source": row["source"]}
+
+
+def actor(who: dict | None) -> str:
+    """How someone is named in the audit log."""
+    if not who:
+        return "?"
+    if who["kind"] == "token":
+        return who["name"]
+    if who.get("user_id"):
+        return who["username"] if who["name"] == who["username"] else f"{who['name']} ({who['username']})"
+    return who["name"]
+
+
 class Auth:
     def __init__(self, cfg: Config, db: Store):
         self.enabled = cfg.auth_enabled
         self.db = db
-        # Sessions live in storage, so they survive restarts and any web replica
-        # accepts them; this caches recent answers (token hash -> (expires, checked)).
-        self._seen: dict[str, tuple[float, float]] = {}
+        # Sessions and users live in storage, so they survive restarts and any web replica
+        # accepts them; these remember recent answers for SESSION_CACHE_SECONDS.
+        self._seen: dict[str, tuple[dict | None, float]] = {}
+        self._users: dict[int, tuple[dict | None, float]] = {}
         self._tokens: dict = {}  # token hash -> (row or None, checked)
         self._used: dict = {}  # token id -> when last_used was last written
+        self._builtin = (True, 0.0)
         self.failures: dict[str, deque] = {}
         self.salt = b""
         self.digest = b""
@@ -85,39 +118,101 @@ class Auth:
         print(f"\n{banner}\n  Cerberus generated a dashboard password: {password}\n"
               f"  It is shown only once. Set CERBERUS_PASSWORD to choose your own.\n{banner}\n", flush=True)
 
-    def throttled(self, ip: str, now: float) -> bool:
-        attempts = self.failures.get(ip)
+    # The built-in admin: the shared password of earlier versions. It can be switched off.
+    def builtin_allowed(self) -> bool:
+        allowed, checked = self._builtin
+        now = time.time()
+        if now - checked > SESSION_CACHE_SECONDS:
+            allowed = bool((self.db.get_setting("builtin_admin") or {}).get("allowed", True))
+            self._builtin = (allowed, now)
+        return allowed
+
+    def set_builtin(self, allowed: bool) -> None:
+        self.db.set_setting("builtin_admin", {"allowed": bool(allowed)})
+        self._builtin = (bool(allowed), time.time())
+        self._seen.clear()
+
+    def throttled(self, key: str, now: float) -> bool:
+        attempts = self.failures.get(key)
         if not attempts:
             return False
         while attempts and attempts[0] < now - 300:
             attempts.popleft()
         return len(attempts) >= 5
 
-    def login(self, password: str, ip: str) -> str | None:
-        now = time.time()
-        if hmac.compare_digest(_hash(password, self.salt), self.digest):
-            self.failures.pop(ip, None)
-            token = secrets.token_urlsafe(32)
-            self.db.session_add(_token_hash(token), now + SESSION_TTL)
-            return token
+    def _failed(self, key: str, now: float) -> None:
         if len(self.failures) > 10_000:
             self.failures.clear()
-        self.failures.setdefault(ip, deque(maxlen=10)).append(now)
-        return None
+        self.failures.setdefault(key, deque(maxlen=10)).append(now)
 
-    def valid(self, request: Request) -> bool:
-        if not self.enabled:
-            return True
+    def login(self, username: str, password: str, ip: str) -> tuple[str | None, dict | None]:
+        """(session token, who), or (None, None). An empty username (or "admin" when there is
+        no account of that name) means the built-in admin's shared password."""
+        now = time.time()
+        username = username.strip().lower()
+        who = None
+        if not username or (username == "admin" and not self.db.user_by_name("admin")):
+            if self.builtin_allowed() and hmac.compare_digest(_hash(password, self.salt), self.digest):
+                who = dict(BUILTIN)
+        else:
+            row = self.db.user_by_name(username)
+            if row and row["source"] == "local" and not row["disabled"] and \
+                    check_password(password, row["password_hash"], row["salt"]):
+                who = _who(row)
+        if who is None:
+            self._failed(ip, now)
+            return None, None
+        self.failures.pop(ip, None)
+        return self.start_session(who["user_id"]), who
+
+    def start_session(self, user_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        self.db.session_add(_token_hash(token), now + SESSION_TTL, user_id)
+        if user_id:
+            self.db.user_update(user_id, {"last_login": now})
+            self._users.pop(user_id, None)
+        return token
+
+    def user(self, user_id: int) -> dict | None:
+        now = time.time()
+        cached = self._users.get(user_id)
+        if cached is None or now - cached[1] > SESSION_CACHE_SECONDS:
+            if len(self._users) > 10_000:
+                self._users.clear()
+            cached = self._users[user_id] = (self.db.user_get(user_id), now)
+        return cached[0]
+
+    def forget_user(self, user_id: int | None = None) -> None:
+        """After a user changes (role, disabled, deleted): ask storage again."""
+        if user_id is None:
+            self._users.clear()
+        else:
+            self._users.pop(user_id, None)
+        self._seen.clear()
+
+    def session(self, request: Request) -> dict | None:
         token = request.cookies.get(COOKIE, "")
         if not token:
-            return False
+            return None
         key, now = _token_hash(token), time.time()
         cached = self._seen.get(key)
         if cached is None or now - cached[1] > SESSION_CACHE_SECONDS:
             if len(self._seen) > 10_000:
                 self._seen.clear()
-            cached = self._seen[key] = (self.db.session_expires(key) or 0.0, now)
-        return cached[0] > now
+            cached = self._seen[key] = (self.db.session_user(key), now)
+        row = cached[0]
+        if not row or row["expires"] <= now:
+            return None
+        if not row["user_id"]:
+            return dict(BUILTIN) if self.builtin_allowed() else None
+        user = self.user(row["user_id"])
+        if not user or user["disabled"]:
+            return None
+        return _who(user)
+
+    def valid(self, request: Request) -> bool:
+        return not self.enabled or self.session(request) is not None
 
     def logout(self, token: str) -> None:
         if token:
@@ -126,7 +221,6 @@ class Auth:
             self.db.session_delete(key)
 
     # API tokens: "Authorization: Bearer cerb_..." for agents and scripts.
-
     def api_token(self, token: str) -> dict | None:
         if not token.startswith(TOKEN_PREFIX):
             return None
@@ -146,16 +240,18 @@ class Auth:
         self._tokens.clear()
 
     def identify(self, request: Request) -> dict | None:
-        """Who is asking: a dashboard session, an API token (with its scope), or nobody."""
+        """Who is asking: a signed-in user, an API token, or nobody (None)."""
         header = request.headers.get("authorization", "")
         if header[:7].lower() == "bearer ":
             row = self.api_token(header[7:].strip())
             if row:
-                return {"kind": "token", "scope": row["scope"], "name": row["name"], "id": row["id"]}
-            return None if self.enabled else {"kind": "open", "scope": "admin", "name": "open"}
+                return {"kind": "token", "user_id": None, "username": row["name"], "token": row["name"],
+                        "name": f"API token '{row['name']}'", "id": row["id"],
+                        "role": "analyst" if row["scope"] == "write" else "viewer", "local": False, "source": "token"}
+            return None if self.enabled else dict(OPEN)
         if not self.enabled:
-            return {"kind": "open", "scope": "admin", "name": "open"}
-        return {"kind": "session", "scope": "admin", "name": "dashboard"} if self.valid(request) else None
+            return dict(OPEN)
+        return self.session(request)
 
 
 JUSTIFICATION_MIN, JUSTIFICATION_MAX, ANALYST_MAX = 10, 2000, 100
@@ -164,13 +260,19 @@ JUSTIFICATION_MIN, JUSTIFICATION_MAX, ANALYST_MAX = 10, 2000, 100
 def _by(request: Request, analyst: str) -> str:
     """The name kept in the audit log: through an API token, the token says who it was."""
     who = getattr(request.state, "who", None)
-    return f"{analyst} (API token '{who['name']}')" if who and who["kind"] == "token" else analyst
+    if who and who["kind"] == "token":
+        return f"{analyst} (API token '{who['token']}')"
+    if who and who.get("user_id") == 0:
+        return f"{analyst} (built-in admin)"
+    return analyst
 
 
 def _attribution(body: dict, request: Request) -> tuple[str, str, str]:
-    """(justification, analyst, source address) for an audited change; raises if incomplete."""
+    """(justification, analyst, source address) for an audited change; raises if incomplete.
+    A signed-in user is named by their account; otherwise the request names the analyst."""
     justification = " ".join(str(body.get("justification", "")).split())
-    analyst = " ".join(str(body.get("analyst", "")).split())
+    who = getattr(request.state, "who", None)
+    analyst = actor(who) if who and who.get("user_id") else " ".join(str(body.get("analyst", "")).split())
     if len(justification) < JUSTIFICATION_MIN:
         raise _bad(f"a justification of at least {JUSTIFICATION_MIN} characters is required")
     if not analyst:
@@ -205,20 +307,34 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     async def guard(request: Request, call_next):
         path = request.url.path
         request.state.who = None
+        body = None
         if (path.startswith("/api/") and path not in OPEN_PATHS) or path == "/mcp":
             who = await _run(auth.identify, request)
             if who is None:
                 return JSONResponse({"detail": "not signed in"}, status_code=401,
                                     headers={"WWW-Authenticate": 'Bearer realm="cerberus"'})
-            if who["kind"] == "token" and path != "/mcp":
-                reading = request.method in ("GET", "HEAD") and not path.startswith(TOKEN_NEVER)
-                triage = who["scope"] == "write" and request.method == "POST" and path in TOKEN_WRITE_PATHS
-                if not (reading or triage):
-                    return JSONResponse({"detail": "API tokens can read; with write scope they can also acknowledge, "
-                                                   "resolve and mark false positives. Other changes need the dashboard."},
-                                        status_code=403)
+            if who["kind"] == "token" and path.startswith(TOKEN_NEVER):
+                return JSONResponse({"detail": "API tokens cannot manage tokens; use the dashboard."}, status_code=403)
+            needed = "viewer" if path == "/mcp" else required_role(request.method, path)
+            if not allows(who["role"], needed):
+                what = "an API token with write scope" if who["kind"] == "token" and needed == "analyst" else f"the {needed} role"
+                return JSONResponse({"detail": f"This needs {what}; you are signed in as {who['role']}."}, status_code=403)
             request.state.who = who
+            if request.method in CHANGES and path.startswith("/api/") and not path.startswith(AUDITED_ELSEWHERE):
+                body = await request.body()  # for the audit log; the endpoint still reads it
         response = await call_next(request)
+        if body is not None and response.status_code < 400:
+            try:
+                parsed = json.loads(body) if body else None
+            except ValueError:
+                parsed = "(not JSON)"
+            try:
+                await _run(db.audit_add, {"ts": time.time(), "action": f"{request.method} {path}",
+                                          "analyst": actor(request.state.who),
+                                          "source": request.client.host if request.client else "",
+                                          "detail": json.dumps({"request": mask(parsed)}, default=str)[:4000]})
+            except Exception:
+                log.exception("could not write to the audit log")
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
@@ -255,9 +371,36 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         return FileResponse(STATIC / "index.html")
 
     # --- auth ------------------------------------------------------------
+    sso = oidc_settings(cfg)
+    oidc_state: dict = {}
+
+    def _oidc() -> Oidc:
+        if "client" not in oidc_state:
+            key = db.get_setting("oidc_state_key")
+            if not key:
+                key = secrets.token_hex(32)
+                db.set_setting("oidc_state_key", key)
+            oidc_state["client"] = Oidc(sso, bytes.fromhex(key))
+        return oidc_state["client"]
+    app.state.oidc = _oidc  # tests replace the identity provider's HTTP client through this
+
+    async def record(request: Request, action: str, who_name: str, detail: dict | None = None) -> None:
+        await _run(db.audit_add, {"ts": time.time(), "action": action, "analyst": who_name,
+                                  "source": request.client.host if request.client else "",
+                                  "detail": json.dumps(detail or {}, default=str)})
+
+    def _session_cookie(response, request: Request, token: str) -> None:
+        response.set_cookie(COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax",
+                            secure=request.url.scheme == "https")
+
     @app.get("/api/me")
     async def me(request: Request):
-        return {"signed_in": await _run(auth.valid, request), "auth": auth.enabled, "version": __version__,
+        who = await _run(auth.identify, request)
+        user = None
+        if who:
+            user = {k: who.get(k) for k in ("username", "name", "role", "kind", "local", "source")}
+        return {"signed_in": who is not None, "auth": auth.enabled, "version": __version__, "user": user,
+                "sso": {"enabled": sso.enabled, "label": sso.label}, "builtin_admin": auth.builtin_allowed(),
                 "central": central is not None, "site": cfg.site_name if forwarder else None}
 
     @app.post("/api/login")
@@ -265,21 +408,199 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         ip = request.client.host if request.client else "?"
         if auth.throttled(ip, time.time()):
             raise _bad("Too many attempts. Wait a few minutes and try again.", 429)
-        token = await _run(auth.login, str(body.get("password", ""))[:256], ip)
+        username = str(body.get("username", "") or "")[:64]
+        token, who = await _run(auth.login, username, str(body.get("password", ""))[:256], ip)
         if not token:
-            log.warning("failed dashboard login from %s", ip)
-            raise _bad("Wrong password.", 401)
-        response = JSONResponse({"ok": True})
-        response.set_cookie(COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="strict",
-                            secure=request.url.scheme == "https")
+            log.warning("failed dashboard login from %s%s", ip, f" as {username}" if username else "")
+            await record(request, "login_failed", username or "admin (built-in)")
+            raise _bad("Wrong username or password." if username else "Wrong password.", 401)
+        await record(request, "login", actor(who), {"method": "password"})
+        response = JSONResponse({"ok": True, "user": {k: who.get(k) for k in ("username", "name", "role")}})
+        _session_cookie(response, request, token)
         return response
 
     @app.post("/api/logout")
     async def logout(request: Request):
+        who = await _run(auth.session, request)
         await _run(auth.logout, request.cookies.get(COOKIE, ""))
+        if who:
+            await record(request, "logout", actor(who))
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE)
         return response
+
+    @app.post("/api/me/password")
+    async def my_password(request: Request, body: dict = Body(...)):
+        who = request.state.who
+        if not who or not who.get("local"):
+            raise _bad("only local accounts have a password here", 400)
+        row = await _run(db.user_get, who["user_id"])
+        if not check_password(str(body.get("current", "")), row["password_hash"], row["salt"]):
+            raise _bad("the current password is wrong", 403)
+        new = str(body.get("new", ""))
+        problem = password_problem(new)
+        if problem:
+            raise _bad(f"choose a stronger password: {problem}")
+        password_hash, salt = hash_password(new)
+        await _run(db.user_update, who["user_id"], {"password_hash": password_hash, "salt": salt})
+        await record(request, "password_changed", actor(who))
+        return {"ok": True}
+
+    # --- single sign-on ------------------------------------------------------
+    @app.get("/api/auth/oidc/login")
+    async def oidc_login():
+        if not sso.enabled:
+            raise _bad("single sign-on is not configured", 404)
+        try:
+            url, cookie = await _oidc().start()
+        except (SsoError, httpx.HTTPError) as exc:
+            return RedirectResponse("/?sso_error=" + quote(str(exc)), status_code=303)
+        response = RedirectResponse(url, status_code=303)
+        response.set_cookie("cerberus_oidc", cookie, max_age=Oidc.STATE_SECONDS, httponly=True, samesite="lax",
+                            secure=sso.redirect_url.startswith("https"), path="/api/auth/oidc")
+        return response
+
+    @app.get("/api/auth/oidc/callback")
+    async def oidc_callback(request: Request, code: str = "", state: str = "", error: str = "",
+                            error_description: str = ""):
+        def fail(message: str):
+            response = RedirectResponse("/?sso_error=" + quote(message), status_code=303)
+            response.delete_cookie("cerberus_oidc", path="/api/auth/oidc")
+            return response
+        if not sso.enabled:
+            return fail("single sign-on is not configured")
+        if error:
+            return fail(f"the identity provider said: {error_description or error}")
+        try:
+            claims = await _oidc().finish(code, state, request.cookies.get("cerberus_oidc", ""))
+        except (SsoError, httpx.HTTPError, ValueError) as exc:
+            await record(request, "login_failed", "single sign-on", {"reason": str(exc)})
+            return fail(str(exc))
+        ident = _oidc().identity(claims)
+        if not ident["role"]:
+            await record(request, "login_refused", ident["username"], {"reason": "in none of the mapped groups",
+                                                                      "groups": ident["groups"]})
+            return fail("your account is not in a group that may use Cerberus; ask an administrator")
+        row = await _run(db.user_by_subject, ident["subject"])
+        if row is None:
+            taken = await _run(db.user_by_name, ident["username"])
+            if taken:  # a local account already has that name: keep them apart
+                ident["username"] = f"{ident['username']}@sso"[:64]
+            user_id = await _run(db.user_add, {**ident, "source": "sso", "created": time.time()})
+        else:
+            if row["disabled"]:
+                await record(request, "login_refused", row["username"], {"reason": "account disabled"})
+                return fail("your account is disabled; ask an administrator")
+            user_id = row["id"]
+            await _run(db.user_update, user_id, {"display_name": ident["display_name"], "email": ident["email"],
+                                                 "role": ident["role"]})
+            auth.forget_user(user_id)
+        token = await _run(auth.start_session, user_id)
+        who = _who(await _run(db.user_get, user_id))
+        await record(request, "login", actor(who), {"method": "single sign-on", "role": who["role"],
+                                                    "groups": ident["groups"]})
+        response = RedirectResponse("/", status_code=303)
+        _session_cookie(response, request, token)
+        response.delete_cookie("cerberus_oidc", path="/api/auth/oidc")
+        return response
+
+    # --- users (Settings -> Users) ---------------------------------------------
+    def _other_admins(users: list[dict], excluding: int | None) -> int:
+        return sum(1 for u in users if u["role"] == "admin" and not u["disabled"] and u["id"] != excluding)
+
+    async def _keep_a_way_in(excluding: int | None) -> None:
+        """Refuse a change that would leave nobody able to administer Cerberus."""
+        if auth.builtin_allowed() or (sso.enabled and sso.admin_groups):
+            return
+        if not _other_admins(await _run(db.users), excluding):
+            raise _bad("that would leave no administrator: keep another admin account, or allow the built-in admin", 409)
+
+    @app.get("/api/users")
+    async def users_list():
+        return {"users": await _run(db.users), "roles": list(ROLES), "builtin_admin": auth.builtin_allowed(),
+                "sso": sso.public(), "password_min": PASSWORD_MIN}
+
+    @app.post("/api/users")
+    async def user_create(body: dict = Body(...)):
+        username = str(body.get("username", "")).strip().lower()
+        role = body.get("role", "viewer")
+        password = str(body.get("password", ""))
+        if not USERNAME.match(username):
+            raise _bad("usernames are 2-64 characters: letters, digits, dot, dash, underscore and @")
+        if username == "admin" and auth.builtin_allowed():
+            raise _bad('"admin" is the built-in admin while it is allowed; choose another name')
+        if role not in ROLES:
+            raise _bad("role must be viewer, analyst or admin")
+        problem = password_problem(password)
+        if problem:
+            raise _bad(f"choose a stronger password: {problem}")
+        if await _run(db.user_by_name, username):
+            raise _bad("that username is taken", 409)
+        password_hash, salt = hash_password(password)
+        user_id = await _run(db.user_add, {"username": username, "display_name": str(body.get("display_name") or username)[:100],
+                                           "role": role, "source": "local", "email": str(body.get("email") or "")[:200],
+                                           "password_hash": password_hash, "salt": salt, "created": time.time()})
+        return {"user": await _run(db.user_update, user_id, {})}
+
+    @app.put("/api/users/{user_id}")
+    async def user_change(user_id: int, request: Request, body: dict = Body(...)):
+        row = await _run(db.user_get, user_id)
+        if not row:
+            raise _bad("no such user", 404)
+        who = request.state.who
+        changes = {}
+        if "display_name" in body:
+            changes["display_name"] = str(body["display_name"] or row["username"])[:100]
+        if "role" in body:
+            if body["role"] not in ROLES:
+                raise _bad("role must be viewer, analyst or admin")
+            if row["source"] == "sso":
+                raise _bad("this user's role comes from single sign-on groups (CERBERUS_OIDC_*_GROUPS)")
+            changes["role"] = body["role"]
+        if "disabled" in body:
+            changes["disabled"] = 1 if body["disabled"] else 0
+        if "password" in body:
+            if row["source"] != "local":
+                raise _bad("single sign-on users have no password here")
+            problem = password_problem(str(body["password"]))
+            if problem:
+                raise _bad(f"choose a stronger password: {problem}")
+            changes["password_hash"], changes["salt"] = hash_password(str(body["password"]))
+        if who and who.get("user_id") == user_id and (changes.get("disabled") or changes.get("role", "admin") != "admin"):
+            raise _bad("you cannot remove your own admin access; ask another admin")
+        if row["role"] == "admin" and (changes.get("disabled") or changes.get("role", "admin") != "admin"):
+            await _keep_a_way_in(user_id)
+        updated = await _run(db.user_update, user_id, changes)
+        if changes.get("disabled") or "role" in changes or "password_hash" in changes:
+            await _run(db.session_delete_user, user_id)  # signed out, to sign in again as they now are
+        auth.forget_user(user_id)
+        return {"user": updated}
+
+    @app.delete("/api/users/{user_id}")
+    async def user_remove(user_id: int, request: Request):
+        row = await _run(db.user_get, user_id)
+        if not row:
+            raise _bad("no such user", 404)
+        who = request.state.who
+        if who and who.get("user_id") == user_id:
+            raise _bad("you cannot delete your own account")
+        if row["role"] == "admin" and not row["disabled"]:
+            await _keep_a_way_in(user_id)
+        await _run(db.session_delete_user, user_id)
+        await _run(db.user_delete, user_id)
+        auth.forget_user(user_id)
+        return {"ok": True}
+
+    @app.put("/api/auth/builtin")
+    async def builtin_set(body: dict = Body(...)):
+        allowed = bool(body.get("allowed"))
+        if not allowed and not (sso.enabled and sso.admin_groups):
+            users = await _run(db.users)
+            if not _other_admins(users, None):
+                raise _bad("create an admin account first (or configure single sign-on admin groups): otherwise "
+                           "nobody could administer Cerberus", 409)
+        await _run(auth.set_builtin, allowed)
+        return {"builtin_admin": allowed}
 
     # --- dashboard -------------------------------------------------------
     @app.get("/api/summary")
@@ -621,8 +942,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         return {"suppression": row}
 
     @app.get("/api/audit")
-    async def audit(limit: int = 200, alert_id: int = 0):
-        rows = await _run(db.audit_log, max(1, min(limit, 5000)), alert_id)
+    async def audit(limit: int = 200, alert_id: int = 0, before: int = 0):
+        rows = await _run(db.audit_log, max(1, min(limit, 5000)), alert_id, max(0, before))
         for row in rows:
             row["detail"] = _loads(row["detail"])
         return {"audit": rows}
@@ -680,10 +1001,6 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     async def set_status(ids: list[int], status: str, who: dict | None, source: str) -> int:
         await _run(db.set_alert_status, ids, status, time.time())
         engine.alerts.set_status(ids, status)
-        if who and who["kind"] == "token" and ids:  # what agents and scripts change is on the record
-            await _run(db.audit_add, {"ts": time.time(), "action": "alert_status", "analyst": f"API token '{who['name']}'",
-                                      "source": source, "alert_id": ids[0] if len(ids) == 1 else None,
-                                      "detail": json.dumps({"ids": ids[:200], "status": status})})
         return len(ids)
 
     # --- events ----------------------------------------------------------
@@ -956,7 +1273,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         token = TOKEN_PREFIX + secrets.token_urlsafe(32)
         now = time.time()
         token_id = await _run(db.token_add, {"created": now, "name": name, "token_hash": _token_hash(token), "scope": scope})
-        await _run(db.audit_add, {"ts": now, "action": "token_created", "analyst": "dashboard",
+        await _run(db.audit_add, {"ts": now, "action": "token_created", "analyst": actor(request.state.who),
                                   "source": request.client.host if request.client else "",
                                   "detail": json.dumps({"token_id": token_id, "name": name, "scope": scope})})
         return {"id": token_id, "name": name, "scope": scope, "token": token}  # shown once, never again
@@ -967,7 +1284,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         if row is None:
             raise _bad("no such active token", 404)
         auth.forget_tokens()
-        await _run(db.audit_add, {"ts": time.time(), "action": "token_revoked", "analyst": "dashboard",
+        await _run(db.audit_add, {"ts": time.time(), "action": "token_revoked", "analyst": actor(request.state.who),
                                   "source": request.client.host if request.client else "",
                                   "detail": json.dumps({"token_id": token_id, "name": row["name"], "scope": row["scope"]})})
         return {"token": row}
@@ -1050,14 +1367,18 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         ids = [i for i in args["ids"] if isinstance(i, int)][:500]
         if not ids:
             raise ToolError("ids must be alert ids (integers)")
-        return {"updated": await set_status(ids, args["status"], {"kind": "token", "name": ctx["name"]}, ctx["source"])}
+        updated = await set_status(ids, args["status"], None, ctx["source"])
+        await _run(db.audit_add, {"ts": time.time(), "action": "alert_status", "analyst": ctx["actor"],
+                                  "source": ctx["source"], "alert_id": ids[0] if len(ids) == 1 else None,
+                                  "detail": json.dumps({"ids": ids[:200], "status": args["status"], "via": "MCP"})})
+        return {"updated": updated}
 
     async def tool_false_positive(args, ctx):
         why = " ".join(args["justification"].split())
         if len(why) < JUSTIFICATION_MIN:
             raise ToolError(f"a justification of at least {JUSTIFICATION_MIN} characters is required")
         try:
-            row = await mark_false_positive(args["id"], why[:JUSTIFICATION_MAX], f"agent (API token '{ctx['name']}')",
+            row = await mark_false_positive(args["id"], why[:JUSTIFICATION_MAX], f"agent ({ctx['actor']})",
                                             ctx["source"])
         except HTTPException as exc:
             raise ToolError(str(exc.detail))
@@ -1124,7 +1445,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
             return JSONResponse({"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32600, "message": "batches are not supported"}}, status_code=400)
         who = request.state.who
-        reply = await mcp.handle(message, {"scope": who["scope"], "name": who["name"],
+        reply = await mcp.handle(message, {"scope": "write" if allows(who["role"], "analyst") else "read",
+                                           "name": who["name"], "actor": actor(who),
                                            "source": request.client.host if request.client else ""})
         if reply is None:
             return Response(status_code=202)

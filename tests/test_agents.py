@@ -73,15 +73,15 @@ def test_tokens_read_triage_and_never_administer(rig):
     assert r.status_code == 200
     audit = session.get("/api/audit").json()["audit"]
     actions = {(e["action"], e["analyst"]) for e in audit}
-    assert ("alert_status", "API token 'write agent'") in actions
+    assert ("POST /api/alerts/status", "API token 'write agent'") in actions  # every change is recorded
     assert ("false_positive", "Sam (API token 'write agent')") in actions
-    assert ("token_created", "dashboard") in actions
+    assert ("token_created", "admin (built-in)") in actions
     assert db.tokens()[0]["last_used"]
 
     assert session.post(f"/api/tokens/{read['id']}/revoke").status_code == 200
     assert client.get("/api/alerts", headers=bearer(read)).status_code == 401
     assert session.post(f"/api/tokens/{read['id']}/revoke").status_code == 404
-    assert ("token_revoked", "dashboard") in {(e["action"], e["analyst"]) for e in session.get("/api/audit").json()["audit"]}
+    assert ("token_revoked", "admin (built-in)") in {(e["action"], e["analyst"]) for e in session.get("/api/audit").json()["audit"]}
 
 
 def rpc(client, t, method, params=None, mid=1, **headers):

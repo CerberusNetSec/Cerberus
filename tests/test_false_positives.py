@@ -156,8 +156,8 @@ def test_marking_a_second_alert_for_the_same_finding_reuses_the_suppression(rig)
     rig.mark(second)
     rig.mark(first)
     assert len(rig.db.suppressions()) == 1
-    assert [e["action"] for e in rig.client.get("/api/audit").json()["audit"]] == ["false_positive_again",
-                                                                                  "false_positive"]
+    assert [e["action"] for e in rig.client.get("/api/audit").json()["audit"] if e["action"].startswith("false")] == [
+        "false_positive_again", "false_positive"]
 
 
 def test_suppressions_survive_a_restart(rig, tmp_path):

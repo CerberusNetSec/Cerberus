@@ -12,6 +12,11 @@
   <form id="login-form" class="card login-card">
     <h1>Cerberus</h1>
     <p class="muted">Sign in to the dashboard.</p>
+    <a id="login-sso" class="button primary sso" href="/api/auth/oidc/login" hidden>Sign in with single sign-on</a>
+    <p id="login-or" class="muted or" hidden>or with a password</p>
+    <label for="login-username">Username</label>
+    <input id="login-username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off">
+    <p class="muted hint" id="login-username-hint">Leave empty to use the shared admin password.</p>
     <label for="login-password">Password</label>
     <input id="login-password" type="password" autocomplete="current-password" required>
     <p id="login-error" class="error" role="alert"></p>
@@ -35,8 +40,9 @@
       <a href="#/events" data-page="events">Events</a>
       <a href="#/devices" data-page="devices">Devices</a>
       <a href="#/topology" data-page="topology">Topology</a>
-      <a href="#/settings" data-page="settings">Settings</a>
+      <a href="#/settings" data-page="settings" class="needs-admin">Settings</a>
     </nav>
+    <button id="whoami" class="ghost" type="button" hidden title="Your account"></button>
     <button id="logout" class="ghost" type="button" hidden>Sign out</button>
   </header>
   <main id="main"></main>
@@ -56,6 +62,18 @@
       <button type="button" id="justify-cancel">Cancel</button>
       <button type="submit" class="primary" id="justify-ok"></button>
     </div>
+  </form>
+</dialog>
+<dialog id="pw-dialog" class="card dialog" aria-labelledby="pw-title">
+  <form id="pw-form" novalidate>
+    <h2 id="pw-title">Change your password</h2>
+    <label for="pw-current">Current password</label>
+    <input id="pw-current" type="password" autocomplete="current-password">
+    <label for="pw-new">New password (at least 12 characters)</label>
+    <input id="pw-new" type="password" autocomplete="new-password">
+    <p id="pw-error" class="error" role="alert"></p>
+    <div class="row end"><button type="button" id="pw-cancel">Cancel</button>
+      <button type="submit" class="primary">Change password</button></div>
   </form>
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>

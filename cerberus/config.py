@@ -129,6 +129,18 @@ class Config:
     detection_family: str = ""  # in CERBERUS_MODE=detector: which family this worker runs
     worker_replay_minutes: int = 60  # how far back a worker rebuilds its windows from the bus
     metrics_token: str = ""  # if set, /metrics requires "Authorization: Bearer <token>"
+    # Single sign-on (OpenID Connect); see accounts.py
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = ""
+    oidc_scopes: str = "openid email profile"
+    oidc_label: str = ""
+    oidc_role_claim: str = "groups"
+    oidc_admin_groups: str = ""
+    oidc_analyst_groups: str = ""
+    oidc_viewer_groups: str = ""
+    oidc_default_role: str = ""
     # Ingest options for any mode that receives syslog.
     syslog_tls_port: int = 0
     syslog_tls_cert: str = ""
@@ -182,6 +194,17 @@ class Config:
             detection_family=env("CERBERUS_DETECTION_FAMILY", "").strip().lower(),
             worker_replay_minutes=max(0, _int("CERBERUS_WORKER_REPLAY_MINUTES", 60)),
             metrics_token=_secret("CERBERUS_METRICS_TOKEN"),
+            oidc_issuer=env("CERBERUS_OIDC_ISSUER", "").strip(),
+            oidc_client_id=env("CERBERUS_OIDC_CLIENT_ID", "").strip(),
+            oidc_client_secret=_secret("CERBERUS_OIDC_CLIENT_SECRET"),
+            oidc_redirect_url=env("CERBERUS_OIDC_REDIRECT_URL", "").strip(),
+            oidc_scopes=env("CERBERUS_OIDC_SCOPES", "openid email profile groups").strip(),
+            oidc_label=env("CERBERUS_OIDC_LABEL", "").strip(),
+            oidc_role_claim=env("CERBERUS_OIDC_ROLE_CLAIM", "groups").strip(),
+            oidc_admin_groups=env("CERBERUS_OIDC_ADMIN_GROUPS", ""),
+            oidc_analyst_groups=env("CERBERUS_OIDC_ANALYST_GROUPS", ""),
+            oidc_viewer_groups=env("CERBERUS_OIDC_VIEWER_GROUPS", ""),
+            oidc_default_role=env("CERBERUS_OIDC_DEFAULT_ROLE", "").strip().lower(),
             syslog_tls_port=_int("CERBERUS_SYSLOG_TLS_PORT", 0),
             syslog_tls_cert=env("CERBERUS_SYSLOG_TLS_CERT", ""),
             syslog_tls_key=env("CERBERUS_SYSLOG_TLS_KEY", ""),

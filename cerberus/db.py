@@ -142,6 +142,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     alert_id INTEGER, suppression_id INTEGER, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS audit_log_alert ON audit_log(alert_id);
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE, display_name TEXT, role TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'local',
+    subject TEXT UNIQUE, email TEXT, password_hash TEXT, salt TEXT,
+    created REAL NOT NULL, last_login REAL, disabled INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS api_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created REAL NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, scope TEXT NOT NULL,
@@ -156,6 +162,7 @@ MIGRATIONS = [
     ("devices", "snmp_host", "TEXT DEFAULT ''"),
     ("alerts", "updated", "REAL DEFAULT 0"),  # when the row last changed; what a site reports from
     ("outbox", "payload", "TEXT"),  # the alert as JSON, for webhooks and API calls (0.11.0)
+    ("sessions", "user_id", "INTEGER NOT NULL DEFAULT 0"),  # 0: the built-in admin (0.12.0)
 ]
 
 
@@ -505,10 +512,16 @@ class Database(Store):
             return None
         return self.q("SELECT id, created, name, scope, last_used, revoked FROM api_tokens WHERE id = ?", (token_id,))[0]
 
-    def audit_log(self, limit: int, alert_id: int = 0) -> list[dict]:
+    def audit_log(self, limit: int, alert_id: int = 0, before: int = 0) -> list[dict]:
+        where, params = [], []
         if alert_id:
-            return self.q("SELECT * FROM audit_log WHERE alert_id = ? ORDER BY id DESC LIMIT ?", (alert_id, limit))
-        return self.q("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))
+            where.append("alert_id = ?")
+            params.append(alert_id)
+        if before:
+            where.append("id < ?")
+            params.append(before)
+        sql = "SELECT * FROM audit_log" + (" WHERE " + " AND ".join(where) if where else "")
+        return self.q(sql + " ORDER BY id DESC LIMIT ?", (*params, limit))
 
     # --- notification outbox --------------------------------------------------
     def outbox_due(self, now: float, limit: int) -> list[dict]:
@@ -709,8 +722,53 @@ class Database(Store):
                              [tuple(row.get(c) for c in columns) for row in rows])
 
     # --- dashboard sessions ----------------------------------------------------------------------
-    def session_add(self, token_hash: str, expires: float) -> None:
-        self.x("INSERT OR REPLACE INTO sessions(token_hash, expires) VALUES(?, ?)", (token_hash, expires))
+    def session_add(self, token_hash: str, expires: float, user_id: int = 0) -> None:
+        self.x("INSERT OR REPLACE INTO sessions(token_hash, expires, user_id) VALUES(?, ?, ?)",
+               (token_hash, expires, user_id))
+
+    def session_user(self, token_hash: str) -> dict | None:
+        rows = self.q("SELECT expires, user_id FROM sessions WHERE token_hash = ?", (token_hash,))
+        return rows[0] if rows else None
+
+    def session_delete_user(self, user_id: int) -> None:
+        self.x("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    # --- user accounts ------------------------------------------------------------------
+    def user_add(self, row: dict) -> int:
+        with self.transaction() as conn:
+            return conn.execute(
+                "INSERT INTO users(username, display_name, role, source, subject, email, password_hash, salt, created) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (row["username"], row.get("display_name"), row["role"], row.get("source", "local"), row.get("subject"),
+                 row.get("email"), row.get("password_hash"), row.get("salt"), row["created"])).lastrowid
+
+    def user_update(self, user_id: int, fields: dict) -> dict | None:
+        allowed = ("display_name", "role", "email", "password_hash", "salt", "last_login", "disabled")
+        changes = {k: v for k, v in fields.items() if k in allowed}
+        if changes:
+            self.x(f"UPDATE users SET {', '.join(f'{k} = ?' for k in changes)} WHERE id = ?", (*changes.values(), user_id))
+        from .storage import USER_PUBLIC
+        rows = self.q(f"SELECT {', '.join(USER_PUBLIC)} FROM users WHERE id = ?", (user_id,))
+        return rows[0] if rows else None
+
+    def user_delete(self, user_id: int) -> bool:
+        return bool(self.x("DELETE FROM users WHERE id = ?", (user_id,)))
+
+    def users(self) -> list[dict]:
+        from .storage import USER_PUBLIC
+        return self.q(f"SELECT {', '.join(USER_PUBLIC)} FROM users ORDER BY username")
+
+    def user_get(self, user_id: int) -> dict | None:
+        rows = self.q("SELECT * FROM users WHERE id = ?", (user_id,))
+        return rows[0] if rows else None
+
+    def user_by_name(self, username: str) -> dict | None:
+        rows = self.q("SELECT * FROM users WHERE username = ?", (username.lower(),))
+        return rows[0] if rows else None
+
+    def user_by_subject(self, subject: str) -> dict | None:
+        rows = self.q("SELECT * FROM users WHERE subject = ?", (subject,))
+        return rows[0] if rows else None
 
     def session_expires(self, token_hash: str) -> float | None:
         rows = self.q("SELECT expires FROM sessions WHERE token_hash = ?", (token_hash,))

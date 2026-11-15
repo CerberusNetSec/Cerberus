@@ -57,6 +57,9 @@ SUPPRESSION_COLUMNS = ("id", "created", "detector", "entity", "title", "alert_id
                        "hits", "last_hit")
 AUDIT_COLUMNS = ("id", "ts", "action", "analyst", "source", "alert_id", "suppression_id", "detail")
 TOKEN_COLUMNS = ("id", "created", "name", "token_hash", "scope", "last_used", "revoked")
+USER_COLUMNS = ("id", "username", "display_name", "role", "source", "subject", "email", "password_hash", "salt",
+                "created", "last_login", "disabled")
+USER_PUBLIC = ("id", "username", "display_name", "role", "source", "subject", "email", "created", "last_login", "disabled")
 
 
 class NotFound(Exception):
@@ -114,7 +117,7 @@ class Store:
                    "device", "count", "status", "details", "updated"),
         "channels": ("id", "type", "name", "enabled", "min_severity", "config", "last_ts", "last_ok", "last_error"),
         "snmp_data": ("device", "polled", "ok", "error", "last_ok", "data"),
-        "sessions": ("token_hash", "expires"),
+        "sessions": ("token_hash", "expires", "user_id"),
         "sites": ("id", "name", "token_hash", "managed", "created", "last_seen", "silent", "address", "version",
                   "reported_name", "instance", "summary"),
         "site_alerts": ("id", "site_id", "instance", "alert_id", "created", "last_seen", "received", "detector",
@@ -123,6 +126,7 @@ class Store:
         "suppressions": SUPPRESSION_COLUMNS,
         "audit_log": AUDIT_COLUMNS,
         "api_tokens": TOKEN_COLUMNS,
+        "users": USER_COLUMNS,
     }
 
     def import_table(self, table: str, rows: list[dict]) -> None:
@@ -172,8 +176,9 @@ class Store:
         """Every suppression, active and removed, newest first."""
         raise NotImplementedError
 
-    def audit_log(self, limit: int, alert_id: int = 0) -> list[dict]:
-        """The audit trail, newest first (detail is a JSON string). Never pruned or edited."""
+    def audit_log(self, limit: int, alert_id: int = 0, before: int = 0) -> list[dict]:
+        """The audit trail, newest first (detail is a JSON string), entries below id before
+        if given. Never pruned or edited."""
         raise NotImplementedError
 
     def alert_counts_by_detector(self, since: float, status: str) -> list[dict]:
@@ -204,6 +209,43 @@ class Store:
 
     def token_revoke(self, token_id: int, when: float) -> dict | None:
         """Revoke an active token; returns it, or None if there was no such active token."""
+        raise NotImplementedError
+
+    def session_user(self, token_hash: str) -> dict | None:
+        """{expires, user_id} for a dashboard session (user_id 0: the built-in admin)."""
+        raise NotImplementedError
+
+    def session_delete_user(self, user_id: int) -> None:
+        """End every session of one user (disabled, deleted, or given another role)."""
+        raise NotImplementedError
+
+    # --- user accounts (stage 6) ---------------------------------------------------------
+    def user_add(self, row: dict) -> int:
+        """{username, display_name, role, source, subject?, email?, password_hash?, salt?, created}."""
+        raise NotImplementedError
+
+    def user_update(self, user_id: int, fields: dict) -> dict | None:
+        """Change some of: display_name, role, email, password_hash, salt, last_login, disabled.
+        Returns the user (public columns) or None."""
+        raise NotImplementedError
+
+    def user_delete(self, user_id: int) -> bool:
+        raise NotImplementedError
+
+    def users(self) -> list[dict]:
+        """Every user, without password hashes."""
+        raise NotImplementedError
+
+    def user_get(self, user_id: int) -> dict | None:
+        """One user, with the password hash and salt (for checking a password)."""
+        raise NotImplementedError
+
+    def user_by_name(self, username: str) -> dict | None:
+        """A user by (lower-case) username, with the password hash and salt."""
+        raise NotImplementedError
+
+    def user_by_subject(self, subject: str) -> dict | None:
+        """A single-sign-on user by issuer|subject."""
         raise NotImplementedError
 
     def leadership(self, name: str) -> Leadership:
@@ -322,7 +364,7 @@ class Store:
         raise NotImplementedError
 
     # --- dashboard sessions ------------------------------------------------------------------
-    def session_add(self, token_hash: str, expires: float) -> None:
+    def session_add(self, token_hash: str, expires: float, user_id: int = 0) -> None:
         raise NotImplementedError
 
     def session_expires(self, token_hash: str) -> float | None:

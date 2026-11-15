@@ -1,0 +1,30 @@
+id: ubiquiti
+name: Ubiquiti UniFi / EdgeOS
+description: >
+  UniFi gateways (USG, UDM, UXG, Cloud Gateway) and EdgeRouters: firewall rule
+  logs, whose tag ends -A (accept), -D (drop) or -R (reject), and Threat
+  Management (Suricata) alerts. Turn on logging for the firewall rules you
+  want to see. Port up/down from UniFi and EdgeSwitch switches is recognised
+  by the FASTPATH rules of the Dell/Brocade connector and the generic one.
+priority: 24
+
+match:
+  message:
+    - '^\[[A-Za-z0-9_]+-[A-Za-z0-9_-]*-[ADR]\]'
+  app: ['^(?:ubios-udapi-server|ubnt-switchd|ubnt-protocol-d)$']
+
+rules:
+  # [WAN_IN-2000-D]IN=eth0 OUT=eth1 MAC=... SRC=203.0.113.5 DST=10.0.0.5 LEN=60 ... PROTO=TCP SPT=51515 DPT=22 ...
+  # [LAN_LOCAL-RULE-2147483647-D]DESCR="Block IoT" IN=br0 ...
+  - name: firewall
+    pattern: '^\[(?P<policy>[A-Za-z0-9_]+-[A-Za-z0-9_-]*)-(?P<action>[ADR])\](?:DESCR="(?P<policy_description>[^"]*)" )?\s*IN=(?P<interface>\S*) OUT=(?P<out_interface>\S*).*? SRC=(?P<src_ip>[0-9a-fA-F.:]+) DST=(?P<dst_ip>[0-9a-fA-F.:]+).*? PROTO=(?P<proto>\w+)(?:.*? SPT=(?P<src_port>\d+) DPT=(?P<dst_port>\d+))?'
+    set: {event_type: traffic}
+    map: {action: {A: allow, D: block, R: block}}
+
+  # Threat Management (Suricata):
+  # [1:2010935:3] ET SCAN Suspicious inbound to MSSQL port 1433 [Classification: ...] [Priority: 2] {TCP} 1.2.3.4:5555 -> 10.0.0.5:1433
+  - name: threat-management
+    pattern: '\[\d+:(?P<sid>\d+):\d+\] (?P<threat_name>.+?) \[Classification: (?P<classification>[^\]]*)\] \[Priority: (?P<level>\d+)\] \{(?P<proto>[^}]+)\} (?P<src_ip>[0-9a-fA-F.:]+?):(?P<src_port>\d+) -> (?P<dst_ip>[0-9a-fA-F.:]+?):(?P<dst_port>\d+)'
+    set: {event_type: threat}
+    map:
+      level: {'1': high, '2': medium, '3': low, _default: info}

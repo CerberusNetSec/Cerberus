@@ -1,0 +1,74 @@
+id: aruba
+name: Aruba (AOS-CX, AOS-S/ProCurve, Mobility Controllers)
+description: >
+  AOS-CX switches (Event|id|severity|... messages), AOS-S/ProCurve switches
+  ("ports: port 5 is now off-line"), and ArubaOS 8 mobility controllers:
+  interface state, management logins and failures, configuration changes, and
+  wireless/802.1X user authentication, so password spraying against Wi-Fi
+  users is detected too.
+priority: 26
+
+match:
+  message:
+    - '^Event\|\d+\|LOG_'
+    - '^\d{5} (?:ports|mgr|auth|SNTP|chassis|FFI|lldp|dhcp-snoop|arp-protect|port-security|cdp|vlan|syslog|SSH|sshd|telnet|web|stack|update|system)\s*:'
+    - '^<\d{6}> <(?:EMERG|ALERT|CRIT|ERRS|WARN|NOTI|INFO|DBUG)>'
+
+rules:
+  # AOS-CX: Event|403|LOG_INFO|AMM|1/1|Link status for interface 1/1/5 is down
+  - name: cx-link
+    pattern: '^Event\|\d+\|LOG_\w+\|[^|]*\|[^|]*\|.*?[Ll]ink status for interface (?P<interface>\S+) is (?P<state>up|down)'
+    set: {event_type: link_state}
+
+  # AOS-CX: Event|5101|LOG_INFO|AMM|1/1|User admin logged in from 10.0.0.9 through SSH session.
+  - name: cx-login
+    pattern: '^Event\|\d+\|LOG_\w+\|[^|]*\|[^|]*\|User (?P<user>\S+) logged in from (?P<src_ip>[0-9a-fA-F.:]+)(?: through (?P<service>\S+))?'
+    set: {event_type: auth_success}
+
+  - name: cx-login-failed
+    pattern: '^Event\|\d+\|LOG_\w+\|[^|]*\|[^|]*\|.*?(?:[Ll]ogin|[Aa]uthentication) failed(?:.*?\b[Uu]ser:? (?P<user>[\w.@-]+))?(?:.*?\bfrom (?P<src_ip>[0-9a-fA-F.:]+))?(?:.*?\bthrough (?P<service>\S+))?'
+    set: {event_type: auth_failure}
+
+  - name: cx-config
+    pattern: '^Event\|\d+\|LOG_\w+\|[^|]*\|[^|]*\|(?P<detail>.*?[Cc]onfiguration (?:changed|saved|updated).*?)(?: by (?:user )?(?P<user>[\w.@-]+))?\.?\s*$'
+    set: {event_type: config_change}
+
+  # AOS-S: "00076 ports: port 5 is now off-line" / "... is now on-line"
+  - name: aoss-link
+    pattern: '^\d{5} ports\s*: (?:port )?(?P<interface>\S+) is now (?P<state>on-line|off-line)'
+    set: {event_type: link_state}
+    map: {state: {on-line: up, off-line: down}}
+
+  # AOS-S: "00179 mgr: SME SSH from 10.0.0.9 - MANAGER Mode"
+  - name: aoss-login
+    pattern: '^\d{5} mgr\s*: (?:SME|ME) (?P<service>\w+) from (?P<src_ip>[0-9a-fA-F.:]+) - (?P<role>\w+) Mode'
+    set: {event_type: auth_success}
+
+  # AOS-S: "00419 auth: Invalid user name/password on SSH session, user admin, IP 203.0.113.5"
+  - name: aoss-login-failed
+    pattern: '^\d{5} (?:auth|mgr|SSH|sshd|telnet|web)\s*: .*?(?:[Ii]nvalid (?:user ?name|password)|[Ll]ogin failed|[Aa]uthentication failed)(?:.*?\buser(?: name)?[ :]+''?(?P<user>[\w.@-]+))?(?:.*?\b(?:IP|from)[ :]+(?P<src_ip>[0-9a-fA-F.:]+))?'
+    set: {event_type: auth_failure}
+
+  # AOS-S port security and loop protection
+  - name: aoss-port-security
+    pattern: '^\d{5} (?:port-security|FFI)\s*: (?P<detail>.*?(?:[Ii]ntrusion|violation).*?)(?:port (?P<interface>\S+))?\s*$'
+    set: {event_type: security_violation}
+
+  # Mobility controller: <522008> <NOTI> |authmgr|  User Authentication Successful: username=jdoe MAC=aa:bb:.. IP=10.0.0.20 role=...
+  - name: controller-user-auth
+    pattern: '^<522008> <\w+> .*?User Authentication Successful: username=(?P<user>\S+) MAC=(?P<mac>\S+) IP=(?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # <522275> <WARN> |authmgr|  User Authentication failed. username=jdoe MAC=aa:bb:.. IP=10.0.0.20 auth method=802.1x ...
+  - name: controller-user-auth-failed
+    pattern: '^<52\d{4}> <\w+> .*?User Authentication failed\.? username=(?P<user>\S+)(?: MAC=(?P<mac>\S+))?(?: IP=(?P<src_ip>[0-9a-fA-F.:]+))?'
+    set: {event_type: auth_failure}
+
+  # <125022> <WARN> |cli|  User admin@10.0.0.9: Authentication failed  /  <125020> ... User admin@10.0.0.9 logged in
+  - name: controller-admin-failed
+    pattern: '^<\d{6}> <\w+> .*?\b(?:User|Admin) (?P<user>[\w.-]+)@(?P<src_ip>[0-9a-fA-F.:]+)\S*:? .*?(?:[Aa]uthentication failed|[Ll]ogin failed)'
+    set: {event_type: auth_failure}
+
+  - name: controller-admin-login
+    pattern: '^<\d{6}> <\w+> .*?\b(?:User|Admin) (?P<user>[\w.-]+)@(?P<src_ip>[0-9a-fA-F.:]+)\S*:? .*?(?:logged in|[Aa]uthentication successful)'
+    set: {event_type: auth_success}

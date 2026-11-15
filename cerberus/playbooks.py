@@ -28,7 +28,7 @@ PLAYBOOKS: dict[str, dict] = {
         "internal": [
             "Identify {src} and its owner. If it is not an authorised scanner, treat it as compromised.",
             _ISOLATE, _EVENTS,
-            "If it is an authorised scanner, add it to the ignored sources under Detection.",
+            "If it is an authorised scanner, add it to the ignored sources under Settings → Detection.",
         ],
         "external": [
             "No action is needed for a single scan that was blocked.",
@@ -203,7 +203,7 @@ PLAYBOOKS: dict[str, dict] = {
                "worm spreading, a new exposure, or a misconfigured system. Allowed traffic matters most; a rise "
                "in blocked traffic shows the firewall doing its job, but also that someone is trying.",
         "actions": [
-            "Open the Risk ports page and expand this port to see who the traffic is from and to.",
+            "Open the High Risk Ports page and expand this port to see who the traffic is from and to.",
             "If the connections are allowed from the internet, find the firewall rule that permits them and "
             "restrict it to the sources that need it.",
             "If one internal host accounts for most of it, identify the host; many destinations on SMB, RDP or "
@@ -219,7 +219,7 @@ PLAYBOOKS: dict[str, dict] = {
         "actions": [
             "Look up the destination address and port: who owns it, and is it something you use?",
             "Find out which process on {src} is making the connection.",
-            "If it is known software, add the destination to the ignore list under Detection.",
+            "If it is known software, add the destination to the ignore list under Settings → Detection.",
             "If it is not explained, block the destination and isolate {src} for examination.",
         ],
     },

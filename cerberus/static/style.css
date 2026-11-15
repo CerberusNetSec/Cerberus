@@ -314,3 +314,19 @@ dialog.dialog input { width: 100%; }
 dialog.dialog .note { font-size: 12.5px; margin: 8px 0 0; }
 .row.end { justify-content: flex-end; }
 .quote { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 46ch; }
+
+/* High Risk Ports list editor (Detection) */
+.ports-editor h3 { font-size: 14px; margin: 6px 0 4px; }
+.ports-editor > p { margin: 0 0 8px; font-size: 13px; }
+.ports-table { width: auto; }
+.ports-table td { padding: 3px 8px 3px 0; border: 0; vertical-align: middle; }
+.ports-table th { padding: 4px 8px 4px 0; }
+.params .ports-table input.pe-port { width: 92px; }
+.params .ports-table input.pe-name { width: 220px; max-width: 46vw; }
+.setting.focus { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 6px; scroll-margin-top: 76px; }
+
+/* Settings sections */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: -4px 0 18px; overflow-x: auto; }
+.tabs a { padding: 8px 14px; color: var(--text-2); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; font-weight: 500; }
+.tabs a:hover { color: var(--text); }
+.tabs a.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }

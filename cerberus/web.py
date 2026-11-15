@@ -23,7 +23,7 @@ from .models import SEVERITIES
 from .models import clean_ip, is_internal
 from .notifiers import CHANNEL_TYPES, Notifier, public_channel, validate_channel
 from .playbooks import STAGES, advice, detector_stage
-from .riskports import CATALOG, CLEARTEXT, DIRECTIONS, WEB, flags, service_name
+from .riskports import CATALOG, CLEARTEXT, DIRECTIONS, WEB, flags
 from .snmp_poller import MASK as SNMP_MASK
 from .snmp_poller import SnmpPoller, parse_target
 from .storage import NotFound, QueryTimeout, Store
@@ -400,7 +400,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         return out
 
     async def port_memory(now: float) -> dict:
-        """What the Risk ports page reads from detector memory: this process's, or, when
+        """What the High Risk Ports page reads from detector memory: this process's, or, when
         detection workers run the port family, the summaries they publish."""
         rp = engine.risk_ports
         if not engine.families or "port" in engine.families:
@@ -443,10 +443,11 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
             t += bucket
         ports = []
         for port, per in totals.items():
-            found = flags(port, per, spikes, fresh.get(port, 0))
+            found = flags(port, per, spikes, fresh.get(port, 0), rp.label(port))
             mine = alerts.get(port, [])
             ports.append({
-                "port": port, "name": service_name(port), "why": CATALOG.get(port, ("", ""))[1],
+                "port": port, "name": rp.label(port), "protocols": rp.protocol_text(port),
+                "why": CATALOG.get(port, ("", ""))[1],
                 "totals": per, "allowed": sum(per[d][0] for d in DIRECTIONS), "blocked": sum(per[d][1] for d in DIRECTIONS),
                 "series": [series[port].get(b, [0, 0]) for b in buckets],
                 "flags": found, "severity": found[0]["severity"] if found else "",
@@ -459,7 +460,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         return {
             "range": range if range in RANGES else "24h", "bucket_minutes": bucket // 60, "buckets": buckets,
             "ports": ports,
-            "quiet": sorted(({"port": p, "name": service_name(p)} for p in rp.ports if p not in totals), key=lambda q: q["port"]),
+            "quiet": sorted(({"port": p, "name": rp.label(p), "protocols": rp.protocol_text(p)}
+                             for p in rp.ports if p not in totals), key=lambda q: q["port"]),
             "summary": {
                 "flagged": sum(1 for p in ports if p["severity"] in ("high", "medium")),
                 "exposed": sum(p["totals"]["inbound"][0] for p in plain),
@@ -475,7 +477,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
     @app.get("/api/riskports/port")
     async def riskport_detail(port: int):
         now = time.time()
-        return {"port": port, "name": service_name(port),
+        rp = engine.risk_ports
+        return {"port": port, "name": rp.label(port), "protocols": rp.protocol_text(port),
                 "directions": (await port_memory(now))["top"](port),
                 "alerts": (await _port_alerts(now)).get(port, [])[:20]}
 

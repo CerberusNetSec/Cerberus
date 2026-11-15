@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS stats_minute (
     PRIMARY KEY (minute, device)
 );
 
--- Traffic on high-risk ports, for the Risk ports page. direction: inbound, outbound or internal.
+-- Traffic on high-risk ports, for the High Risk Ports page. direction: inbound, outbound or internal.
 CREATE TABLE IF NOT EXISTS port_minute (
     minute INTEGER NOT NULL, port INTEGER NOT NULL, direction TEXT NOT NULL,
     allowed INTEGER DEFAULT 0, blocked INTEGER DEFAULT 0,

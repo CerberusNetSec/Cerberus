@@ -1,5 +1,8 @@
 # The processor: reads events from the bus and does recording, detection,
-# alerting, notifications and the dashboard. One replica. With detector/, the
+# alerting, notifications and the dashboard. Two replicas: one active, one
+# standby that takes over within seconds (a lock in PostgreSQL decides). The
+# standby is not ready (503 at /readyz), so the Service sends the dashboard
+# to the active one. With detector/, the
 # detection that keys on sources, targets, pairs, ports and accounts runs in the
 # workers and the processor turns their findings into alerts; set
 # CERBERUS_DETECTION_WORKERS below to the same families (all). Needs clustered
@@ -27,6 +30,21 @@ configMapGenerator:
       # With detector/: the same families as there (all).
       - CERBERUS_DETECTION_WORKERS=
 patches:
+  # Active/standby: two replicas, readiness only on the active one.
+  - target: {kind: Deployment, name: cerberus}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/strategy
+        value: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 1, maxSurge: 0}}
+      - op: replace
+        path: /spec/template/spec/containers/0/readinessProbe
+        value: {httpGet: {path: /readyz, port: http}, periodSeconds: 3, failureThreshold: 1}
+      - op: add
+        path: /spec/template/metadata/annotations
+        value: {prometheus.io/scrape: "true", prometheus.io/port: "8080", prometheus.io/path: /metrics}
   # Syslog goes to the collectors, not here.
   - target: {kind: Service, name: cerberus-syslog}
     patch: |-

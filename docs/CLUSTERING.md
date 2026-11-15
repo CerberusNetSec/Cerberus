@@ -1,6 +1,6 @@
 # Scaling Cerberus to thousands of log sources
 
-Status: **stage 1 (federation) in 0.2.0; stage 2 phase 1 (seams) in 0.3.0, phase 2 (shared storage) in 0.4.0, phase 3 (scale-out ingest) in 0.5.0, phase 4 (sharded detection) in 0.6.0.**
+Status: **stage 1 (federation) in 0.2.0; stage 2 phase 1 (seams) in 0.3.0, phase 2 (shared storage) in 0.4.0, phase 3 (scale-out ingest) in 0.5.0, phase 4 (sharded detection) in 0.6.0, phase 5 (availability) in 0.7.0.**
 
 ## Goal
 
@@ -153,12 +153,38 @@ Estimates assume one experienced engineer and are rough.
      counted by the processor, which sees every event.
    - Bus traffic is multiplied by the number of families reading an event
      (about four times for firewall traffic with every family offloaded).
-5. **Availability and operations (3–4 weeks).** Active/standby alerting with
-   idempotent alert upserts and a notification outbox, state rebuilt on
-   failover by replaying a detector's window from Kafka, snapshots for learned baselines,
-   leader election, poller leases, Prometheus metrics, and the reference
-   deployments extended (Compose and Swarm with Kafka, PostgreSQL and
-   ClickHouse; Kubernetes with operators for them, and a Helm chart).
+5. **Availability and operations. Done.**
+   - **Active/standby processors** (`leader.py`): a session advisory lock in
+     PostgreSQL; standbys answer 503 at `/readyz` and take over when the lock
+     is freed (at once if the leader exits or crashes, within about 25 seconds
+     by TCP keepalive if its host vanishes). A leader that cannot confirm its
+     lock exits without writing more. SNMP polling runs on the active
+     processor only, so no separate poller leases were needed.
+   - **Exact takeover:** the detector state, learned baselines included, is
+     saved every minute with the bus position it matches; a new leader seeks
+     back to it and replays up to the committed position through detection
+     only (no storage, no alerts, no notifications; the correlator and
+     hostile-address tracking still learn from replayed candidates). Alert
+     writes stay with one writer, so no idempotent upserts were needed.
+   - **Notification outbox:** notifications are written in the same
+     transaction as their alerts and sent from the table, with retries.
+   - **Detection workers rebuild their windows** by replaying the last
+     `CERBERUS_WORKER_REPLAY_MINUTES` of their partitions whenever their
+     assignment changes.
+   - **Prometheus metrics** on every role.
+   - Reference deployments: two processors behind HAProxy in
+     `compose/scale-out.yml`, two replicas with readiness on `/readyz` in the
+     Kubernetes `processor` layer.
+   - Proved by `tests/test_bus.py` (a processor that dies after its
+     checkpoint, having stored more since and holding more unstored, and a
+     successor: exactly what one uninterrupted process stores; a worker
+     replaced midway: together exactly the alerts one worker raises),
+     `tests/test_leader.py`, `tests/test_outbox.py`, and live on Compose (the
+     active processor killed twice: dashboard back in 8 seconds, replay of
+     the events since the checkpoint, every event stored once).
+   - Not done: a Helm chart and operator-based Kubernetes deployments of
+     Kafka, PostgreSQL and ClickHouse (Kustomize layers remain the reference);
+     SASL authentication to the bus.
 6. **Enterprise features (open-ended).** Single sign-on, roles, audit log,
    optionally tenancy.
 

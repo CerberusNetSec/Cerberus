@@ -1,0 +1,13 @@
+# Kafka, PostgreSQL and ClickHouse for a scaled-out Cerberus, each run by its
+# operator. Install the operators first (deploy/README.md, "Kubernetes with
+# operators"), create the ClickHouse Secret, then:
+#
+#   kubectl apply -k deploy/kubernetes/operators
+#   helm install cerberus deploy/helm/cerberus -n cerberus -f deploy/helm/cerberus/values-operators.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+resources:
+  - kafka.yaml
+  - postgres.yaml
+  - clickhouse.yaml

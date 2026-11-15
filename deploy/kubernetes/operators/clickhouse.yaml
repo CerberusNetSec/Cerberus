@@ -1,0 +1,50 @@
+# ClickHouse for Cerberus, run by the Altinity ClickHouse operator
+# (https://github.com/Altinity/clickhouse-operator).
+#
+# One shard, one replica. Cerberus's tables are MergeTree, not
+# ReplicatedMergeTree, so more replicas would not copy the data between them;
+# protect this one with volume snapshots or backups (for example clickhouse-backup).
+#
+# The user's password comes from the Secret "cerberus-clickhouse" (key
+# "password"), which also holds the URL Cerberus connects with (key "url").
+# Create it first; see deploy/README.md:
+#   PASS=$(openssl rand -hex 24)
+#   kubectl -n cerberus create secret generic cerberus-clickhouse --from-literal=password=$PASS \
+#     --from-literal=url="http://cerberus:$PASS@clickhouse-cerberus-ch.cerberus.svc:8123/cerberus"
+# Cerberus creates the "cerberus" database itself on first start.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: cerberus-ch
+spec:
+  configuration:
+    users:
+      cerberus/k8s_secret_password: cerberus-clickhouse/password
+      cerberus/networks/ip: ["::/0"]  # inside the cluster; restrict with a NetworkPolicy
+      cerberus/profile: default
+    clusters:
+      - name: cerberus
+        layout:
+          shardsCount: 1
+          replicasCount: 1
+  defaults:
+    templates:
+      podTemplate: clickhouse
+      dataVolumeClaimTemplate: data
+  templates:
+    podTemplates:
+      - name: clickhouse
+        spec:
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:24.8
+              resources:
+                requests: {cpu: 500m, memory: 2Gi}
+                limits: {memory: 4Gi}
+    volumeClaimTemplates:
+      - name: data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 100Gi

@@ -93,7 +93,7 @@ jobs:
           CADDYFILE=Caddyfile.internal docker stack config -c deploy/swarm/stack.yml > /dev/null
       - name: Kubernetes
         run: |
-          for k in standalone site central collector processor detector; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
+          for k in standalone site central collector processor detector operators; do kubectl kustomize deploy/kubernetes/$k > /dev/null; done
           # Each layer with the clustered-storage component, through a throwaway overlay.
           for k in standalone site central; do
             mkdir -p deploy/kubernetes/ci-$k
@@ -101,6 +101,20 @@ jobs:
             echo "components: [../components/clustered-storage]" >> deploy/kubernetes/ci-$k/kustomization.yaml
             kubectl kustomize deploy/kubernetes/ci-$k | grep -q CERBERUS_CLICKHOUSE_URL_FILE
           done
+      - name: Helm chart
+        run: |
+          c=deploy/helm/cerberus
+          helm lint $c --strict
+          helm lint $c --strict -f $c/values-operators.yaml
+          # Standalone: one Deployment with its volume.
+          helm template t $c --set auth.password=x | grep -q "kind: PersistentVolumeClaim"
+          # Scale-out on the operators: URLs and the Kafka password from their Secrets.
+          out=$(helm template t $c -f $c/values-operators.yaml)
+          echo "$out" | grep -q "name: cerberus-pg-app"
+          echo "$out" | grep -q "SASL_SSL"
+          echo "$out" | grep -q "kind: StatefulSet"
+          # Scale-out with URLs given in values: they go into the chart's own Secret.
+          helm template t $c --set mode=scaleOut --set kafka.bootstrap=k:9092             --set storage.postgresUrl=postgresql://u:p@pg/c --set storage.clickhouseUrl=http://ch:8123/c             | grep -q CERBERUS_CLICKHOUSE_URL_FILE
       - name: Compose with clustered storage, and scale-out
         run: |
           python deploy/make-secrets.py --storage

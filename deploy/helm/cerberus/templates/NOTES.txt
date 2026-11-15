@@ -1,0 +1,26 @@
+Cerberus {{ .Chart.AppVersion }} ({{ .Values.mode }}) is installed as "{{ .Release.Name }}" in {{ .Release.Namespace }}.
+
+Dashboard:
+{{- if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cerberus.fullname" . }} 8080
+  then open http://localhost:8080
+{{- end }}
+{{- if not (include "cerberus.hasPassword" .) }}
+
+No password was given: Cerberus generated one and printed it once:
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "cerberus.fullname" . }}{{ if eq .Values.mode "scaleOut" }}-processor{{ end }} | grep -A1 "generated a dashboard password"
+{{- end }}
+
+Send syslog from your devices to the syslog Service's external address:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "cerberus.fullname" . }}-syslog
+{{- if eq .Values.mode "scaleOut" }}
+
+Scale-out: {{ .Values.collector.replicas }} collectors, {{ .Values.processor.replicas }} processors (one active),
+detection workers {{ ternary "on" "off" .Values.detectors.enabled }}, Kafka at {{ .Values.kafka.bootstrap }} ({{ .Values.kafka.security }}).
+{{- end }}
+{{- if .Values.oidc.issuer }}
+
+Single sign-on: register {{ .Values.publicUrl | default "<publicUrl>" }}/api/auth/oidc/callback as the redirect URL with your provider.
+{{- end }}

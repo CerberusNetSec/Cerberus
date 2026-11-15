@@ -1,0 +1,14 @@
+apiVersion: v2
+name: cerberus
+description: >-
+  Cerberus: syslog-based network threat detection for firewalls and switches.
+  One instance, or collectors, active/standby processors and detection workers
+  on a Kafka-compatible bus with PostgreSQL and ClickHouse.
+type: application
+version: 0.12.0
+appVersion: "0.12.0"
+home: https://github.com/wrcrooks/Cerberus
+sources:
+  - https://github.com/wrcrooks/Cerberus
+keywords: [syslog, security, siem, network, detection, mitre-attack]
+license: Apache-2.0

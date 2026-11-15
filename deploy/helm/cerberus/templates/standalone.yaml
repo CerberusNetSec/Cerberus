@@ -1,0 +1,89 @@
+{{- if eq .Values.mode "standalone" }}
+{{- $sqlite := not (include "cerberus.clustered" .) }}
+{{- if $sqlite }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cerberus.fullname" . }}-data
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.storage.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cerberus.fullname" . }}
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: standalone
+spec:
+  replicas: 1  # one Cerberus; for more, use mode: scaleOut
+  strategy: {type: Recreate}  # never two pods on one volume
+  selector:
+    matchLabels: {{- include "cerberus.selector" . | nindent 6 }}
+      app.kubernetes.io/component: standalone
+  template:
+    metadata:
+      labels: {{- include "cerberus.selector" . | nindent 8 }}
+        app.kubernetes.io/component: standalone
+      annotations: {{- include "cerberus.podAnnotations" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cerberus
+          image: {{ include "cerberus.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: CERBERUS_MODE, value: all}
+            {{- include "cerberus.env" . | nindent 12 }}
+            {{- include "cerberus.syslogEnv" . | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8080}
+            {{- include "cerberus.syslogPorts" . | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources: {{- toYaml .Values.standalone.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            {{- include "cerberus.mounts" . | nindent 12 }}
+            {{- if .Values.syslog.tls.enabled }}
+            - {name: tls, mountPath: /run/secrets/cerberus/tls, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if $sqlite }}
+          persistentVolumeClaim: {claimName: {{ include "cerberus.fullname" . }}-data}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- include "cerberus.volumes" . | nindent 8 }}
+        {{- if .Values.syslog.tls.enabled }}
+        - name: tls
+          secret: {secretName: {{ required "syslog.tls.secret is required" .Values.syslog.tls.secret }}, defaultMode: 0440}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

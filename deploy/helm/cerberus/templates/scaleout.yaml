@@ -1,0 +1,210 @@
+{{- if eq .Values.mode "scaleOut" }}
+# Processors: one active, the others standby (a lock in PostgreSQL decides).
+# Only the active one is ready, so the Service sends the dashboard to it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cerberus.fullname" . }}-processor
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: processor
+spec:
+  replicas: {{ .Values.processor.replicas }}
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 1, maxSurge: 0}}
+  selector:
+    matchLabels: {{- include "cerberus.selector" . | nindent 6 }}
+      app.kubernetes.io/component: processor
+  template:
+    metadata:
+      labels: {{- include "cerberus.selector" . | nindent 8 }}
+        app.kubernetes.io/component: processor
+      annotations: {{- include "cerberus.podAnnotations" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: processor
+          image: {{ include "cerberus.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: CERBERUS_MODE, value: processor}
+            - {name: CERBERUS_SYSLOG_TCP_PORT, value: "0"}
+            - {name: CERBERUS_SYSLOG_UDP_PORT, value: "0"}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            {{- include "cerberus.env" . | nindent 12 }}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 3
+            failureThreshold: 1
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources: {{- toYaml .Values.processor.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            {{- include "cerberus.mounts" . | nindent 12 }}
+      volumes:
+        - {name: data, emptyDir: {}}
+        {{- include "cerberus.volumes" . | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# Collectors: receive syslog, parse, publish to the bus. Stable names and a
+# spool volume each, so events waiting for the bus survive a restart.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cerberus.fullname" . }}-collector
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+spec:
+  serviceName: {{ include "cerberus.fullname" . }}-collector
+  replicas: {{ .Values.collector.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {{- include "cerberus.selector" . | nindent 6 }}
+      app.kubernetes.io/component: collector
+  template:
+    metadata:
+      labels: {{- include "cerberus.selector" . | nindent 8 }}
+        app.kubernetes.io/component: collector
+      annotations: {{- include "cerberus.podAnnotations" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "cerberus.selector" . | nindent 14 }}
+              app.kubernetes.io/component: collector
+      containers:
+        - name: collector
+          image: {{ include "cerberus.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - {name: CERBERUS_MODE, value: collector}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            {{- include "cerberus.env" . | nindent 12 }}
+            {{- include "cerberus.syslogEnv" . | nindent 12 }}
+          ports:
+            - {name: status, containerPort: 8080}
+            {{- include "cerberus.syslogPorts" . | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources: {{- toYaml .Values.collector.resources | nindent 12 }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: spool, mountPath: /data}
+            {{- include "cerberus.mounts" . | nindent 12 }}
+            {{- if .Values.syslog.tls.enabled }}
+            - {name: tls, mountPath: /run/secrets/cerberus/tls, readOnly: true}
+            {{- end }}
+      volumes:
+        {{- include "cerberus.volumes" . | nindent 8 }}
+        {{- if .Values.syslog.tls.enabled }}
+        - name: tls
+          secret: {secretName: {{ required "syslog.tls.secret is required" .Values.syslog.tls.secret }}, defaultMode: 0440}
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: spool
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.collector.spool.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.collector.spool.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cerberus.fullname" . }}-collector
+  labels: {{- include "cerberus.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector: {{- include "cerberus.selector" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+  ports:
+    - {name: status, port: 8080, targetPort: status}
+{{- if .Values.detectors.enabled }}
+{{- range $family, $spec := .Values.detectors.families }}
+---
+# Detection workers for the {{ $family }} family.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cerberus.fullname" $ }}-detector-{{ $family }}
+  labels: {{- include "cerberus.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: detector-{{ $family }}
+spec:
+  replicas: {{ $spec.replicas }}
+  selector:
+    matchLabels: {{- include "cerberus.selector" $ | nindent 6 }}
+      app.kubernetes.io/component: detector-{{ $family }}
+  template:
+    metadata:
+      labels: {{- include "cerberus.selector" $ | nindent 8 }}
+        app.kubernetes.io/component: detector-{{ $family }}
+      annotations: {{- include "cerberus.podAnnotations" $ | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: detector
+          image: {{ include "cerberus.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          env:
+            - {name: CERBERUS_MODE, value: detector}
+            - {name: CERBERUS_DETECTION_FAMILY, value: {{ $family }}}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            {{- include "cerberus.env" $ | nindent 12 }}
+          ports:
+            - {name: status, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources: {{- toYaml $.Values.detectors.resources | nindent 12 }}
+          securityContext: {{- toYaml $.Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            {{- include "cerberus.mounts" $ | nindent 12 }}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}
+        {{- include "cerberus.volumes" $ | nindent 8 }}
+{{- end }}
+{{- end }}
+{{- end }}

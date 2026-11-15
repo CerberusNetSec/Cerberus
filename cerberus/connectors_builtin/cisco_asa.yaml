@@ -1,0 +1,115 @@
+id: cisco_asa
+name: Cisco ASA / Firepower Threat Defense
+description: >
+  ASA and FTD %ASA-/%FTD- messages: connections built (allowed) and denied by
+  access lists, login and AAA results, commands run by administrators,
+  threat-detection and IDS hits, interface state; plus Firepower connection
+  and intrusion events (430001-430003). Teardown messages, which repeat each
+  connection with its byte count, are kept as session_end rather than counted
+  as traffic again.
+priority: 20  # before cisco_ios, whose %FAC-SEV-MNEMONIC match also claims these
+
+match:
+  raw: ['%(?:ASA|FTD|PIX|FWSM)-[0-7]-\d{6}:']
+
+rules:
+  # %ASA-6-302013: Built inbound TCP connection 1234 for outside:203.0.113.5/51515 (203.0.113.5/51515)
+  #   to inside:10.0.0.5/443 (198.51.100.10/443)
+  # Inbound: the "for" side started it. Outbound: the "to" side did.
+  - name: built-inbound
+    pattern: '%\w+-\d-30201[357]: Built inbound (?P<proto>TCP|UDP|SCTP) connection \d+ for (?P<interface>[^:\s]+):(?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+) \([^)]*\) to (?P<out_interface>[^:\s]+):(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+) \((?P<nat_dst_ip>[0-9a-fA-F.:]+?)/\d+\)'
+    set: {event_type: traffic, action: allow}
+
+  - name: built-outbound
+    pattern: '%\w+-\d-30201[357]: Built outbound (?P<proto>TCP|UDP|SCTP) connection \d+ for (?P<out_interface>[^:\s]+):(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+) \([^)]*\) to (?P<interface>[^:\s]+):(?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+) \((?P<nat_src_ip>[0-9a-fA-F.:]+?)/\d+\)'
+    set: {event_type: traffic, action: allow}
+
+  # %ASA-6-302014: Teardown TCP connection 1234 for outside:.../51515 to inside:.../443 duration 0:01:02 bytes 52311 TCP FINs
+  - name: teardown
+    pattern: '%\w+-\d-30201[468]: Teardown (?P<proto>TCP|UDP|SCTP) connection \d+ for (?P<interface>[^:\s]+):(?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+) to (?P<out_interface>[^:\s]+):(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+)(?: duration (?P<duration>\S+))?(?: bytes (?P<bytes>\d+))?'
+    set: {event_type: session_end}
+
+  # %ASA-4-106023: Deny tcp src outside:203.0.113.5/51515 dst inside:10.0.0.5/22 by access-group "OUTSIDE_IN" [0x0, 0x0]
+  - name: acl-deny
+    pattern: '%\w+-\d-106023: Deny (?P<proto>\w+) src (?P<interface>[^:\s]+):(?P<src_ip>[0-9a-fA-F.:]+?)(?:/(?P<src_port>\d+))? dst (?P<out_interface>[^:\s]+):(?P<dst_ip>[0-9a-fA-F.:]+?)(?:/(?P<dst_port>\d+))?(?: \([^)]*\))? by access-group "(?P<policy>[^"]+)"'
+    set: {event_type: traffic, action: block}
+
+  # %ASA-6-106100: access-list OUTSIDE_IN denied tcp outside/203.0.113.5(51515) -> inside/10.0.0.5(3389) hit-cnt 1 first hit [...]
+  - name: acl-logged
+    pattern: '%\w+-\d-106100: access-list (?P<policy>\S+) (?P<action>permitted|denied|est-allowed) (?P<proto>\w+) (?P<interface>[^/\s]+)/(?P<src_ip>[0-9a-fA-F.:]+)\((?P<src_port>\d+)\)(?:\([^)]*\))? -> (?P<out_interface>[^/\s]+)/(?P<dst_ip>[0-9a-fA-F.:]+)\((?P<dst_port>\d+)\)'
+    set: {event_type: traffic}
+    map: {action: {permitted: allow, est-allowed: allow, denied: block}}
+
+  # %ASA-2-106001: Inbound TCP connection denied from 203.0.113.5/51515 to 10.0.0.5/23 flags SYN on interface outside
+  - name: inbound-denied
+    pattern: '%\w+-\d-10600[16]: (?:Inbound|Deny inbound) (?P<proto>TCP|UDP|\w+)(?: connection denied)? from (?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+) to (?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+).*? on interface (?P<interface>\S+)'
+    set: {event_type: traffic, action: block}
+
+  # %ASA-6-605004: Login denied from 203.0.113.5/51515 to outside:198.51.100.10/ssh for user "admin"
+  - name: login-denied
+    pattern: '%\w+-\d-605004: Login denied from (?P<src_ip>[0-9a-fA-F.:]+?)/\d+ to (?P<interface>[^:\s]+):[^/\s]+/(?P<service>\S+) for user "(?P<user>[^"]*)"'
+    set: {event_type: auth_failure}
+
+  - name: login-permitted
+    pattern: '%\w+-\d-605005: Login permitted from (?P<src_ip>[0-9a-fA-F.:]+?)/\d+ to (?P<interface>[^:\s]+):[^/\s]+/(?P<service>\S+) for user "(?P<user>[^"]*)"'
+    set: {event_type: auth_success}
+
+  # %ASA-6-113005: AAA user authentication Rejected : reason = AAA failure : server = 10.0.0.9 : user = admin : user IP = 203.0.113.5
+  - name: aaa-rejected
+    pattern: '%\w+-\d-113005: AAA user (?:authentication|authorization) Rejected : reason = (?P<reason>[^:]+?) : server = \S+ : user = (?P<user>\S+?)(?: : user IP = (?P<src_ip>[0-9a-fA-F.:]+))?\s*$'
+    set: {event_type: auth_failure}
+
+  - name: aaa-successful
+    pattern: '%\w+-\d-113004: AAA user (?:authentication|authorization) Successful : server = \S+ : user = (?P<user>\S+)'
+    set: {event_type: auth_success}
+
+  # %ASA-6-611102: User authentication failed: IP address: 203.0.113.5, Uname: admin
+  - name: user-auth-failed
+    pattern: '%\w+-\d-611102: User authentication failed: IP address: (?P<src_ip>[0-9a-fA-F.:]+), Uname: (?P<user>\S+)'
+    set: {event_type: auth_failure}
+
+  - name: user-auth-succeeded
+    pattern: '%\w+-\d-611101: User authentication succeeded: IP address: (?P<src_ip>[0-9a-fA-F.:]+), Uname: (?P<user>\S+)'
+    set: {event_type: auth_success}
+
+  # %ASA-5-111010: User 'admin', running 'CLI' from IP 10.0.0.9, executed 'access-list OUTSIDE_IN permit tcp any any'
+  - name: command-executed
+    pattern: '%\w+-\d-111010: User ''(?P<user>[^'']*)'', running ''(?P<config_source>[^'']*)'' from IP (?P<src_ip>[0-9a-fA-F.:]+), executed ''(?P<detail>.*)'''
+    set: {event_type: config_change}
+
+  # %ASA-5-111008: User 'admin' executed the 'write memory' command.
+  - name: command
+    pattern: '%\w+-\d-111008: User ''(?P<user>[^'']*)'' executed the ''(?P<detail>[^'']*)'' command'
+    set: {event_type: config_change}
+
+  # %ASA-4-733101: Host 203.0.113.5 is attacking. Current burst rate is 200 per second, ...
+  - name: threat-detection-host
+    pattern: '%\w+-\d-733101: (?:Host|Subnet) (?P<src_ip>[0-9a-fA-F.:]+)(?:/\d+)? is (?P<threat_name>attacking|targeted)\.'
+    set: {event_type: threat, level: medium, category: threat-detection}
+
+  # %ASA-4-400013: IDS:2003 ICMP redirect from 10.4.1.2 to 10.2.1.1 on interface dmz
+  - name: ids-signature
+    pattern: '%\w+-\d-4000\d\d: IDS:(?P<sid>\d+) (?P<threat_name>.+?) from (?P<src_ip>[0-9a-fA-F.:]+) to (?P<dst_ip>[0-9a-fA-F.:]+) on interface (?P<interface>\S+)'
+    set: {event_type: threat, level: medium}
+
+  # %ASA-4-411002: Line protocol on Interface GigabitEthernet0/1, changed state to down
+  - name: interface-state
+    pattern: '%\w+-\d-41100[1-4]: (?:Line protocol on )?Interface (?P<interface>[^,\s]+), changed state to (?P<state>up|down|administratively down)'
+    set: {event_type: link_state}
+
+  # %FTD-1-430003: DeviceUUID: ..., AccessControlRuleAction: Block, SrcIP: 203.0.113.5, DstIP: 10.0.0.5, SrcPort: 51515,
+  #   DstPort: 22, Protocol: tcp, IngressInterface: outside, EgressInterface: inside, ..., AccessControlRuleName: Block-SSH, ...
+  - name: firepower-connection
+    pattern: '%\w+-\d-43000[23]: (?=.*?AccessControlRuleAction: (?P<action>[\w ]+?),)(?=.*?SrcIP: (?P<src_ip>[0-9a-fA-F.:]+))(?=.*?DstIP: (?P<dst_ip>[0-9a-fA-F.:]+))(?:(?=.*?SrcPort: (?P<src_port>\d+))|)(?:(?=.*?DstPort: (?P<dst_port>\d+))|)(?:(?=.*?Protocol: (?P<proto>\w+))|)(?:(?=.*?IngressInterface: (?P<interface>[^,]+))|)(?:(?=.*?AccessControlRuleName: (?P<policy>[^,]+))|)'
+    set: {event_type: traffic}
+    map:
+      action: {Allow: allow, Trust: allow, Monitor: allow, Block: block, Block with reset: block, Interactive Block: block,
+               Interactive Block with reset: block, _default: block}
+
+  # %FTD-1-430001: ..., SrcIP: 203.0.113.5, DstIP: 10.0.0.5, ..., Priority: 1, GID: 1, SID: 2014, ..., Message: ET SCAN ..., Classification: ...
+  - name: firepower-intrusion
+    pattern: '%\w+-\d-430001: (?=.*?SrcIP: (?P<src_ip>[0-9a-fA-F.:]+))(?=.*?DstIP: (?P<dst_ip>[0-9a-fA-F.:]+))(?:(?=.*?DstPort: (?P<dst_port>\d+))|)(?:(?=.*?Protocol: (?P<proto>\w+))|)(?:(?=.*?Priority: (?P<level>\d))|)(?:(?=.*?SID: (?P<sid>\d+))|)(?:(?=.*?InlineResult: (?P<action>\w+))|)(?=.*?Message: (?P<threat_name>[^,]+))'
+    set: {event_type: threat}
+    map:
+      level: {'1': high, '2': medium, '3': low, _default: info}
+      action: {Blocked: block, Would be blocked: allow, _default: allow}

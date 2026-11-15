@@ -1,0 +1,114 @@
+id: dell_brocade
+name: Dell Networking / Brocade (Ruckus ICX)
+description: >
+  Dell OS10 (%IFM_OSTATE_DN and audit messages), Dell OS9/Force10
+  (%IFMGR-5-OSTATE_DN), Dell N-series and PowerConnect (FASTPATH
+  "%% Link Down: Gi1/0/5" and login messages; the same FASTPATH format covers
+  UniFi gen-1 switches and EdgeSwitch port changes), Brocade FastIron / Ruckus ICX
+  ("Interface ethernet1/1/5, state down", "Security: SSH login by ..."), and
+  Brocade Fabric OS SAN switches (RASLog SEC- login events).
+priority: 28
+
+match:
+  message:
+    - 'Dell EMC \(OS10\)|Dell \(OS10\)|%(?:IFM|ALM|AUDIT|SEC|DN)_[A-Z_]+:'
+    - '%[A-Z0-9]+-[A-Z]:[A-Z]+ %[A-Z0-9_]+-\d-[A-Z0-9_]+:'
+    - '%% (?:Link (?:Up|Down):|.*?(?:login|Login|password))'
+    - '^Interface (?:ethernet|ve|lg|management)\S*, state (?:up|down)'
+    - '^\d{4}/\d\d/\d\d-\d\d:\d\d:\d\d, \[[A-Z0-9]+-\d+\]'
+  app: ['^(?:TRAPMGR|CLI_WEB|USER_MGR|SSHD|dn_alm|dn_audit)$']
+  raw: ['\bSecurity: (?:SSH|Telnet|Web|HTTPS?|SNMP) (?:login|access) by |\bSecurity: (?:running|startup)-config was ']
+
+rules:
+  # Dell OS10: "Node.1-Unit.1:PRI [event], Dell EMC (OS10) %IFM_OSTATE_DN: Interface operational state is down :ethernet1/1/5"
+  - name: os10-link
+    pattern: '%IFM_OSTATE_(?P<state>UP|DN): .*?:\s*(?P<interface>\S+)\s*$'
+    set: {event_type: link_state}
+    map: {state: {UP: up, DN: down}}
+
+  # Dell OS10 audit: "%AUDIT_LOGIN_FAIL: ... user admin from 203.0.113.5" (wording varies by release)
+  - name: os10-login-failed
+    pattern: '%\w*(?:LOGIN_FAIL|AUTH_FAIL)\w*: .*?(?:[Uu]ser:?\s*''?(?P<user>[\w.@-]+))?.*?(?:from|[Rr]emote(?: IP)?:?)\s*''?(?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  - name: os10-login
+    pattern: '%\w*(?:LOGIN_SUCCESS|LOGIN_OK|SESSION_OPEN)\w*: .*?(?:[Uu]ser:?\s*''?(?P<user>[\w.@-]+))?.*?(?:from|[Rr]emote(?: IP)?:?)\s*''?(?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  - name: os10-config
+    pattern: '%\w*(?:CONFIG_CHANGE|CONF_CHANGE|COMMIT)\w*: (?P<detail>.*?)(?:\b[Uu]ser:?\s*''?(?P<user>[\w.@-]+))?\s*$'
+    set: {event_type: config_change}
+
+  # Dell OS9 / Force10: "%STKUNIT1-M:CP %IFMGR-5-OSTATE_DN: Changed interface state to down: Te 1/5"
+  - name: os9-link
+    pattern: '%IFMGR-\d-(?:OSTATE|ASTATE)_(?P<state>UP|DN): Changed interface (?:Admin )?state to (?:up|down): (?P<interface>.+?)\s*$'
+    set: {event_type: link_state}
+    map: {state: {UP: up, DN: down}}
+
+  # Dell OS9: "%SEC-3-AUTHENTICATION_FAIL: Login failed for user admin on vty0 (203.0.113.5)"
+  - name: os9-login-failed
+    pattern: '%SEC-\d-(?:AUTHENTICATION_FAIL|LOGIN_FAIL)\w*: .*?for user (?P<user>\S+).*?\((?P<src_ip>[0-9a-fA-F.:]+)\)'
+    set: {event_type: auth_failure}
+
+  - name: os9-login
+    pattern: '%SEC-\d-LOGIN_SUCCESS: Login successful for user (?P<user>\S+).*?\((?P<src_ip>[0-9a-fA-F.:]+)\)'
+    set: {event_type: auth_success}
+
+  - name: os9-config
+    pattern: '%SYS-\d-CONFIG_I: Configured from (?P<config_source>\S+) by (?P<user>\S+)(?: \((?P<src_ip>[0-9a-fA-F.:]+)\))?'
+    set: {event_type: config_change}
+
+  # Dell N-series / PowerConnect (FASTPATH): "traputil.c(721) 3 %% Link Down: Gi1/0/5"
+  - name: fastpath-link
+    pattern: '%% Link (?P<state>Up|Down): (?P<interface>\S+)'
+    set: {event_type: link_state}
+    map: {state: {Up: up, Down: down}}
+
+  # "%% Failed login attempt by admin from 203.0.113.5" / "%% User admin login failure from 203.0.113.5"
+  - name: fastpath-login-failed
+    pattern: '%% .*?(?:[Ff]ailed login|login failure|[Ii]nvalid password|[Aa]uthentication failed).*?(?:(?:user|by) ''?(?P<user>[\w.@-]+))?.*?(?:from|IP:?) (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  - name: fastpath-login
+    pattern: '%% .*?(?:[Uu]ser|by) ''?(?P<user>[\w.@-]+)''? (?:logged in|login successful|authenticated).*?(?:from|IP:?) (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # Brocade FastIron / Ruckus ICX: "Interface ethernet1/1/5, state down"
+  - name: icx-link
+    pattern: '^Interface (?P<interface>\S+), state (?P<state>up|down)'
+    set: {event_type: link_state}
+
+  # "Security: SSH login by admin from src IP 10.0.0.9 from src MAC ... to PRIVILEGED EXEC mode"
+  - name: icx-login
+    source: raw
+    pattern: '\bSecurity: (?P<service>SSH|Telnet|Web|HTTPS?) login by (?P<user>\S+) from src IP (?P<src_ip>[0-9a-fA-F.:]+)(?!.*\b(?:rejected|failed)\b)'
+    set: {event_type: auth_success}
+
+  # "Security: SSH access by admin from src IP 203.0.113.5 rejected, 3 attempt(s)" / "... login by x from src IP y failed"
+  - name: icx-login-failed
+    source: raw
+    pattern: '\bSecurity: (?P<service>SSH|Telnet|Web|HTTPS?) (?:access|login) by (?P<user>\S+) from src IP (?P<src_ip>[0-9a-fA-F.:]+).*?\b(?:rejected|failed)\b'
+    set: {event_type: auth_failure}
+
+  # "Security: running-config was changed by admin from src IP 10.0.0.9"
+  - name: icx-config
+    source: raw
+    pattern: '\bSecurity: (?P<detail>(?:running|startup)-config was (?:changed|written|saved)) by (?P<user>\S+)(?: from src IP (?P<src_ip>[0-9a-fA-F.:]+))?'
+    set: {event_type: config_change}
+
+  # Brocade Fabric OS: "2026/11/14-10:00:00, [SEC-1193], 1234, FID 128, INFO, sw01, Security violation: Login failure attempt via SSH. IP Addr: 203.0.113.5"
+  - name: fos-login-failed
+    pattern: '\[SEC-1193\], .*?Login failure attempt via (?P<service>\w+)\. IP Addr: (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  # "[SEC-3020], ..., AUDIT, ..., admin, ..., Event: login, Status: success, Info: Successful login attempt via SSH, IP Addr: 10.0.0.9"
+  - name: fos-login
+    pattern: '\[SEC-3020\], .*?Event: login, Status: success.*?via (?P<service>\w+), IP Addr: (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # "[SEC-3021], ..., Event: login, Status: failed, Info: Failed login attempt via SSH, IP Addr: 203.0.113.5"
+  - name: fos-login-failed-audit
+    pattern: '\[SEC-3021\], .*?Status: failed.*?via (?P<service>\w+), IP Addr: (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  # FOS port state: "[PORT-1003], ..., Port 5 faulted ..." / "[SNMP-1008] ..." are kept as other events.

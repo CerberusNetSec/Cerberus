@@ -1,0 +1,82 @@
+id: juniper
+name: Juniper SRX / Junos
+description: >
+  Junos in the default "brief" syslog format: SRX session create/deny (with
+  NAT and zones), IDP and screen detections, CLI/J-Web logins and failures,
+  commits, and interface link state. Session-close messages, which repeat each
+  session with its byte counts, are kept as session_end. Set
+  `structured-data brief` off (the default) for these patterns.
+priority: 22
+
+match:
+  message:
+    - '^(?:RT_FLOW_SESSION_|RT_IDP|IDP_ATTACK_LOG_EVENT|RT_SCREEN_|UI_LOGIN_EVENT|UI_AUTH_EVENT|UI_COMMIT|SSHD_LOGIN_FAILED|SNMP_TRAP_LINK_|LOGIN_FAILED)'
+  app: ['^RT_(?:FLOW|IDP|SCREEN)$']
+
+rules:
+  # RT_FLOW_SESSION_CREATE: session created 203.0.113.5/51515->198.51.100.10/22 0x0 junos-ssh
+  #   203.0.113.5/51515->10.0.0.5/22 0x0 N/A N/A static-nat-rule r1 6 allow-ssh untrust trust 12345 ...
+  # The first pair is the original, the second after NAT.
+  - name: session-create
+    pattern: 'RT_FLOW_SESSION_CREATE: session created (?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+)->(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+) \S+ (?P<application>\S+) (?P<nat_src_ip>[0-9a-fA-F.:]+?)/\d+->(?P<nat_dst_ip>[0-9a-fA-F.:]+?)/\d+ \S+ (?:\S+ ){2,4}?(?P<proto>\d{1,3}) (?P<policy>\S+) (?P<from_zone>\S+) (?P<to_zone>\S+)'
+    set: {event_type: traffic, action: allow}
+    map:
+      proto: {'1': icmp, '6': tcp, '17': udp, '47': gre, '50': esp, '58': icmpv6, _default: ''}
+
+  # RT_FLOW_SESSION_DENY: session denied 203.0.113.5/51515->10.0.0.5/23 0x0 junos-telnet 6(0) deny-all untrust trust ...
+  - name: session-deny
+    pattern: 'RT_FLOW_SESSION_DENY: session denied (?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+)->(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+) \S+ (?P<application>\S+) (?P<proto>\d{1,3})\(\d+\) (?P<policy>\S+) (?P<from_zone>\S+) (?P<to_zone>\S+)'
+    set: {event_type: traffic, action: block}
+    map:
+      proto: {'1': icmp, '6': tcp, '17': udp, '47': gre, '50': esp, '58': icmpv6, _default: ''}
+
+  # RT_FLOW_SESSION_CLOSE: session closed TCP FIN: 10.0.0.5/50000->93.184.216.34/443 0x0 junos-https ... 6 allow-web
+  #   trust untrust 12345 10(1200) 8(48000) 30 ...   packets(bytes) to the server, then back
+  - name: session-close
+    pattern: 'RT_FLOW_SESSION_CLOSE: session closed (?P<reason>[^:]+): (?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+)->(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+) \S+ (?P<application>\S+) .*? (?P<proto>\d{1,3}) (?P<policy>\S+) (?P<from_zone>\S+) (?P<to_zone>\S+) \d+ \d+\((?P<bytes_sent>\d+)\) \d+\((?P<bytes_received>\d+)\) (?P<duration>\d+)'
+    set: {event_type: session_end}
+    map:
+      proto: {'1': icmp, '6': tcp, '17': udp, '58': icmpv6, _default: ''}
+
+  # IDP_ATTACK_LOG_EVENT: IDP: at 1731578400, SIG Attack log <203.0.113.5/51515->10.0.0.5/80> for TCP protocol and
+  #   service HTTP application NONE by rule 3 of rulebase IPS in policy Recommended. attack: id=4012, repeat=0,
+  #   action=DROP, threat-severity=HIGH, name=HTTP:SQL:INJ:GENERIC, ...
+  - name: idp-attack
+    pattern: 'IDP_ATTACK_LOG_EVENT: .*?<(?P<src_ip>[0-9a-fA-F.:]+?)/(?P<src_port>\d+)->(?P<dst_ip>[0-9a-fA-F.:]+?)/(?P<dst_port>\d+)> for (?P<proto>\w+) protocol.*?action=(?P<action>\w+), threat-severity=(?P<level>\w+), name=(?P<threat_name>[^,]+)'
+    set: {event_type: threat}
+    map:
+      action: {DROP: block, CLOSE: block, CLOSE_CLIENT: block, CLOSE_SERVER: block, DROP_PACKET: block, _default: allow}
+      level: {CRITICAL: critical, MAJOR: high, HIGH: high, MEDIUM: medium, MINOR: low, LOW: low, INFO: info, _default: low}
+
+  # RT_SCREEN_TCP: TCP port scan! source: 203.0.113.5:51515, destination: 10.0.0.5:22, zone name: untrust,
+  #   interface name: ge-0/0/0.0, action: drop
+  - name: screen
+    pattern: 'RT_SCREEN_\w+: (?P<threat_name>[^!]+)! source: (?P<src_ip>[0-9a-fA-F.:]+?)(?::(?P<src_port>\d+))?, destination: (?P<dst_ip>[0-9a-fA-F.:]+?)(?::(?P<dst_port>\d+))?, zone name: (?P<from_zone>[^,]+), interface name: (?P<interface>[^,]+), action: (?P<action>\w+)'
+    set: {event_type: threat, level: medium, category: screen}
+    map: {action: {drop: block, _default: allow}}
+
+  # UI_LOGIN_EVENT: User 'admin' login, class 'j-super-user' [12345], ssh-connection '10.0.0.9 51515 10.0.0.1 22', client-mode 'cli'
+  - name: login
+    pattern: 'UI_LOGIN_EVENT: User ''(?P<user>[^'']*)'' login, class ''(?P<class>[^'']*)''(?:.*?-connection ''(?P<src_ip>[0-9a-fA-F.:]+) )?'
+    set: {event_type: auth_success}
+
+  # UI_AUTH_EVENT: Authenticated user 'admin' assigned to class 'super-user'
+  - name: j-web-auth
+    pattern: 'UI_AUTH_EVENT: Authenticated user ''(?P<user>[^'']*)'''
+    set: {event_type: auth_success}
+
+  # SSHD_LOGIN_FAILED: Login failed for user 'admin' from host '203.0.113.5'
+  - name: login-failed
+    pattern: '(?:SSHD_LOGIN_FAILED|LOGIN_FAILED): Login failed for user ''(?P<user>[^'']*)'' from host ''(?P<src_ip>[0-9a-fA-F.:]+)'''
+    set: {event_type: auth_failure}
+
+  # UI_COMMIT: User 'admin' requested 'commit' operation (comment: none)
+  - name: commit
+    pattern: 'UI_COMMIT: User ''(?P<user>[^'']*)'' requested ''(?P<detail>[^'']*)'' operation'
+    set: {event_type: config_change}
+
+  # SNMP_TRAP_LINK_DOWN: ifIndex 520, ifAdminStatus up(1), ifOperStatus down(2), ifName ge-0/0/1
+  - name: link-state
+    pattern: 'SNMP_TRAP_LINK_(?P<state>UP|DOWN): .*?ifName (?P<interface>\S+)'
+    set: {event_type: link_state}
+    map: {state: {UP: up, DOWN: down}}

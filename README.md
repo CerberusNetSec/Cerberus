@@ -1,5 +1,19 @@
 # Cerberus
 
+[![CI](https://github.com/wrcrooks/Cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wrcrooks/Cerberus/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wrcrooks/Cerberus?sort=semver)](https://github.com/wrcrooks/Cerberus/releases/latest)
+[![Licence: Apache 2.0](https://img.shields.io/github/license/wrcrooks/Cerberus)](LICENSE)
+[![Container image](https://img.shields.io/badge/image-ghcr.io%2Fwrcrooks%2Fcerberus-2496ED?logo=docker&logoColor=white)](https://github.com/wrcrooks/Cerberus/pkgs/container/cerberus)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](Dockerfile)
+[![Last commit](https://img.shields.io/github/last-commit/wrcrooks/Cerberus)](https://github.com/wrcrooks/Cerberus/commits/main)
+[![Stars](https://img.shields.io/github/stars/wrcrooks/Cerberus?style=flat)](https://github.com/wrcrooks/Cerberus/stargazers)
+[![Open issues](https://img.shields.io/github/issues/wrcrooks/Cerberus)](https://github.com/wrcrooks/Cerberus/issues)
+
+![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
+![Detectors: 23](https://img.shields.io/badge/detectors-23-d73a49)
+![Tests: 248](https://img.shields.io/badge/tests-248-2ea44f)
+![Deployments: standalone, Compose, Swarm, Kubernetes](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes-0366d6)
+
 A syslog watchdog for networks of up to a few hundred devices. It runs in one Docker container, receives
 syslog from your firewalls and switches, looks for traffic and behaviour that is
 out of the ordinary, shows it on a web dashboard, and tells you by email,
@@ -10,6 +24,23 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
 [HTTP API](docs/API.md) · [many sites](deploy/README.md) ·
 [scaling plan](docs/CLUSTERING.md) · [security](SECURITY.md) ·
 [contributing](CONTRIBUTING.md)
+
+## Contents
+
+- [Screenshots](#screenshots)
+- [Quick start](#quick-start) · [Telling devices apart](#telling-devices-apart)
+- [Pointing devices at it](#pointing-devices-at-it)
+- [What it detects](#what-it-detects)
+  - [Security detections](#security-detections) · [High Risk Ports](#high-risk-ports) ·
+    [Anomaly and health detections](#anomaly-and-health-detections) · [False positives](#false-positives)
+- [Topology (SNMP)](#topology-snmp)
+- [Clustered storage](#clustered-storage)
+- [Scale-out ingest](#scale-out-ingest)
+  - [Detection workers](#detection-workers) · [High availability](#high-availability) · [Metrics](#metrics)
+- [Many sites](#many-sites) · [Running at scale](#running-at-scale)
+- [Notifications](#notifications) · [Connectors](#connectors)
+- [Configuration](#configuration) · [Security notes](#security-notes)
+- [Development](#development) · [Licence](#licence)
 
 ## Screenshots
 
@@ -61,6 +92,12 @@ to identify devices by the hostname in the syslog header. See the comments in
 
 ## Pointing devices at it
 
+Cerberus listens for syslog on UDP and TCP 5514 inside the container (published
+as 514). Switch the UDP, TCP and TLS listeners on or off and change their ports
+under **Settings → Syslog**; changes take effect at once, and the page shows
+whether each one is listening. In Docker, change the published port mapping to
+match.
+
 **On Docker Desktop for Windows, use TCP.** UDP syslog from other machines may
 never reach the container even with the port published and Windows Firewall
 open (seen with OPNsense: nothing arrived over UDP, TCP worked at once). If the
@@ -75,12 +112,19 @@ works as normal.
 | **Fortinet FortiGate** | `config log syslogd setting` → `set status enable`, `set server <ip>`, `set format default` | Default key=value format only (not CSV or CEF). Traffic appears for policies with logging enabled. |
 | **Cisco IOS / IOS-XE** | `logging host <ip>` and `logging trap informational` | Recommended: `service timestamps log datetime msec`, `logging origin-id hostname`, `login on-failure log`, `login on-success log`. |
 | **RTL-Playground** | Enable syslog and set the server IP in the switch's CLI/config | Sends UDP only. Set a hostname on the switch so its lines carry it. |
+| **Cisco ASA / Firepower** | ASA: `logging enable`, `logging host <if> <ip>` (or `<ip> tcp/514`), `logging trap informational`, `logging timestamp`, `logging device-id hostname`. FTD: Platform Settings → Syslog in FMC, and *Send Syslog* in the access policy's logging. | Level 6 (informational) is needed for connections built. **Over TCP, an ASA stops passing new connections if it cannot reach the syslog server** unless you also set `logging permit-hostdown`. |
+| **Juniper SRX / Junos** | `set system syslog host <ip> any info`; for traffic, `set security log mode event` and `then log session-init session-close` on the policies | The default (brief) message format. EX switches send logins, commits and link state with the same `syslog host` line. |
+| **Ubiquiti UniFi / EdgeOS** | UniFi: Settings → Control Plane → Integrations (or System → Remote Logging on older versions), syslog server and port. EdgeOS: `set system syslog host <ip> facility all level info` | Firewall rules only appear when the rule's logging is on; Threat Management alerts are included. |
+| **Aruba** | AOS-CX: `logging <ip> severity info`. AOS-S/ProCurve: `logging <ip>` and `logging severity info`. Mobility controller: `logging <ip>` with `logging level informational user` and `security` | Controller user authentication covers Wi-Fi and 802.1X logins, so password spraying against users is seen too. |
+| **Dell / Brocade** | OS10: `logging server <ip>`. OS9 and N-series: `logging <ip>`. Brocade/Ruckus ICX: `logging host <ip>`. Fabric OS: `syslogadmin --set -ip <ip>` | N-series and other FASTPATH switches (UniFi gen 1, EdgeSwitch) send `%% Link Up/Down`, which is recognised too. |
 | Anything else | Send RFC 3164 or RFC 5424 syslog | The generic connector understands OpenSSH/PAM logins, netfilter logs and common link up/down wording. Write a connector for the rest. |
 
 ## What it detects
 
 Every threshold is editable under **Settings → Detection**, and each detector can be
-switched off.
+switched off. The **Alerts** page refreshes itself (every 10 seconds by default;
+choose 30 s, 1 or 5 minutes, or off), highlights alerts that arrived since you
+opened it, and the open-alert count next to **Alerts** stays current on every page.
 
 ### Security detections
 
@@ -558,7 +602,7 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_TRAFFIC_SAMPLE` | `1` | Store one in N *allowed* traffic events; `0` stores none. Detection still sees all of them |
 | `CERBERUS_MAX_TCP_CLIENTS` | `1000` | Syslog-over-TCP connections accepted at once |
 | `CERBERUS_ALERT_RETENTION_DAYS` | `90` | |
-| `CERBERUS_SYSLOG_UDP_PORT` / `_TCP_PORT` | `5514` | Inside the container; `0` disables |
+| `CERBERUS_SYSLOG_UDP_PORT` / `_TCP_PORT` | `5514` | Inside the container; `0` disables. Once listeners are saved under Settings → Syslog, those win |
 | `CERBERUS_WEB_PORT` | `8080` | |
 | `CERBERUS_DATA_DIR` | `/data` | SQLite database and user connectors |
 | `CERBERUS_PASSWORD_FILE` | | Read the password from a file instead (Docker and Kubernetes secrets) |

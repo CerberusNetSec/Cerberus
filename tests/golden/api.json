@@ -6925,6 +6925,34 @@
      ]
     },
     {
+     "description": "ASA and FTD %ASA-/%FTD- messages: connections built (allowed) and denied by access lists, login and AAA results, commands run by administrators, threat-detection and IDS hits, interface state; plus Firepower connection and intrusion events (430001-430003). Teardown messages, which repeat each connection with its byte count, are kept as session_end rather than counted as traffic again.",
+     "id": "cisco_asa",
+     "name": "Cisco ASA / Firepower Threat Defense",
+     "origin": "builtin",
+     "priority": 20,
+     "rules": [
+      "built-inbound",
+      "built-outbound",
+      "teardown",
+      "acl-deny",
+      "acl-logged",
+      "inbound-denied",
+      "login-denied",
+      "login-permitted",
+      "aaa-rejected",
+      "aaa-successful",
+      "user-auth-failed",
+      "user-auth-succeeded",
+      "command-executed",
+      "command",
+      "threat-detection-host",
+      "ids-signature",
+      "interface-state",
+      "firepower-connection",
+      "firepower-intrusion"
+     ]
+    },
+    {
      "description": "PAN-OS default (CSV) syslog format for TRAFFIC, THREAT, SYSTEM and CONFIG logs, as sent by PA-400 series and other PAN-OS 10.x / 11.x firewalls. Field positions follow the PAN-OS \"Syslog Field Descriptions\" reference; if you use a custom log format on the firewall, copy this file and adjust the indexes.",
      "id": "paloalto",
      "name": "Palo Alto Networks PAN-OS",
@@ -6932,6 +6960,36 @@
      "priority": 20,
      "rules": [
       "pan-csv"
+     ]
+    },
+    {
+     "description": "Junos in the default \"brief\" syslog format: SRX session create/deny (with NAT and zones), IDP and screen detections, CLI/J-Web logins and failures, commits, and interface link state. Session-close messages, which repeat each session with its byte counts, are kept as session_end. Set `structured-data brief` off (the default) for these patterns.",
+     "id": "juniper",
+     "name": "Juniper SRX / Junos",
+     "origin": "builtin",
+     "priority": 22,
+     "rules": [
+      "session-create",
+      "session-deny",
+      "session-close",
+      "idp-attack",
+      "screen",
+      "login",
+      "j-web-auth",
+      "login-failed",
+      "commit",
+      "link-state"
+     ]
+    },
+    {
+     "description": "UniFi gateways (USG, UDM, UXG, Cloud Gateway) and EdgeRouters: firewall rule logs, whose tag ends -A (accept), -D (drop) or -R (reject), and Threat Management (Suricata) alerts. Turn on logging for the firewall rules you want to see. Port up/down from UniFi and EdgeSwitch switches is recognised by the FASTPATH rules of the Dell/Brocade connector and the generic one.",
+     "id": "ubiquiti",
+     "name": "Ubiquiti UniFi / EdgeOS",
+     "origin": "builtin",
+     "priority": 24,
+     "rules": [
+      "firewall",
+      "threat-management"
      ]
     },
     {
@@ -6952,6 +7010,54 @@
       "interface-status",
       "restart",
       "event"
+     ]
+    },
+    {
+     "description": "AOS-CX switches (Event|id|severity|... messages), AOS-S/ProCurve switches (\"ports: port 5 is now off-line\"), and ArubaOS 8 mobility controllers: interface state, management logins and failures, configuration changes, and wireless/802.1X user authentication, so password spraying against Wi-Fi users is detected too.",
+     "id": "aruba",
+     "name": "Aruba (AOS-CX, AOS-S/ProCurve, Mobility Controllers)",
+     "origin": "builtin",
+     "priority": 26,
+     "rules": [
+      "cx-link",
+      "cx-login",
+      "cx-login-failed",
+      "cx-config",
+      "aoss-link",
+      "aoss-login",
+      "aoss-login-failed",
+      "aoss-port-security",
+      "controller-user-auth",
+      "controller-user-auth-failed",
+      "controller-admin-failed",
+      "controller-admin-login"
+     ]
+    },
+    {
+     "description": "Dell OS10 (%IFM_OSTATE_DN and audit messages), Dell OS9/Force10 (%IFMGR-5-OSTATE_DN), Dell N-series and PowerConnect (FASTPATH \"%% Link Down: Gi1/0/5\" and login messages; the same FASTPATH format covers UniFi gen-1 switches and EdgeSwitch port changes), Brocade FastIron / Ruckus ICX (\"Interface ethernet1/1/5, state down\", \"Security: SSH login by ...\"), and Brocade Fabric OS SAN switches (RASLog SEC- login events).",
+     "id": "dell_brocade",
+     "name": "Dell Networking / Brocade (Ruckus ICX)",
+     "origin": "builtin",
+     "priority": 28,
+     "rules": [
+      "os10-link",
+      "os10-login-failed",
+      "os10-login",
+      "os10-config",
+      "os9-link",
+      "os9-login-failed",
+      "os9-login",
+      "os9-config",
+      "fastpath-link",
+      "fastpath-login-failed",
+      "fastpath-login",
+      "icx-link",
+      "icx-login",
+      "icx-login-failed",
+      "icx-config",
+      "fos-login-failed",
+      "fos-login",
+      "fos-login-failed-audit"
      ]
     },
     {

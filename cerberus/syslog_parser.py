@@ -15,6 +15,10 @@ _R5424 = re.compile(
 _R3164 = re.compile(
     r"^((?:[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d)|(?:\d{4}-\d\d-\d\dT\S+)) (\S+) (.*)$", re.S
 )
+# Cisco ASA/FTD with "logging timestamp": "Mon dd yyyy hh:mm:ss[: | hostname : ]%ASA-..."
+_ASA = re.compile(
+    r"^[A-Z][a-z]{2} [ \d]\d \d{4} \d\d:\d\d:\d\d(?:\.\d+)?(?:(?: [A-Z]{2,5})?: | ([\w.\-]+) : )(.*)$", re.S
+)
 _TAG = re.compile(r"^([A-Za-z0-9_./()-]{1,48})(?:\[(\d+)\])?: ?(.*)$", re.S)
 # Cisco IOS: "[seq: ][origin-id: ][*]Mon dd [yyyy ]hh:mm:ss[.mmm][ TZ]: %FAC-SEV-MNEMONIC: text"
 _CISCO = re.compile(
@@ -47,7 +51,7 @@ def parse_syslog(data: bytes | str) -> dict:
         value = int(m.group(1))
         if value <= 191:
             pri = value
-        text = text[m.end():]
+        text = text[m.end():].lstrip(" ")  # Dell N-series and others put a space after <PRI>
 
     out = {
         "facility": pri >> 3,
@@ -63,6 +67,12 @@ def parse_syslog(data: bytes | str) -> dict:
         out["hostname"] = _dash(m.group(2))
         out["app"] = _dash(m.group(3))
         out["message"] = (m.group(7) or "").lstrip("\ufeff")
+        return out
+
+    m = _ASA.match(text)
+    if m:
+        out["hostname"] = m.group(1) or ""
+        out["message"] = m.group(2)
         return out
 
     m = _R3164.match(text)

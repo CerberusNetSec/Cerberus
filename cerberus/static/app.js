@@ -2203,14 +2203,19 @@ function startPageTimer() {
    #/settings/<section>; the older #/detection and the like still work. */
 const SETTINGS_TABS = [['general', 'General'], ['detection', 'Detection'], ['connectors', 'Connectors'], ['syslog', 'Syslog'], ['notifications', 'Notifications'],
   ['agents', 'API & agents'], ['users', 'Users'], ['audit', 'Audit log']];
+// Admins see every section; analysts only the audit log (the rest needs an admin).
+const settingsTabs = () => (document.body.dataset.role === 'analyst'
+  ? SETTINGS_TABS.filter(([id]) => id === 'audit') : SETTINGS_TABS);
 function settingsSection(name) {
+  const tabs = settingsTabs();
   if (name === 'settings') {
     let last = '';
     try { last = localStorage.getItem('cerberus.settingsTab') || ''; } catch { /* first one */ }
-    return SETTINGS_TABS.some(([id]) => id === last) ? last : 'general';
+    return tabs.some(([id]) => id === last) ? last : tabs[0][0];
   }
   const id = name.startsWith('settings/') ? name.slice(9) : name;
-  return SETTINGS_TABS.some(([t]) => t === id) ? id : null;
+  if (!SETTINGS_TABS.some(([t]) => t === id)) return null;
+  return tabs.some(([t]) => t === id) ? id : tabs[0][0];
 }
 function settingsChrome(tab) {
   // The section's own heading becomes the tabs; its description stays.
@@ -2221,7 +2226,7 @@ function settingsChrome(tab) {
   main.insertAdjacentHTML('afterbegin', `<div class="page-head"><div><h1>Settings</h1></div>
     ${v ? `<div class="muted version">Cerberus <a href="https://github.com/wrcrooks/Cerberus/releases/tag/v${esc(v)}" target="_blank"
       rel="noopener noreferrer" title="Release notes for this version">v${esc(v)}</a></div>` : ''}</div>
-    <nav class="tabs" aria-label="Settings sections">${SETTINGS_TABS.map(([id, label]) =>
+    <nav class="tabs" aria-label="Settings sections">${settingsTabs().map(([id, label]) =>
       `<a href="#/settings/${id}" class="${id === tab ? 'on' : ''}" ${id === tab ? 'aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`);
   try { localStorage.setItem('cerberus.settingsTab', tab); } catch { /* not kept */ }
 }

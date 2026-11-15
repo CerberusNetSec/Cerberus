@@ -56,7 +56,9 @@ jobs:
           docker exec redpanda rpk cluster health
       - name: Start a second Redpanda that requires SASL (SCRAM)
         run: |
-          docker run -d --name redpanda-sasl -p 19093:19093 redpandadata/redpanda:v24.2.7 redpanda start             --mode dev-container --smp 1 --memory 1G             --kafka-addr external://0.0.0.0:19093 --advertise-kafka-addr external://127.0.0.1:19093
+          docker run -d --name redpanda-sasl -p 19093:19093 redpandadata/redpanda:v24.2.7 redpanda start \
+            --mode dev-container --smp 1 --memory 1G \
+            --kafka-addr external://0.0.0.0:19093 --advertise-kafka-addr external://127.0.0.1:19093
           for i in $(seq 1 60); do docker exec redpanda-sasl rpk cluster health | grep -q 'Healthy:.*true' && break; sleep 2; done
           docker exec redpanda-sasl rpk security user create cerberus -p ci-sasl-pass --mechanism SCRAM-SHA-512
           docker exec redpanda-sasl rpk cluster config set superusers "['cerberus']"

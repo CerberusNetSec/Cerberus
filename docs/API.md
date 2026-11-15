@@ -5,10 +5,21 @@ default). It is stable enough to script against but is not versioned.
 
 ## Authentication
 
-`POST /api/login` with `{"password": "..."}` sets a session cookie
-(`cerberus_session`, 7 days, HttpOnly, SameSite=Strict). Every other `/api/`
-path returns `401` without it. Repeated failures from one address are
-throttled (`429`). With `CERBERUS_AUTH=off` no login is needed.
+`POST /api/login` with `{"username": "...", "password": "..."}` sets a session
+cookie (`cerberus_session`, 7 days, HttpOnly, SameSite=Strict); leave out the
+username (or send `""`) to sign in as the built-in admin with the shared
+password. Single sign-on starts at `GET /api/auth/oidc/login` in a browser.
+Every other `/api/` path returns `401` without a session. Repeated failures
+from one address are throttled (`429`). With `CERBERUS_AUTH=off` no login is
+needed.
+
+**Roles.** A session acts with its account's role. **Viewers** may make `GET`
+requests, except to the admin-only `/api/tokens`, `/api/users`, `/api/channels`
+and `/api/auth/settings`, and `/api/audit` (analysts and admins). **Analysts**
+may also `POST /api/alerts/status`, `/api/alerts/false-positive`,
+`/api/suppressions/remove`, `/api/ignore` and (on a console)
+`/api/site-alerts/status`. **Admins** may do everything. Anything else answers
+`403`. Everyone with a local account may `POST /api/me/password`.
 
 ```sh
 curl -c jar -H 'Content-Type: application/json' -d '{"password":"change-me"}' http://host:8080/api/login
@@ -16,9 +27,9 @@ curl -b jar 'http://host:8080/api/alerts?status=open&severity=high'
 ```
 
 **API tokens** (Settings → API & agents) are for agents and scripts: send
-`Authorization: Bearer cerb_...`. A **read** token may make any `GET` request
-except `/api/tokens`. A **write** token may also `POST /api/alerts/status` and
-`POST /api/alerts/false-positive` (recorded in the audit log against the token).
+`Authorization: Bearer cerb_...`. A **read** token acts as a viewer and a
+**write** token as an analyst (its changes are recorded in the audit log
+against the token); neither can reach the admin-only paths.
 Anything else answers `403`; a missing, wrong or revoked token `401`
 (revocation takes effect within 30 seconds).
 
@@ -38,7 +49,7 @@ Webhook channels POST this; custom API calls send it when their body template
 is empty, and `{{payload}}` inserts it:
 
 ```json
-{"event": "alert", "source": "cerberus", "version": "0.11.0", "id": 42,
+{"event": "alert", "source": "cerberus", "version": "0.12.0", "id": 42,
  "title": "Port scan from 192.168.1.77", "description": "...", "severity": "high",
  "detector": "port_scan", "device": "OPNsense.lan", "src_ip": "192.168.1.77",
  "created": "2026-11-15T10:00:00+00:00", "created_epoch": 1794708000.0, "details": {"target": "192.168.10.5"},
@@ -63,18 +74,26 @@ credentials, SNMP community strings) are never returned: they read back as
 | `GET /healthz` | Liveness check, no login needed |
 | `GET /readyz` | Ready for traffic (`503` on a standby processor), no login needed |
 | `GET /metrics` | Prometheus metrics; no login, or `Authorization: Bearer` with `CERBERUS_METRICS_TOKEN` |
-| `GET /api/me` | `{signed_in, auth, version}` |
-| `POST /api/login`, `POST /api/logout` | Session |
+| `GET /api/me` | `{signed_in, auth, version, user: {username, name, role, kind, local, source}, sso: {enabled, label}, builtin_admin, central, site}`, without login |
+| `POST /api/login`, `POST /api/logout` | Session: `{"username", "password"}`; the answer has the signed-in `user` |
+| `POST /api/me/password` | `{"current", "new"}`: change your own password (local accounts; 12 characters or more) |
+| `GET /api/auth/oidc/login`, `GET /api/auth/oidc/callback` | Single sign-on (browser redirects); a failure returns to `/?sso_error=<why>` |
+| `GET /api/users` | Admin: accounts (`id, username, display_name, email, role, source` (`local` or `sso`), `disabled, created, last_login`), the roles, `builtin_admin`, and single sign-on settings (no secret) |
+| `POST /api/users` | Admin: `{"username", "display_name", "email", "role": "viewer"\|"analyst"\|"admin", "password"}`; `409` if the name is taken |
+| `PUT /api/users/{id}` | Admin: any of `display_name`, `role` (not for single sign-on users), `disabled`, `password` (local users). A change of role, a new password or disabling signs the user out. `409` if it would leave no admin; you cannot demote or disable yourself |
+| `DELETE /api/users/{id}` | Admin: delete an account; not your own, nor the last admin |
+| `PUT /api/auth/builtin` | Admin: `{"allowed": false}` switches the shared-password admin off; `409` unless another admin account (or a single sign-on admin group) exists |
+| `GET /api/display`, `PUT /api/display` | Display settings: `{"display": {"attack_hide_uncovered": true}}` hides ATT&CK tactics without a Cerberus detector |
 | `GET /api/summary?range=1h\|6h\|24h\|7d` | Dashboard: message-rate series, open alerts by severity, hosts by risk, alerts by attack stage, top blocked sources and ports, collector health |
 | `GET /api/alerts?status=&severity=&q=&limit=&id=&detector=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `false_positive`, `active` (open or acknowledged) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions); a false positive also carries `false_positive` (who, when, why, findings held back since) |
 | `POST /api/alerts/status` | `{"ids": [1,2], "status": "ack"}` or `{"all_open": true, "status": "ack"}` |
-| `GET /api/attack?range=24h\|7d\|30d\|90d\|all&status=real\|active\|all` | The MITRE ATT&CK matrix: per tactic, each technique Cerberus detects with its alert count, occurrences, severities, last seen and detectors; plus alerts outside ATT&CK. `status=real` leaves out false positives |
+| `GET /api/attack?range=24h\|7d\|30d\|90d\|all&status=real\|active\|all` | The MITRE ATT&CK matrix: per tactic, each technique Cerberus detects with its alert count, occurrences, severities, last seen and detectors; plus alerts outside ATT&CK, and `hide_uncovered` (the display setting). `status=real` leaves out false positives |
 | `GET /api/tokens`, `POST /api/tokens`, `POST /api/tokens/{id}/revoke` | API tokens (dashboard session only): `{"name", "scope": "read"\|"write"}`; the token is in the creation answer, once |
 | `GET /api/alerts/counts` | Open alerts by severity and in total, for the navigation badge: `{"open": {"high": 2}, "total": 2}` |
 | `POST /api/alerts/false-positive` | `{"id": 7, "analyst": "name", "justification": "at least 10 characters"}`: marks the alert a false positive and suppresses its detector and entity; audited. `400` without a name or justification, `404` for an unknown alert |
 | `GET /api/suppressions` | Every suppression, active and removed, with `hits` and `last_hit` |
 | `POST /api/suppressions/remove` | `{"id": 3, "analyst": "name", "justification": "..."}`: alerts resume; audited. `404` if not active |
-| `GET /api/audit?limit=&alert_id=` | The audit log, newest first: `action` (`false_positive`, `false_positive_again`, `suppression_removed`), `analyst`, `source` address, `alert_id`, `suppression_id`, `detail` (justification, detector, entity) |
+| `GET /api/audit?limit=&alert_id=&before=` | Analysts and admins: the audit log, newest first, `before` an entry id for paging. `action` is `login`, `login_failed`, `login_refused`, `logout`, `password_changed`, `false_positive`, `false_positive_again`, `suppression_removed`, an MCP tool's name, or the request (`PUT /api/detectors`) for any other change; `analyst` is who, `source` the address, then `alert_id`, `suppression_id` and `detail` (the request with secrets masked, or the justification) |
 | `POST /api/ignore` | `{"ip": "10.0.0.5", "kind": "source"\|"destination"}` adds to an ignore list |
 | `GET /api/events?hours=&device=&type=&action=&ip=&port=&q=&before=&limit=` | Events, newest first. `ip` matches source or destination, `port` is the destination port, `q` is text in the message, `before` is an event id for paging. A search running over 10 seconds returns `504` |
 | `GET /api/riskports?range=` | High Risk Ports: per port, its `name`, `protocols` (`any`, `tcp`, `udp` or `tcp/udp`), totals by direction (`[allowed, blocked]`), series, findings, open alert count; plus summary figures and ports with no traffic |

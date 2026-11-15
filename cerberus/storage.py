@@ -40,14 +40,26 @@ class Batch:
     # Notifications to send, written with the alerts they are about: (created, channel_id,
     # subject, body). Sent from the outbox once stored.
     notices: list[tuple] = field(default_factory=list)
+    # Findings held back by a false-positive suppression: (hits to add, last hit, suppression id).
+    suppression_hits: list[tuple] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return any((self.events, self.stats, self.devices, self.ports, self.new_alerts, self.alert_updates,
-                    self.notices))
+                    self.notices, self.suppression_hits))
 
 
 def _todo(*_args, **_kwargs):
     raise NotImplementedError
+
+
+SUPPRESSION_COLUMNS = ("id", "created", "detector", "entity", "title", "alert_id", "justification", "analyst",
+                       "source", "active", "removed", "removed_by", "removed_source", "removed_justification",
+                       "hits", "last_hit")
+AUDIT_COLUMNS = ("id", "ts", "action", "analyst", "source", "alert_id", "suppression_id", "detail")
+
+
+class NotFound(Exception):
+    """The alert or suppression asked for does not exist (or is no longer active)."""
 
 
 OUTBOX_ATTEMPTS = 5
@@ -107,6 +119,8 @@ class Store:
         "site_alerts": ("id", "site_id", "instance", "alert_id", "created", "last_seen", "received", "detector",
                         "severity", "title", "description", "entity", "src_ip", "device", "count", "details",
                         "status", "pending"),
+        "suppressions": SUPPRESSION_COLUMNS,
+        "audit_log": AUDIT_COLUMNS,
     }
 
     def import_table(self, table: str, rows: list[dict]) -> None:
@@ -137,6 +151,27 @@ class Store:
 
     def outbox_pending(self) -> int:
         """Notifications not yet sent nor given up."""
+        raise NotImplementedError
+
+    # --- false positives: suppressions and their audit trail --------------------------------
+    def false_positive(self, alert_id: int, when: float, justification: str, analyst: str, source: str) -> dict:
+        """In one transaction: suppress the alert's detector and entity (or reuse the active
+        suppression for them), mark the alert false_positive and append to the audit log.
+        Returns the suppression row. Raises NotFound for an unknown alert."""
+        raise NotImplementedError
+
+    def suppression_remove(self, suppression_id: int, when: float, justification: str, analyst: str,
+                           source: str) -> dict:
+        """Deactivate a suppression and append to the audit log, in one transaction. Returns
+        the suppression row. Raises NotFound if there is no such active suppression."""
+        raise NotImplementedError
+
+    def suppressions(self) -> list[dict]:
+        """Every suppression, active and removed, newest first."""
+        raise NotImplementedError
+
+    def audit_log(self, limit: int, alert_id: int = 0) -> list[dict]:
+        """The audit trail, newest first (detail is a JSON string). Never pruned or edited."""
         raise NotImplementedError
 
     def leadership(self, name: str) -> Leadership:

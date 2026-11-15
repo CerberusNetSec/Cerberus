@@ -33,7 +33,9 @@ MAX_BACKOFF = 300
 BATCH = 500  # alerts per report
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MIN_TOKEN_LENGTH = 24
-STATUSES = ("open", "ack", "resolved")
+STATUSES = ("open", "ack", "resolved")  # what the console may set on a site's alert
+# What a site may report: a false positive is marked on the site, with its justification there.
+REPORTED_STATUSES = (*STATUSES, "false_positive")
 
 
 def token_hash(token: str) -> str:
@@ -270,7 +272,7 @@ class Central:
             "title": _text(alert.get("title"), 200), "description": _text(alert.get("description"), 1000),
             "entity": _text(alert.get("entity"), 300), "src_ip": _text(alert.get("src_ip"), 64) or None,
             "device": _text(alert.get("device"), 128), "count": int(_num(alert.get("count"), 1)),
-            "status": alert.get("status") if alert.get("status") in STATUSES else "open",
+            "status": alert.get("status") if alert.get("status") in REPORTED_STATUSES else "open",
             "details": json.dumps(details if isinstance(details, dict) else {})[:4000],
         }
 

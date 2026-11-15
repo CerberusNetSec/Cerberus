@@ -26,7 +26,7 @@ from .playbooks import STAGES, advice, detector_stage
 from .riskports import CATALOG, CLEARTEXT, DIRECTIONS, WEB, flags, service_name
 from .snmp_poller import MASK as SNMP_MASK
 from .snmp_poller import SnmpPoller, parse_target
-from .storage import QueryTimeout, Store
+from .storage import NotFound, QueryTimeout, Store
 from .topology import build_topology
 
 log = logging.getLogger("cerberus.web")
@@ -117,6 +117,22 @@ class Auth:
             key = _token_hash(token)
             self._seen.pop(key, None)
             self.db.session_delete(key)
+
+
+JUSTIFICATION_MIN, JUSTIFICATION_MAX, ANALYST_MAX = 10, 2000, 100
+
+
+def _attribution(body: dict, request: Request) -> tuple[str, str, str]:
+    """(justification, analyst, source address) for an audited change; raises if incomplete."""
+    justification = " ".join(str(body.get("justification", "")).split())
+    analyst = " ".join(str(body.get("analyst", "")).split())
+    if len(justification) < JUSTIFICATION_MIN:
+        raise _bad(f"a justification of at least {JUSTIFICATION_MIN} characters is required")
+    if not analyst:
+        raise _bad("the analyst's name is required")
+    if len(justification) > JUSTIFICATION_MAX or len(analyst) > ANALYST_MAX:
+        raise _bad("justification or name too long")
+    return justification, analyst, request.client.host if request.client else ""
 
 
 def _bad(message: str, status: int = 400) -> HTTPException:
@@ -463,11 +479,67 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                 "directions": (await port_memory(now))["top"](port),
                 "alerts": (await _port_alerts(now)).get(port, [])[:20]}
 
+    # --- false positives -----------------------------------------------------
+    @app.post("/api/alerts/false-positive")
+    async def false_positive(request: Request, body: dict = Body(...)):
+        """Mark an alert a false positive: the same detector finding the same thing again
+        raises nothing. Needs a justification and a name, both kept in the audit log."""
+        try:
+            alert_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise _bad("alert id required")
+        justification, analyst, source = _attribution(body, request)
+        try:
+            row = await _run(db.false_positive, alert_id, time.time(), justification, analyst, source)
+        except NotFound:
+            raise _bad("no such alert", 404)
+        engine.alerts.set_status([alert_id], "false_positive")
+        engine.load_suppressions(await _run(db.suppressions))
+        return {"suppression": row}
+
+    @app.get("/api/suppressions")
+    async def suppressions():
+        return {"suppressions": await _run(db.suppressions)}
+
+    @app.post("/api/suppressions/remove")
+    async def suppression_remove(request: Request, body: dict = Body(...)):
+        try:
+            suppression_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise _bad("suppression id required")
+        justification, analyst, source = _attribution(body, request)
+        try:
+            row = await _run(db.suppression_remove, suppression_id, time.time(), justification, analyst, source)
+        except NotFound:
+            raise _bad("no such active suppression", 404)
+        engine.load_suppressions(await _run(db.suppressions))
+        return {"suppression": row}
+
+    @app.get("/api/audit")
+    async def audit(limit: int = 200, alert_id: int = 0):
+        rows = await _run(db.audit_log, max(1, min(limit, 5000)), alert_id)
+        for row in rows:
+            row["detail"] = _loads(row["detail"])
+        return {"audit": rows}
+
     # --- alerts ----------------------------------------------------------
     @app.get("/api/alerts")
     async def alerts(status: str = "open", severity: str = "", q: str = "", limit: int = 200, id: int = 0):
         rows = await _run(db.alerts_find, status=status, severity=severity, text=q,
                           limit=max(1, min(limit, 1000)), alert_id=id)
+        if any(r["status"] == "false_positive" for r in rows):
+            # Who marked it, why, and how often it has come back since.
+            every = await _run(db.suppressions)
+            by_alert: dict = {}
+            for s in every:
+                by_alert.setdefault(s["alert_id"], s)
+            by_key = {(s["detector"], s["entity"]): s for s in every if s["active"]}
+            for r in rows:
+                if r["status"] == "false_positive":
+                    s = by_key.get((r["detector"], r["entity"])) or by_alert.get(r["id"])
+                    if s:
+                        r["false_positive"] = {k: s[k] for k in ("id", "created", "analyst", "justification", "active",
+                                                                  "hits", "last_hit")}
         for row in rows:
             row["details"] = _loads(row["details"])
             row["advice"] = advice(row)

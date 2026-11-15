@@ -211,3 +211,32 @@ def test_notification_outbox_on_clustered_storage(cluster):
     for _ in range(OUTBOX_ATTEMPTS):
         store.outbox_done(due[1]["id"], 200.0, "down")
     assert store.outbox_pending() == 0 and store.outbox_due(10**12, 10) == []
+
+
+def test_false_positives_on_clustered_storage(cluster):
+    from cerberus.storage import Batch, NotFound
+    store = cluster()
+    store.write_batch(Batch(new_alerts=[
+        (1, 100.0, 100.0, "port_scan", "high", "Port scan from 10.0.0.9", "d", "10.0.0.9", "10.0.0.9", "fw", 1,
+         "open", "{}", 100.0),
+        (2, 200.0, 200.0, "port_scan", "high", "Port scan from 10.0.0.9", "d", "10.0.0.9", "10.0.0.9", "fw", 1,
+         "open", "{}", 200.0)]))
+    first = store.false_positive(2, 300.0, "Expected scanner, confirmed.", "Alex", "10.1.1.1")
+    again = store.false_positive(1, 301.0, "Same scanner, older alert.", "Alex", "10.1.1.1")
+    assert first["id"] == again["id"] and first["active"] == 1
+    assert {a["status"] for a in store.alerts_find(status="false_positive")} == {"false_positive"}
+    assert len(store.alerts_find(status="false_positive")) == 2 and store.alerts_find(status="active") == []
+    store.write_batch(Batch(suppression_hits=[(3, 400.0, first["id"])]))
+    [s] = store.suppressions()
+    assert s["hits"] == 3 and s["last_hit"] == 400.0
+    removed = store.suppression_remove(s["id"], 500.0, "Scanner retired.", "Sam", "10.1.1.2")
+    assert removed["active"] == 0 and removed["removed_by"] == "Sam"
+    with pytest.raises(NotFound):
+        store.suppression_remove(s["id"], 501.0, "Again.", "Sam", "x")
+    with pytest.raises(NotFound):
+        store.false_positive(99, 502.0, "No such alert.", "Sam", "x")
+    assert [e["action"] for e in store.audit_log(10)] == ["suppression_removed", "false_positive_again",
+                                                          "false_positive"]
+    assert [e["action"] for e in store.audit_log(10, alert_id=1)] == ["false_positive_again"]
+    # A new suppression for the same finding once the old one is removed.
+    assert store.false_positive(2, 600.0, "Back again, still expected.", "Alex", "x")["id"] != s["id"]

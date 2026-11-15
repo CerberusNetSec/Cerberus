@@ -205,8 +205,8 @@ class AlertManager:
         wanted = set(ids)
         for key, cur in list(self.active.items()):
             if cur.id in wanted:
-                if status == "resolved":
-                    del self.active[key]  # a recurrence becomes a fresh alert
+                if status in ("resolved", "false_positive"):
+                    del self.active[key]  # a recurrence becomes a fresh alert (or is suppressed)
                 else:
                     cur.status = status
 
@@ -265,6 +265,9 @@ class Engine:
         self._committed: dict = {}
         self._committed_candidates: dict = {}
         self._replaying = False  # the event or candidate in hand was already stored before a takeover
+        # False positives: (detector, entity) -> suppression id. A matching finding raises nothing.
+        self.suppressed: dict[tuple[str, str], int] = {}
+        self._suppression_hits: dict[int, list] = {}  # id -> [hits, last hit], until the next write
 
     # --- lifecycle -------------------------------------------------------
     def load(self, now: float | None = None) -> None:
@@ -283,6 +286,14 @@ class Engine:
         if "risk_ports" not in restored:
             self.risk_ports.restore_rows(self.db.port_minutes_since(int(now - 27 * 3600)), now)
         self.alerts.load(now)
+        self.load_suppressions()
+
+    def load_suppressions(self, rows: list[dict] | None = None) -> None:
+        rows = self.db.suppressions() if rows is None else rows
+        self.suppressed = {(r["detector"], r["entity"]): r["id"] for r in rows if r["active"]}
+
+    def is_suppressed(self, c: Candidate) -> int | None:
+        return self.suppressed.get((c.detector, c.entity)) if self.suppressed else None
 
     def apply_settings(self, detectors: dict, general: dict) -> None:
         detectors = migrate_detector_settings(detectors)
@@ -316,13 +327,23 @@ class Engine:
     def raise_alert(self, c: Candidate, now: float) -> None:
         """The alert stage: fold the candidate into an alert, and let the correlator see it.
         In a replay the alert is already stored (and notified): only the detectors that
-        read the alert stream learn from it again."""
+        read the alert stream learn from it again. A finding an analyst has marked a false
+        positive (same detector, same entity) raises nothing and feeds nothing; it is counted
+        against its suppression."""
+        suppression = self.is_suppressed(c)
+        if suppression is not None:
+            if not self._replaying:
+                hit = self._suppression_hits.setdefault(suppression, [0, now])
+                hit[0] += 1
+                hit[1] = max(hit[1], now)
+            return
         if not self._replaying:
             self.alerts.raise_(c, now)
         if self.hostile.enabled and self.runs(self.hostile):  # with a source worker, it marks there
             self.hostile.on_alert(c, now)
         if self.correlation.enabled:
-            self.correlation.on_alert(c, now, lambda found: None if self._replaying else self.alerts.raise_(found, now))
+            self.correlation.on_alert(c, now, lambda found: None if self._replaying or self.is_suppressed(found) is not None
+                                      else self.alerts.raise_(found, now))
 
     # --- working state ---------------------------------------------------
     def snapshot(self, now: float | None = None) -> dict:
@@ -640,7 +661,9 @@ class Engine:
             ports=self.risk_ports.drain(),
             new_alerts=new_alerts, alert_updates=alert_updates,
             notices=self.notifier.drain(),
+            suppression_hits=[(n, last, sid) for sid, (n, last) in self._suppression_hits.items()],
         )
+        self._suppression_hits = {}
         if batch:
             await asyncio.to_thread(self.db.write_batch, batch)
             self.flush_seconds = time.perf_counter() - started

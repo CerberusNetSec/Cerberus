@@ -22,7 +22,7 @@ resources:
 images:
   - name: cerberus
     newName: ghcr.io/wrcrooks/cerberus
-    newTag: "0.7.0"
+    newTag: "0.8.0"
 configMapGenerator:
   - name: cerberus-collector
     literals:

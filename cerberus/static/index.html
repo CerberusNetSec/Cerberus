@@ -29,6 +29,7 @@
       <a href="#/sites" data-page="sites" id="nav-sites" hidden>Sites</a>
       <a href="#/" data-page="dashboard">Dashboard</a>
       <a href="#/alerts" data-page="alerts">Alerts <span id="nav-alerts" class="pill" hidden></span></a>
+      <a href="#/suppressions" data-page="suppressions">False positives</a>
       <a href="#/riskports" data-page="riskports">Risk ports</a>
       <a href="#/events" data-page="events">Events</a>
       <a href="#/devices" data-page="devices">Devices</a>
@@ -41,6 +42,23 @@
   </header>
   <main id="main"></main>
 </div>
+<dialog id="justify" class="card dialog" aria-labelledby="justify-title">
+  <form id="justify-form" novalidate>
+    <h2 id="justify-title"></h2>
+    <p id="justify-intro" class="muted"></p>
+    <label for="justify-analyst">Your name</label>
+    <input id="justify-analyst" autocomplete="name" maxlength="100">
+    <label for="justify-text">Justification</label>
+    <textarea id="justify-text" rows="4" maxlength="2000"
+      placeholder="Why this is expected, and how you confirmed it"></textarea>
+    <p class="muted note">Kept in the audit log with the time and the address you are connecting from. It cannot be edited or deleted.</p>
+    <p id="justify-error" class="error" role="alert"></p>
+    <div class="row end">
+      <button type="button" id="justify-cancel">Cancel</button>
+      <button type="submit" class="primary" id="justify-ok"></button>
+    </div>
+  </form>
+</dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 <script src="/static/app.js"></script>
 </body>

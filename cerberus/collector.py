@@ -165,4 +165,10 @@ def status_app(collector: Collector):
     async def status():
         return json.loads(json.dumps(collector.status()))
 
+    from .metrics import COLLECTOR, PUBLISHER, add_endpoint, common, from_status
+
+    async def samples():
+        return common("collector", collector.name) + from_status(collector.status(), COLLECTOR + PUBLISHER)
+    add_endpoint(app, collector.cfg.metrics_token, samples)
+
     return app

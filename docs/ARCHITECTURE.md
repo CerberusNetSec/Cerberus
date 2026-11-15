@@ -42,10 +42,11 @@ device ──UDP/TCP 514──▶ receiver.py ──▶ queue ──▶ Engine
    correlator (`security.Correlation`) sees every alert and raises its own when
    several point at one host.
 6. **Notify.** `notifiers.py` formats the alert with its guidance from
-   `playbooks.py` and delivers it to each channel at or above its severity,
-   rate-limited per channel.
+   `playbooks.py` for each channel at or above its severity, rate-limited per
+   channel, and holds it for the next write.
 7. **Store.** Once a second the engine writes the buffered events, counters,
-   device records and alert changes as one `Batch`.
+   device records, alert changes and notifications as one `Batch`; the
+   notifier then sends from the outbox table what has been stored.
 
 `Engine.parse`, `record` and `detect` are separate methods and pass nothing
 between them but the `Event`, and candidates go to the alert stage as data:
@@ -77,6 +78,8 @@ stages and requires identical results.
 | `federation.py` | Site → central console reporting (`Forwarder`) and the console side (`Central`) |
 | `bus.py`, `collector.py` | Scale-out: publishing to and consuming from the message bus, the collector's spool, copy detection, heartbeats; the collector process |
 | `worker.py` | Detection worker: one family of detectors on its share of the events, alert candidates back over the bus |
+| `leader.py` | Active/standby processors: the standby server, taking and keeping the leadership lock |
+| `metrics.py` | Prometheus metrics for every role |
 | `web.py`, `static/` | JSON API and the single-page UI (no build step) |
 
 ## Storage
@@ -219,11 +222,34 @@ two workers per family (routed by key, events and candidates as JSON) and
 requires the same alerts and identical storage; `tests/test_bus.py` does the
 same through a real broker.
 
+## High availability
+
+Processors take a session advisory lock through `Store.leadership()`
+(`pg.py`; SQLite has one process, which always leads). Until it holds the
+lock a processor serves only `leader.standby_app`; then it starts as usual,
+and `keep_leadership` exits the process if the lock's connection fails.
+
+`Engine.snapshot()` includes the bus position (`EventSource.positions()`)
+that the state matches; the processor saves it every `CHECKPOINT_SECONDS`.
+On start, `Engine.prepare_resume()` gives each source the saved positions;
+when a partition is assigned, `EventSource.assigned` seeks back to it and
+records the committed offset as `replay_until`. Records before it go through
+`Engine.take` as a replay: `detect` runs with `_replaying` set, so
+`raise_alert` feeds only the alert-stream detectors and the high-risk port
+counters are not written again; `commit` never moves a partition back while
+it replays. A detection worker does the same from a time
+(`EventSource.rewind`) whenever its assignment changes, after resetting to
+empty state.
+
+Notifications: `Notifier.notify` formats and rate-limits, `_enqueue` holds the
+message, `Engine._flush` writes it as `Batch.notices` with the alerts (one
+transaction), and `Notifier.run` sends due outbox rows (`outbox_due`,
+`outbox_done`).
+
 ## Limits by design
 
 - Detection of one family runs in one process per key; alerting and the
-  device detectors run in the one processor.
+  device detectors run in the one active processor.
 - Syslog input is plain text unless syslog over TLS is used; SNMP is v2c. Both
   belong on a management network.
-- No multi-user accounts. Many sites are handled by federation; high
-  availability of the processor is phase 5 of [CLUSTERING.md](CLUSTERING.md).
+- No multi-user accounts. Many sites are handled by federation.

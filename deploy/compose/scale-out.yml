@@ -6,6 +6,11 @@
 #   python deploy/make-secrets.py --storage
 #   docker compose -f deploy/compose/scale-out.yml up -d --build --scale collector=3
 #
+# Two processors run: one active, one standby that takes over within seconds if
+# the active one stops (leadership is a lock in PostgreSQL). HAProxy sends the
+# dashboard to the active one. Prometheus metrics: :8080/metrics on every
+# Cerberus container (set CERBERUS_METRICS_TOKEN to require a token).
+#
 # Detection workers: one service per family of detectors (by source address, target
 # host, address pair, port, account), each scalable on its own, e.g.
 # --scale detector-source=4. Collectors send each family the events it reads, divided
@@ -49,9 +54,10 @@ services:
   haproxy:
     image: haproxy:3.0-alpine
     restart: unless-stopped
-    depends_on: [collector]
+    depends_on: [collector, processor]
     ports:
       - "514:514/tcp"
+      - "8080:8080"  # the dashboard, on the active processor
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
@@ -84,9 +90,15 @@ services:
       CERBERUS_MAX_EVENTS: ${CERBERUS_MAX_EVENTS:-50000000}
       CERBERUS_RETENTION_DAYS: ${CERBERUS_RETENTION_DAYS:-30}
     secrets: [postgres_url, clickhouse_url, dashboard_password]
-    ports: ["8080:8080"]
+    deploy:
+      replicas: 2  # one active, one standby
+    healthcheck:
+      # Alive, not ready: a standby is healthy too.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 10s
+      start_period: 20s
     tmpfs: ["/data:uid=10001,gid=10001"]
-    networks: [backend]
+    networks: [ingest, backend]
 
   detector-source:
     <<: *detector

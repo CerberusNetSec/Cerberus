@@ -34,10 +34,10 @@ firewall cluster).
 Version tags are published by CI for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/wrcrooks/cerberus:0.6.0
+docker pull ghcr.io/wrcrooks/cerberus:0.7.0
 ```
 
-To build your own, `docker build -t registry.example.com/cerberus:0.6.0 .`,
+To build your own, `docker build -t registry.example.com/cerberus:0.7.0 .`,
 push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
 `kubernetes/base/kustomization.yaml`.
 
@@ -130,7 +130,7 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.6.0` to use the published image
+Set `CERBERUS_IMAGE=ghcr.io/wrcrooks/cerberus:0.7.0` to use the published image
 instead of building locally. Compose (without Swarm) bind-mounts secret files,
 so they must be readable by the container's user (uid 10001); `make-secrets.py`
 writes them mode 0644.
@@ -194,8 +194,8 @@ storage and a Kafka-compatible bus.
 
 - **Compose:** `compose/scale-out.yml` runs HAProxy, any number of collectors
   (`--scale collector=N`), Redpanda, a detection worker per family
-  (`--scale detector-source=N`), the processor and both databases on one
-  host:
+  (`--scale detector-source=N`), two processors (active and standby) and both
+  databases on one host:
 
   ```sh
   python deploy/make-secrets.py --storage
@@ -205,14 +205,16 @@ storage and a Kafka-compatible bus.
   HAProxy (`compose/haproxy.cfg`) spreads TCP connections over the collectors,
   takes failed ones out of rotation, and passes each device's address with
   PROXY protocol v2; collectors trust that header only from HAProxy's fixed
-  address. Terminate syslog-over-TLS at HAProxy (see the config). UDP is not
+  address. It also serves the dashboard on 8080, from whichever processor is
+  active (it checks `/readyz` every 2 seconds). Terminate syslog-over-TLS at HAProxy (see the config). UDP is not
   balanced here: send TCP. To spread the services over hosts, run the same
   services with `CERBERUS_KAFKA_BOOTSTRAP` and the database URLs pointing at
   shared servers. To keep detection in the processor, set
   `CERBERUS_DETECTION_WORKERS=` (empty) and leave out the `detector-*`
   services.
 - **Kubernetes:** apply `kubernetes/processor` (which includes clustered
-  storage) and `kubernetes/collector`, after setting the bus address in both
+  storage; two replicas, one active, ready only on the active one) and
+  `kubernetes/collector`, after setting the bus address in both
   `kustomization.yaml` files. For detection workers, also apply
   `kubernetes/detector` (one Deployment per family; scale each by replicas)
   and set `CERBERUS_DETECTION_WORKERS=all` in the collector and processor

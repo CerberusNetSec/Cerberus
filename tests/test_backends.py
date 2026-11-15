@@ -182,3 +182,32 @@ def test_settings_by_prefix_on_clustered_storage(tmp_path, cluster):
     assert stores[0].settings_with_prefix("riskports_view:") == stores[1].settings_with_prefix("riskports_view:") == {
         "riskports_view:port:a": {"at": 1}, "riskports_view:port:b": [2]}
     stores[1].close()
+
+
+def test_one_leader_at_a_time(cluster):
+    """The processors' leadership lock: exclusive per name, free again when its holder goes."""
+    store = cluster()
+    a, b, other = store.leadership("processor:g"), store.leadership("processor:g"), store.leadership("processor:h")
+    try:
+        assert a.try_acquire() and a.still_held()
+        assert not b.try_acquire()
+        assert other.try_acquire()  # a different deployment's processors
+        a.release()  # the holder's connection ends, as when it exits or crashes
+        assert not a.still_held()
+        assert b.try_acquire()
+        assert not a.try_acquire()
+    finally:
+        for lock in (a, b, other):
+            lock.release()
+
+
+def test_notification_outbox_on_clustered_storage(cluster):
+    from cerberus.storage import OUTBOX_ATTEMPTS, Batch
+    store = cluster()
+    store.write_batch(Batch(notices=[(100.0, 1, "subject a", "body"), (101.0, 2, "subject b", "body")]))
+    due = store.outbox_due(200.0, 10)
+    assert [r["subject"] for r in due] == ["subject a", "subject b"] and store.outbox_pending() == 2
+    store.outbox_done(due[0]["id"], 200.0, None)
+    for _ in range(OUTBOX_ATTEMPTS):
+        store.outbox_done(due[1]["id"], 200.0, "down")
+    assert store.outbox_pending() == 0 and store.outbox_due(10**12, 10) == []

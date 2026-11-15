@@ -90,6 +90,12 @@ async def run_worker(cfg: Config) -> None:
     async def status():
         return worker.status()
 
+    from .metrics import PUBLISHER, WORKER, add_endpoint, common, from_status
+
+    async def samples():
+        return common("detector", worker.name) + from_status(worker.status(), WORKER + PUBLISHER)
+    add_endpoint(app, cfg.metrics_token, samples)
+
     server = uvicorn.Server(uvicorn.Config(app, host=cfg.bind, port=cfg.web_port, log_level="warning", access_log=False))
     log.info("Cerberus %s detection worker %s; status on http://%s:%d/status", __version__, worker.name, cfg.bind,
              cfg.web_port)
@@ -116,6 +122,21 @@ async def amain() -> None:
         return
 
     db = open_store(cfg)
+    leadership = None
+    if cfg.mode == "processor":
+        # Several processors may run; one is active, the others wait as standbys.
+        from .bus import collector_name
+        from .leader import wait_for_leadership
+        leadership = db.leadership(f"processor:{cfg.kafka_group}")
+
+        def serve(app):
+            server = uvicorn.Server(uvicorn.Config(app, host=cfg.bind, port=cfg.web_port, log_level="warning",
+                                                   access_log=False))
+            return server, asyncio.create_task(server.serve())
+        if not await wait_for_leadership(leadership, serve, collector_name(cfg), cfg.metrics_token):
+            db.close()
+            log.info("stopped while standby")
+            return
     notifier = Notifier(db, cfg.public_url)
     engine = Engine(cfg, db, ConnectorRegistry(user_connectors), notifier)
     heartbeats = None
@@ -130,9 +151,11 @@ async def amain() -> None:
             from .detectors import WORKER_FAMILIES
             engine.families = {"device", "alerts", *(f for f in WORKER_FAMILIES if f not in cfg.detection_workers)}
             engine.candidates = EventSource(cfg, topic=candidates_topic(cfg), group=f"{cfg.kafka_group}-alerts")
-            await engine.candidates.start()
             engine.candidate_dedup = Deduplicator()
             log.info("detection workers run: %s", ", ".join(cfg.detection_workers))
+        engine.prepare_resume()
+        if engine.candidates:
+            await engine.candidates.start()
         await engine.source.start()
         heartbeats = Heartbeats(cfg)
         log.info("processor: consuming %s from %s", cfg.kafka_topic, cfg.kafka_bootstrap)
@@ -149,6 +172,9 @@ async def amain() -> None:
 
     engine.receiver = receiver
     tasks = []
+    if leadership is not None:
+        from .leader import keep_leadership
+        tasks.append(asyncio.create_task(keep_leadership(leadership)))
     if heartbeats:
         tasks.append(asyncio.create_task(heartbeats.watch()))
         tasks.append(asyncio.create_task(watch_collectors(cfg, engine, heartbeats)))
@@ -185,6 +211,8 @@ async def amain() -> None:
             await engine.candidates.stop()
         notify_task.cancel()
         await notifier.close()
+        if leadership is not None:
+            leadership.release()  # after the last write: a standby may take over now
         db.close()
         log.info("stopped")
 

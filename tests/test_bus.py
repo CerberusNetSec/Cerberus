@@ -285,3 +285,142 @@ def test_reference_traffic_through_detection_workers(tmp_path):
                        a["description"], a["details"]) for a in alerts)
     assert comparable(actual.pop("alerts")) == comparable(expected.pop("alerts"))
     assert actual == expected
+
+
+def test_a_new_leader_after_a_crash_finds_and_stores_exactly_the_same(tmp_path):
+    """Processor A saves a checkpoint, carries on storing and committing, takes in more
+    events without storing them, and dies without saving anything more. Processor B
+    takes over: it goes back on the bus to the checkpoint, replays up to what A had
+    stored (detection only) and carries on. The result is what one uninterrupted
+    process stores: no event or alert lost, none twice."""
+    from aiokafka.structs import TopicPartition
+
+    from cerberus.bus import Deduplicator
+
+    expected = reference(tmp_path)
+    cfg = bus_config(tmp_path)
+    store_path = tmp_path / "processor.db"
+
+    async def run(engine, stop_after=None, checkpoint_at=None, flush_at=None, start_tick=None):
+        """Feed records; returns (records seen, checkpoint time, last ts)."""
+        await engine.source.start()
+        next_tick, seen, last, saved = start_tick or golden.START + golden.TICK, 0, golden.START, None
+        last_offset = -1
+        while last_offset < stop_after:
+            for tp, records in (await engine.source.consumer.getmany(timeout_ms=2000, max_records=500)).items():
+                for record in records:
+                    ev_ts = json.loads(record.value)["ts"]
+                    until = engine.source.replay_until.get(TopicPartition(tp.topic, tp.partition))
+                    in_replay = until is not None and record.offset < until
+                    while next_tick <= ev_ts:
+                        if not in_replay:
+                            await engine._flush()
+                        engine.tick(next_tick, replay=in_replay)
+                        next_tick += golden.TICK
+                    engine.take(record)
+                    engine.source.position[TopicPartition(tp.topic, tp.partition)] = record.offset + 1
+                    seen, last, last_offset = seen + 1, ev_ts, record.offset
+                    if record.offset == checkpoint_at:
+                        engine.save_state(ev_ts)
+                        saved = ev_ts
+                    if record.offset == flush_at:
+                        await engine._flush()
+                    if record.offset >= stop_after:
+                        break
+                else:
+                    continue
+                break
+        return next_tick, saved, last
+
+    async def go():
+        total = await collect(cfg, tmp_path)
+        # A: checkpoint at 40%, everything stored and committed to 55%, crash at 60%.
+        db, a = processor(cfg, store_path, golden.START)
+        a.dedup = Deduplicator()
+        _, saved, _ = await run(a, stop_after=int(total * 0.6), checkpoint_at=int(total * 0.4),
+                                flush_at=int(total * 0.55))
+        await a.source.consumer.stop()  # gone, without a flush or a save
+        db.close()
+        # B: starts from the checkpoint.
+        db, b = processor(cfg, store_path, saved)
+        b.dedup = Deduplicator()
+        b.prepare_resume()
+        next_tick, _, _ = await run(b, stop_after=total - 1, start_tick=(saved // golden.TICK + 1) * golden.TICK)
+        assert b.source.replayed > 0
+        await b._flush()
+        b.tick(next_tick)
+        await b._flush()
+        await b.source.stop()
+        db.close()
+        return total
+
+    total = asyncio.run(go())
+    assert total == expected["events"]["rows"]
+    assert golden.summarise_store(Database(store_path)) == expected
+
+
+def test_a_replaced_worker_rebuilds_its_windows_from_the_bus(tmp_path):
+    """Worker A runs the source family on the first half of the traffic and goes; a new
+    worker B in the same group rebuilds its windows by replaying the partition up to
+    what A committed, then carries on. A and B together raise exactly what one worker
+    raises over the whole run: nothing missed, nothing twice."""
+    from aiokafka.structs import TopicPartition
+
+    from cerberus.worker import DetectionWorker
+
+    cfg = bus_config(tmp_path)
+    cfg.detection_workers = ("source",)
+
+    async def run_worker(group: str, stop_ts: float | None = None) -> list:
+        wcfg = bus_config(tmp_path)
+        wcfg.kafka_topic, wcfg.kafka_group = cfg.kafka_topic, group
+        wcfg.detection_workers, wcfg.detection_family = ("source",), "source"
+        db = Database(tmp_path / f"{group}-{uuid.uuid4().hex[:6]}.db")
+        engine = Engine(wcfg, db, ConnectorRegistry(), Notifier(db))
+        engine.families = {"source"}
+        watch = {d.id: d.settings() for d in engine.detectors}
+        engine.apply_settings(watch, engine.general_settings())
+        worker = DetectionWorker(wcfg, db, engine, publisher=None)
+        await worker.source.start()
+        found, next_tick, idle, done = [], golden.START + golden.TICK, 0, False
+        while idle < 6 and not done:
+            got = await worker.source.consumer.getmany(timeout_ms=1000, max_records=500)
+            idle = 0 if got else idle + 1
+            for tp, records in got.items():
+                key = TopicPartition(tp.topic, tp.partition)
+                for record in records:
+                    ts = json.loads(record.value)["ts"]
+                    if stop_ts is not None and ts > stop_ts:
+                        done = True  # gone: this record and the rest are left for the next worker
+                        break
+                    until = worker.source.replay_until.get(key)
+                    in_replay = until is not None and record.offset < until
+                    while next_tick <= ts:
+                        found += worker.tick(next_tick, replay=in_replay)
+                        next_tick += golden.TICK
+                    found += worker.handle([record])
+                    worker.source.position[key] = record.offset + 1
+                await worker.source.commit(worker.source.snapshot())
+                if done:
+                    break
+        if not done:
+            found += worker.tick(next_tick)
+        replayed, rebuilds = worker.source.replayed, worker.rebuilds
+        await worker.source.stop()
+        db.close()
+        alerts = sorted((b["detector"], b["entity"], b["severity"], b["title"], b["_ts"])
+                        for b in (json.loads(v) for _t, _k, v in found))
+        return alerts, replayed, rebuilds
+
+    async def go():
+        await collect(cfg, tmp_path)
+        whole, _, _ = await run_worker(cfg.kafka_group + "-whole")
+        middle = whole[len(whole) // 2][4]  # A goes halfway through the alerts
+        first, _, _ = await run_worker(cfg.kafka_group + "-ab", stop_ts=middle)
+        second, replayed, rebuilds = await run_worker(cfg.kafka_group + "-ab")
+        return whole, first, second, replayed, rebuilds
+
+    whole, first, second, replayed, rebuilds = asyncio.run(go())
+    assert whole and first and second
+    assert replayed > 0 and rebuilds == 1
+    assert sorted(first + second) == whole

@@ -318,17 +318,51 @@ from storage every 30 seconds, so dashboard changes reach them.
 - **Bus traffic grows:** an event goes to the event topic and to each family
   that reads it - with every family offloaded, firewall traffic is sent about
   four times.
-- **Worker state is in memory.** When a worker is replaced, or the bus moves
-  its keys to another worker, the windows for those keys start again (the
-  high-risk port history is reloaded from storage). Each worker sends a
-  heartbeat; the processor raises "Detection worker stopped reporting" when
-  one goes quiet.
+- **Workers rebuild their state from the bus.** When a worker starts, or the
+  bus moves partitions between workers, it replays the last
+  `CERBERUS_WORKER_REPLAY_MINUTES` (default 60) of its partitions, detecting
+  without raising anything, so a replaced worker neither misses nor repeats
+  alerts. Each worker sends a heartbeat; the processor raises "Detection
+  worker stopped reporting" when one goes quiet.
 - The same alerts are found as by one process: `tests/test_workers.py` and
   `tests/test_bus.py` run the reference traffic through workers and compare.
 
+### High availability
+
+Run two processors (or more): one is active, the others wait as standbys
+(leadership is a lock in PostgreSQL). A standby is alive (`/healthz`) but not
+ready (`/readyz` answers 503), so a load balancer or Kubernetes Service sends
+the dashboard only to the active one. When the active processor stops or
+crashes, a standby takes over within seconds:
+
+- **Exactly where the old one left off.** The processor saves its detector
+  state every minute together with the bus position it matches. The new
+  leader goes back to that position and replays up to what was stored,
+  through detection only, so windows and baselines are rebuilt and nothing is
+  stored or raised twice.
+- **Notifications go through an outbox:** they are stored with their alert
+  and sent afterwards, retried at 1, 2, 4 and 8 minutes if a channel fails.
+  A takeover neither loses one nor sends one twice (except in the moment
+  between sending and recording it).
+- **A leader that loses PostgreSQL stops at once**, so two processors never
+  write together; its restart brings it back as a standby.
+
+Checked by `tests/test_bus.py` (a processor that dies after its checkpoint
+and a successor that takes over: exactly what one uninterrupted process
+stores) and live on Compose (the active processor killed: the dashboard back
+in 8 seconds, every event stored once).
+
+### Metrics
+
+Every role serves Prometheus metrics at `:8080/metrics`: events, errors,
+write times, alerts, notifications and the outbox on the processor; messages,
+spool and bus state on collectors; events, candidates and rebuilds on
+workers; `cerberus_active` is 1 on the active processor and 0 on a standby.
+Set `CERBERUS_METRICS_TOKEN` to require `Authorization: Bearer <token>`.
+
 Reference deployments: `deploy/compose/scale-out.yml` (HAProxy, collectors,
-Redpanda, detection workers, processor, both databases) and the Kubernetes
-`collector`, `detector` and `processor` layers; see
+Redpanda, detection workers, two processors, both databases) and the
+Kubernetes `collector`, `detector` and `processor` layers; see
 [deploy/README.md](deploy/README.md) and [docs/CLUSTERING.md](docs/CLUSTERING.md).
 
 ## Many sites
@@ -425,8 +459,10 @@ Add channels in the UI; each has a minimum severity and a **Send test** button.
 - **Pushbullet**: an access token from your account settings; optionally an email or channel tag to target.
 
 A channel sends at most 10 notifications a minute; anything beyond that arrives
-as one "N more alerts" summary. Credentials are stored in the SQLite database in
-the data volume and are never returned by the API.
+as one "N more alerts" summary. Notifications are stored with their alert and
+sent from there about a second later; one that fails is tried again at 1, 2, 4
+and 8 minutes. Credentials are stored in the database (SQLite in
+the data volume, or PostgreSQL) and are never returned by the API.
 
 ## Connectors
 
@@ -501,6 +537,8 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_POSTGRES_URL`, `CERBERUS_CLICKHOUSE_URL` (or `_FILE`) | | Store data in PostgreSQL and ClickHouse instead of SQLite; set both (see [Clustered storage](#clustered-storage)) |
 | `CERBERUS_MODE` | `all` | `collector`, `processor` or `detector` for [scale-out ingest](#scale-out-ingest) |
 | `CERBERUS_DETECTION_WORKERS`, `CERBERUS_DETECTION_FAMILY` | | Families run by [detection workers](#detection-workers) (`all`, or a comma-separated list), the same everywhere; and a worker's own family |
+| `CERBERUS_WORKER_REPLAY_MINUTES` | `60` | How far back a detection worker replays the bus to rebuild its windows |
+| `CERBERUS_METRICS_TOKEN` (or `_FILE`) | | Require this bearer token for [`/metrics`](#metrics) |
 | `CERBERUS_KAFKA_BOOTSTRAP`, `_TOPIC`, `_GROUP`, `_PARTITIONS`, `_REPLICATION`, `_SECURITY` (`SSL`), `_CA` | | The message bus between collectors and the processor |
 | `CERBERUS_COLLECTOR_NAME`, `CERBERUS_SPOOL_MB`, `CERBERUS_COLLECTOR_SILENT_SECONDS` | hostname, `1024`, `90` | Collector identity, spool size while the bus is unreachable, and when the processor calls a collector silent |
 | `CERBERUS_SYSLOG_TLS_PORT`, `_TLS_CERT`, `_TLS_KEY`, `_TLS_CLIENT_CA` | `0` | Syslog over TLS (RFC 5425), optionally requiring device certificates |

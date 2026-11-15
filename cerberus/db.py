@@ -122,6 +122,12 @@ CREATE TABLE IF NOT EXISTS channels (
     config TEXT DEFAULT '{}',
     last_ts REAL, last_ok INTEGER, last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created REAL NOT NULL, channel_id INTEGER NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0, next_try REAL NOT NULL, done INTEGER DEFAULT 0, error TEXT
+);
+CREATE INDEX IF NOT EXISTS outbox_due ON outbox(done, next_try);
 """
 
 # Columns added after the first release: (table, column, definition).
@@ -330,6 +336,10 @@ class Database(Store):
         except ValueError:
             return default
 
+    def leadership(self, name: str):
+        from .storage import SingleProcess
+        return SingleProcess()
+
     def settings_with_prefix(self, prefix: str) -> dict:
         out = {}
         for row in self.q("SELECT key, value FROM settings WHERE substr(key, 1, length(?)) = ?", (prefix, prefix)):
@@ -370,6 +380,8 @@ class Database(Store):
         self.x("DELETE FROM alerts WHERE last_seen < ?", (now - alert_days * 86400,))
         self.x("DELETE FROM sessions WHERE expires < ?", (now,))
         self.x("DELETE FROM site_alerts WHERE last_seen < ?", (now - alert_days * 86400,))
+        from .storage import OUTBOX_KEEP_SECONDS
+        self.x("DELETE FROM outbox WHERE done != 0 AND next_try < ?", (now - OUTBOX_KEEP_SECONDS,))
         return removed
 
     # =====================================================================
@@ -394,7 +406,28 @@ class Database(Store):
              batch.new_alerts),
             ("UPDATE alerts SET last_seen=?, count=?, severity=?, description=?, details=?, updated=? WHERE id=?",
              batch.alert_updates),
+            ("INSERT INTO outbox(created, channel_id, subject, body, next_try) VALUES(?,?,?,?,?)",
+             [(*n, n[0]) for n in batch.notices]),
         ])
+
+    # --- notification outbox --------------------------------------------------
+    def outbox_due(self, now: float, limit: int) -> list[dict]:
+        return self.q("SELECT id, created, channel_id, subject, body, attempts FROM outbox "
+                      "WHERE done = 0 AND next_try <= ? ORDER BY id LIMIT ?", (now, limit))
+
+    def outbox_done(self, outbox_id: int, now: float, error: str | None) -> None:
+        from .storage import OUTBOX_ATTEMPTS, outbox_retry_at
+        if error is None:
+            self.x("UPDATE outbox SET done = 1, next_try = ?, error = NULL WHERE id = ?", (now, outbox_id))
+            return
+        rows = self.q("SELECT attempts FROM outbox WHERE id = ?", (outbox_id,))
+        attempts = (rows[0]["attempts"] if rows else 0) + 1
+        self.x("UPDATE outbox SET attempts = ?, next_try = ?, done = ?, error = ? WHERE id = ?",
+               (attempts, outbox_retry_at(now, attempts), 2 if attempts >= OUTBOX_ATTEMPTS else 0, error[:300],
+                outbox_id))
+
+    def outbox_pending(self) -> int:
+        return self.q("SELECT count(*) AS n FROM outbox WHERE done = 0")[0]["n"]
 
     # --- events ---------------------------------------------------------------
     def search_events(self, since: float = 0, before: int = 0, limit: int = 200, timeout: float = 0, *,

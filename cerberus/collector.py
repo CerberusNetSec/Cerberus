@@ -14,7 +14,8 @@ import secrets
 import time
 
 from . import __version__
-from .bus import HEARTBEAT_SECONDS, Heartbeats, Publisher, collector_name, encode_event  # noqa: F401
+from .bus import HEARTBEAT_SECONDS, Heartbeats, Publisher, collector_name, encode_event, family_topic
+from .detectors import family_event_types, family_key
 from .engine import QUEUE_SIZE, parse_message
 
 log = logging.getLogger("cerberus.collector")
@@ -42,6 +43,8 @@ class Collector:
         self.received = self.dropped = self.parse_errors = 0
         self.run = secrets.token_hex(8)  # this process's run: with seq, a unique id per event
         self.seq = 0
+        # Families run by detection workers: (topic, family, event types read).
+        self.routes = [(family_topic(cfg, f), f, family_event_types(f)) for f in cfg.detection_workers]
         self.started = time.time()
         self.receiver = None
         self._tasks: list[asyncio.Task] = []
@@ -53,9 +56,16 @@ class Collector:
         except asyncio.QueueFull:
             self.dropped += 1
 
-    def encode(self, ev) -> tuple[bytes, bytes]:
+    def encode(self, ev) -> list[tuple]:
+        """The records for one event: the event topic, and each worker family that reads it,
+        keyed by that family's key. Every copy carries the same unique id."""
         self.seq += 1
-        return encode_event(ev, (self.run, self.seq))
+        key, value = encode_event(ev, (self.run, self.seq))
+        out = [(self.publisher.topic, key, value)]
+        for topic, family, types in self.routes:
+            if ev.event_type in types or "*" in types:
+                out.append((topic, family_key(family, ev).encode("utf-8", "replace"), value))
+        return out
 
     def parse(self, data: bytes, source_ip: str, ts: float):
         ev = parse_message(self.cfg, self.connectors, self.devices, data, source_ip, ts)
@@ -76,7 +86,7 @@ class Collector:
             for data, source_ip, ts in items:
                 self.received += 1
                 try:
-                    records.append(self.encode(self.parse(data, source_ip, ts)))
+                    records += self.encode(self.parse(data, source_ip, ts))
                 except Exception:
                     self.parse_errors += 1
                     if self.parse_errors <= 20:
@@ -134,7 +144,7 @@ class Collector:
         records = []
         for data, source_ip, ts in items:
             try:
-                records.append(self.encode(self.parse(data, source_ip, ts)))
+                records += self.encode(self.parse(data, source_ip, ts))
             except Exception:
                 self.parse_errors += 1
         await self.publisher.publish(records)

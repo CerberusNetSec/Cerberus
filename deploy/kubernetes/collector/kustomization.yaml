@@ -22,7 +22,7 @@ resources:
 images:
   - name: cerberus
     newName: ghcr.io/wrcrooks/cerberus
-    newTag: "0.5.0"
+    newTag: "0.6.0"
 configMapGenerator:
   - name: cerberus-collector
     literals:
@@ -30,3 +30,5 @@ configMapGenerator:
       - CERBERUS_KAFKA_BOOTSTRAP=cerberus-kafka-bootstrap.kafka.svc:9092
       - CERBERUS_DEVICE_IDENTITY=ip
       - CERBERUS_SPOOL_MB=4096
+      # With detector/: the same families as there (all), so events reach the workers.
+      - CERBERUS_DETECTION_WORKERS=

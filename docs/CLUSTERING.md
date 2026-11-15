@@ -1,6 +1,6 @@
 # Scaling Cerberus to thousands of log sources
 
-Status: **stage 1 (federation) in 0.2.0; stage 2 phase 1 (seams) in 0.3.0, phase 2 (shared storage) in 0.4.0, phase 3 (scale-out ingest) in 0.5.0.**
+Status: **stage 1 (federation) in 0.2.0; stage 2 phase 1 (seams) in 0.3.0, phase 2 (shared storage) in 0.4.0, phase 3 (scale-out ingest) in 0.5.0, phase 4 (sharded detection) in 0.6.0.**
 
 ## Goal
 
@@ -120,13 +120,42 @@ Estimates assume one experienced engineer and are rough.
      only if storage writing is divided in phase 4.
    - The processor's copy detection is in memory: a processor restart can
      store up to about a second of events twice (at least once).
-4. **Sharded detection and alerting (4–6 weeks).** Keyed streams, the
-   detection worker role, idempotent alert upserts, correlation on the alert
-   stream, a notification outbox so each alert is sent exactly once, splitting
-   `credential_attacks` in two, and top talkers and "new source" markers as
-   ClickHouse queries.
-5. **Availability and operations (3–4 weeks).** State rebuilt on failover by
-   replaying a detector's window from Kafka, snapshots for learned baselines,
+4. **Sharded detection. Done.** Every detector keys on one thing:
+   `credential_attacks` became `password_spray` (source) and
+   `distributed_guessing` (account), and correlation gave `hostile_allowed`
+   (source) a detector of its own. Detectors form families by key (source,
+   target, pair, port, account; the device family and correlation stay with
+   the processor). `CERBERUS_DETECTION_WORKERS` names the families that
+   detection workers (`CERBERUS_MODE=detector`, `worker.py`) run: collectors
+   publish each event to every family topic whose detectors read its type,
+   keyed by the family's key; a family's workers share its topic as a
+   consumer group; they send alert candidates, with the time found and a
+   unique id, to a candidates topic that the processor folds into alerts
+   (ignoring copies, committing only after storing). Source workers mark
+   hostile addresses from their own alerts, as one process does. The port
+   worker writes the high-risk port counters and publishes a summary of what
+   it holds for the Risk ports page. Workers reload detector settings from
+   storage every 30 seconds and send heartbeats. Reference deployments: the
+   `detector-*` services in `compose/scale-out.yml` and the Kubernetes
+   `detector` layer. Proved by `tests/test_workers.py` (the reference traffic
+   through a processor and two workers per family, events and candidates as
+   JSON: the same alerts, and identical storage) and `tests/test_bus.py`
+   (the same through a real broker), and a live Compose run with a worker
+   stopped midway (its keys moved to the other worker, and the processor
+   raised "Detection worker stopped reporting").
+   - Alerting stays in the one processor, so alert upserts and notifications
+     need no coordination yet; idempotent upserts and a notification outbox
+     move to phase 5 with active/standby alerting.
+   - Worker state is in memory: a replaced worker's keys start their windows
+     again (phase 5 rebuilds them by replaying the window from the bus).
+   - Busiest talkers and "new source" markers come from the port workers'
+     summaries rather than ClickHouse queries; top blocked sources are still
+     counted by the processor, which sees every event.
+   - Bus traffic is multiplied by the number of families reading an event
+     (about four times for firewall traffic with every family offloaded).
+5. **Availability and operations (3–4 weeks).** Active/standby alerting with
+   idempotent alert upserts and a notification outbox, state rebuilt on
+   failover by replaying a detector's window from Kafka, snapshots for learned baselines,
    leader election, poller leases, Prometheus metrics, and the reference
    deployments extended (Compose and Swarm with Kafka, PostgreSQL and
    ClickHouse; Kubernetes with operators for them, and a Helm chart).

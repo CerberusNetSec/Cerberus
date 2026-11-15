@@ -366,6 +366,22 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                 out.setdefault(port, []).append({k: row[k] for k in ("id", "severity", "title", "last_seen", "src_ip")})
         return out
 
+    async def port_memory(now: float) -> dict:
+        """What the Risk ports page reads from detector memory: this process's, or, when
+        detection workers run the port family, the summaries they publish."""
+        rp = engine.risk_ports
+        if not engine.families or "port" in engine.families:
+            fresh: dict[int, int] = {}
+            for (port, _way, _src), first in list(rp.first_seen.items()):
+                if now - first < 86400 and first - rp.since > 6 * 3600:
+                    fresh[port] = fresh.get(port, 0) + 1
+            return {"since": rp.since, "spikes": rp.spikes(now) if rp.enabled else [], "fresh": fresh,
+                    "top": lambda port: {way: rp.top(port, way, now) for way in DIRECTIONS}}
+        from .worker import merge_views, RISKPORTS_VIEW
+        merged = merge_views((await _run(db.settings_with_prefix, RISKPORTS_VIEW)).values(), now)
+        empty = {way: {"sources": [], "destinations": []} for way in DIRECTIONS}
+        return {**merged, "top": lambda port: merged["talkers"].get(port, empty)}
+
     @app.get("/api/riskports")
     async def riskports(range: str = "24h"):
         rp = engine.risk_ports
@@ -384,11 +400,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
             point = series.setdefault(row["port"], {}).setdefault(row["t"], [0, 0])
             point[0] += row["a"]
             point[1] += row["b"]
-        spikes = rp.spikes(now) if rp.enabled else []
-        fresh: dict[int, int] = {}
-        for (port, _way, _src), first in list(rp.first_seen.items()):
-            if now - first < 86400 and first - rp.since > 6 * 3600:
-                fresh[port] = fresh.get(port, 0) + 1
+        memory = await port_memory(now)
+        spikes, fresh = memory["spikes"], memory["fresh"]
         alerts = await _port_alerts(now)
         buckets = []
         t = start
@@ -422,16 +435,15 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                 "cleartext": sum(p["totals"]["outbound"][0] + p["totals"]["internal"][0] for p in plain if p["port"] in CLEARTEXT),
                 "egress": sum(p["totals"]["outbound"][0] for p in plain if p["port"] != 22),
             },
-            "enabled": rp.enabled, "since": rp.since or None,
+            "enabled": rp.enabled, "since": memory["since"] or None,
             "history_hours": rp.cfg["history_hours"],
         }
 
     @app.get("/api/riskports/port")
     async def riskport_detail(port: int):
-        rp = engine.risk_ports
         now = time.time()
         return {"port": port, "name": service_name(port),
-                "directions": {way: rp.top(port, way, now) for way in DIRECTIONS},
+                "directions": (await port_memory(now))["top"](port),
                 "alerts": (await _port_alerts(now)).get(port, [])[:20]}
 
     # --- alerts ----------------------------------------------------------

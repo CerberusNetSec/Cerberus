@@ -1,0 +1,28 @@
+# Detection workers: the detectors that key on a source address, target host,
+# address pair, port or account, divided over pods by that key. Pair with
+# collector/ and processor/, with CERBERUS_DETECTION_WORKERS set to the same
+# families in all three (here: all). Needs clustered storage (the
+# cerberus-storage secret) and the bus.
+#
+#   kubectl apply -k deploy/kubernetes/detector
+#
+# Each worker reads detector settings from storage every 30 seconds, so changes
+# made on the dashboard reach it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cerberus
+labels:
+  - pairs: {app.kubernetes.io/part-of: cerberus}
+    includeSelectors: false
+resources:
+  - deployments.yaml
+images:
+  - name: cerberus
+    newName: ghcr.io/wrcrooks/cerberus
+    newTag: "0.6.0"
+configMapGenerator:
+  - name: cerberus-detector
+    literals:
+      - CERBERUS_MODE=detector
+      - CERBERUS_KAFKA_BOOTSTRAP=cerberus-kafka-bootstrap.kafka.svc:9092
+      - CERBERUS_DETECTION_WORKERS=all

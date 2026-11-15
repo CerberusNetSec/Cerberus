@@ -167,3 +167,18 @@ def test_clickhouse_prune_drops_whole_hours(cluster):
     newest = store.search_events(limit=3)
     assert [e["message"] for e in newest] == ["m4-9", "m4-8", "m4-7"]
     assert store.search_events(text="M4-1")[0]["message"] == "m4-1"  # case-insensitive, like SQLite
+
+
+def test_settings_by_prefix_on_clustered_storage(tmp_path, cluster):
+    """What the processor reads the port workers' summaries with, the same on both backends."""
+    from cerberus.db import Database
+
+    stores = [cluster(), Database(tmp_path / "c.db")]
+    for store in stores:
+        store.set_setting("riskports_view:port:a", {"at": 1})
+        store.set_setting("riskports_view:port:b", [2])
+        store.set_setting("riskports_viewer", 3)
+        store.set_setting("detectors", {})
+    assert stores[0].settings_with_prefix("riskports_view:") == stores[1].settings_with_prefix("riskports_view:") == {
+        "riskports_view:port:a": {"at": 1}, "riskports_view:port:b": [2]}
+    stores[1].close()

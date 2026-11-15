@@ -35,7 +35,8 @@ STATE_VERSION = 1
 STATE_SAVE_SECONDS = 300
 # Detectors keyed on a source address; the ignore list applies to these.
 _SOURCE_KEYED = {"port_scan", "host_sweep", "deny_flood", "brute_force", "large_transfer", "threat",
-                 "risky_egress", "lateral_movement", "beaconing", "credential_attacks", "correlation",
+                 "risky_egress", "lateral_movement", "beaconing", "password_spray", "distributed_guessing",
+                 "hostile_allowed", "correlation",
                  "risk_ports"}
 # Detectors about a destination; the ignored-destinations list applies to these.
 _DEST_KEYED = {"exposed_service", "risky_egress", "beaconing", "large_transfer"}
@@ -58,6 +59,49 @@ def parse_message(cfg: Config, connectors: ConnectorRegistry, devices: dict, dat
     if cfg.device_identity == "hostname" and ev.hostname and ev.device != ev.hostname:
         ev.device = ev.hostname  # the connector found a hostname the envelope did not have
     return ev
+
+
+def migrate_detector_settings(detectors: dict) -> dict:
+    """Settings saved before 0.6.0, when password spraying and distributed guessing were
+    one detector (credential_attacks) and correlation included hostile_allowed."""
+    detectors = dict(detectors or {})
+    old = detectors.get("credential_attacks")
+    if isinstance(old, dict):
+        on = old.get("enabled", True)
+        detectors.setdefault("password_spray", {"enabled": on, **{k: old[k] for k in ("users", "window") if k in old}})
+        detectors.setdefault("distributed_guessing",
+                             {"enabled": on, **{k: old[k] for k in ("sources", "window") if k in old}})
+    corr = detectors.get("correlation")
+    if isinstance(corr, dict) and "hostile_allowed" not in detectors:
+        detectors["hostile_allowed"] = {"enabled": corr.get("enabled", True),
+                                        **{k: corr[k] for k in ("window_hours",) if k in corr}}
+    return detectors
+
+
+def migrate_snapshot(snap: dict) -> dict:
+    """Detector state saved before 0.6.0: split the old combined detectors' state."""
+    dets = dict(snap.get("detectors") or {})
+    old = dets.pop("credential_attacks", None)
+    if old is not None and "password_spray" not in dets:
+        try:
+            state = decode(old.get("_state"))
+            emitted = decode(old.get("_emitted"))
+            for new, tag in (("password_spray", "spray"), ("distributed_guessing", "dist")):
+                dets[new] = {"_state": encode({k: v for k, v in state.items() if k[0] == tag}),
+                             "_emitted": encode({k: v for k, v in emitted.items() if k[0] == tag})}
+        except (TypeError, ValueError, KeyError, AttributeError, IndexError):
+            pass
+    corr = dets.get("correlation")
+    if corr is not None and "hostile" in corr and "hostile_allowed" not in dets:
+        try:
+            emitted = decode(corr.get("_emitted"))
+            dets["hostile_allowed"] = {"_state": encode({}), "hostile": corr["hostile"],
+                                       "_emitted": encode({k: v for k, v in emitted.items() if k[0] == "hostile"})}
+            dets["correlation"] = {"_state": corr.get("_state"), "hosts": corr.get("hosts"),
+                                   "_emitted": encode({k: v for k, v in emitted.items() if k[0] == "host"})}
+        except (TypeError, ValueError, KeyError, AttributeError, IndexError):
+            pass
+    return {**snap, "detectors": dets}
 
 
 @dataclass
@@ -184,6 +228,7 @@ class Engine:
         self.baselines = next(d for d in self.detectors if isinstance(d, RateAnomaly)).baselines
         self.new_device: NewDevice = self.by_id["new_device"]  # type: ignore[assignment]
         self.correlation = self.by_id["correlation"]
+        self.hostile = self.by_id["hostile_allowed"]
         self.admin_access = self.by_id["admin_access"]
         self.risk_ports = self.by_id["risk_ports"]
         self.ignore_destinations: list[str] = []
@@ -209,9 +254,15 @@ class Engine:
         self._rate: deque = deque(maxlen=7)
         self._tasks: list[asyncio.Task] = []
         self.receiver = None  # set by __main__, for the health figures on the dashboard
+        # Which detector partitions this engine runs: None for all. The processor leaves out the
+        # families detection workers run; a worker runs only its own.
+        self.families: set | None = None
+        self.candidates = None  # processor with workers: a bus.EventSource of their alert candidates
+        self.candidate_dedup = None
         self.source = None  # processor mode: a bus.EventSource; events come from collectors
         self.dedup = None  # processor mode: a bus.Deduplicator
         self._committed: dict = {}
+        self._committed_candidates: dict = {}
 
     # --- lifecycle -------------------------------------------------------
     def load(self, now: float | None = None) -> None:
@@ -232,6 +283,7 @@ class Engine:
         self.alerts.load(now)
 
     def apply_settings(self, detectors: dict, general: dict) -> None:
+        detectors = migrate_detector_settings(detectors)
         for det in self.detectors:
             det.configure(detectors.get(det.id, {}))
         def networks(items) -> tuple[list[str], list]:
@@ -256,9 +308,14 @@ class Engine:
         return {"ignore_sources": self.ignore_sources, "ignore_destinations": self.ignore_destinations,
                 "cooldown_minutes": int(self.alerts.cooldown // 60)}
 
+    def runs(self, det) -> bool:
+        return self.families is None or det.partition in self.families
+
     def raise_alert(self, c: Candidate, now: float) -> None:
         """The alert stage: fold the candidate into an alert, and let the correlator see it."""
         self.alerts.raise_(c, now)
+        if self.hostile.enabled and self.runs(self.hostile):  # with a source worker, it marks there
+            self.hostile.on_alert(c, now)
         if self.correlation.enabled:
             self.correlation.on_alert(c, now, lambda found: self.alerts.raise_(found, now))
 
@@ -275,6 +332,7 @@ class Engine:
         state does not load starts empty, as it would have without a snapshot."""
         if not snap or snap.get("version") != STATE_VERSION:
             return set()
+        snap = migrate_snapshot(snap)
         restored = set()
         for det in self.detectors:
             data = snap.get("detectors", {}).get(det.id)
@@ -309,8 +367,35 @@ class Engine:
     async def start(self) -> None:
         await asyncio.to_thread(self.load)
         intake = self._consume() if self.source else self._pipeline()
-        for coro in (intake, self._flush_loop(), self._tick_loop(), self._prune_loop()):
+        loops = [intake, self._flush_loop(), self._tick_loop(), self._prune_loop()]
+        if self.candidates:
+            loops.append(self._consume_candidates())
+        for coro in loops:
             self._tasks.append(asyncio.create_task(coro))
+
+    async def _consume_candidates(self) -> None:
+        """Processor with detection workers: their alert candidates, into the alert stage."""
+        while True:
+            try:
+                records = await self.candidates.batch()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("reading alert candidates from the message bus failed")
+                await asyncio.sleep(2)
+                continue
+            for record in records:
+                try:
+                    body = json.loads(record.value)
+                    uid = body.get("_uid")
+                    if uid and not self.candidate_dedup.fresh(str(uid[0]), int(uid[1]), time.time()):
+                        continue
+                    self.raise_alert(Candidate.from_dict(body), float(body["_ts"]))
+                except Exception:
+                    self.parse_errors += 1
+                    if self.parse_errors <= 20:
+                        log.exception("failed to process an alert candidate")
+            await asyncio.sleep(0)
 
     async def _consume(self) -> None:
         """Processor mode: parsed events from the collectors, through the bus."""
@@ -469,14 +554,16 @@ class Engine:
         """Stage 3: every detector that reads this kind of event. Candidates go to
         emit, by default the alert stage."""
         emit = emit or (lambda c: self.raise_alert(c, ts))
-        self.baselines.observe(ev, ts)
+        if self.families is None or "device" in self.families:
+            self.baselines.observe(ev, ts)
         ignored = self._ignored(ev.src_ip)
         ignored_dst = self._ignore_dst_nets and (
             self._ignored(ev.dst_ip, True) or self._ignored(ev.extra.get("nat_dst_ip"), True))
         readers = self._for_type.get(ev.event_type)
         if readers is None:
             readers = self._for_type[ev.event_type] = [
-                d for d in self.detectors if d.event_types is None or ev.event_type in d.event_types]
+                d for d in self.detectors
+                if (d.event_types is None or ev.event_type in d.event_types) and self.runs(d)]
         for det in readers:
             if det.enabled and not (ignored and det.id in _SOURCE_KEYED) and not (ignored_dst and det.id in _DEST_KEYED):
                 det.process(ev, ts, emit)
@@ -486,6 +573,7 @@ class Engine:
         # The bus position that matches what is about to be written: nothing below
         # awaits before the buffers are swapped, so no event slips between the two.
         offsets = self.source.snapshot() if self.source else {}
+        candidate_offsets = self.candidates.snapshot() if self.candidates else {}
         events, self._events = self._events, []
         stats, self._stats = self._stats, {}
         devices = [d for d in self.devices.values() if d.dirty]
@@ -514,6 +602,9 @@ class Engine:
             # Only now that the events are stored may the bus forget them.
             await self.source.commit(offsets)
             self._committed = offsets
+        if candidate_offsets and candidate_offsets != self._committed_candidates:
+            await self.candidates.commit(candidate_offsets)  # the alerts they became are stored
+            self._committed_candidates = candidate_offsets
 
     async def _flush_loop(self) -> None:
         while True:
@@ -535,6 +626,8 @@ class Engine:
         """Time-based work: windows expire, baselines roll, silent devices are noticed."""
         emit = lambda c: self.raise_alert(c, now)  # noqa: E731
         for det in self.detectors:
+            if not self.runs(det):
+                continue
             try:
                 det.tick(now, emit if det.enabled else (lambda c: None))
             except Exception:

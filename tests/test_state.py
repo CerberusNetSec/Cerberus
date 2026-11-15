@@ -133,3 +133,41 @@ def test_legacy_admin_sources_are_still_read(tmp_path):
     e.load(now=time.time())
     assert e.admin_access.known == {"core-sw1": {"192.168.1.10": 5.0}}
     db.close()
+
+
+def test_settings_and_state_from_before_the_split_carry_over(tmp_path):
+    """0.5.0 saved credential_attacks and correlation as single detectors."""
+    from cerberus.engine import migrate_detector_settings
+    from cerberus.state import encode
+    old = {"credential_attacks": {"enabled": False, "users": 9, "sources": 7, "window": 300},
+           "correlation": {"enabled": True, "indicators": 4, "window_hours": 12}}
+    new = migrate_detector_settings(old)
+    assert new["password_spray"] == {"enabled": False, "users": 9, "window": 300}
+    assert new["distributed_guessing"] == {"enabled": False, "sources": 7, "window": 300}
+    assert new["hostile_allowed"] == {"enabled": True, "window_hours": 12}
+
+    e, db = engine(tmp_path)
+    e.load(now=0.0)
+    s = SlidingSet()
+    s.add("alice", 100.0, 600)
+    snap = e.snapshot(now=100.0)
+    snap["detectors"].pop("password_spray")
+    snap["detectors"].pop("distributed_guessing")
+    snap["detectors"].pop("hostile_allowed")
+    snap["detectors"]["credential_attacks"] = {
+        "_state": encode({("spray", "1.2.3.4", "fw"): [100.0, s], ("dist", "fw", "alice"): [100.0, SlidingSet()]}),
+        "_emitted": encode({("spray", "1.2.3.4", "fw"): 100.0})}
+    snap["detectors"]["correlation"] = {
+        "_state": encode({}), "_emitted": encode({("host", "10.0.0.5"): 90.0, ("hostile", "9.9.9.9", "10.0.0.6"): 95.0}),
+        "hosts": encode({"10.0.0.5": {"network scanning": 90.0}}), "hostile": encode({"9.9.9.9": (95.0, "port scanning")})}
+    db.set_setting(STATE_KEY, snap)
+    db.close()
+    e2, db2 = engine(tmp_path)
+    e2.load(now=110.0)
+    spray, dist = e2.by_id["password_spray"], e2.by_id["distributed_guessing"]
+    assert list(spray._state) == [("spray", "1.2.3.4", "fw")] and list(dist._state) == [("dist", "fw", "alice")]
+    assert list(spray._state[("spray", "1.2.3.4", "fw")][1].items) == ["alice"]
+    assert e2.by_id["hostile_allowed"].hostile == {"9.9.9.9": (95.0, "port scanning")}
+    assert e2.by_id["correlation"].hosts == {"10.0.0.5": {"network scanning": 90.0}}
+    assert list(e2.by_id["correlation"]._emitted) == [("host", "10.0.0.5")]
+    db2.close()

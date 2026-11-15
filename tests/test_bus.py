@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import golden  # noqa: E402
-from cerberus.bus import EventSource, Heartbeats, Publisher, ensure_topics, encode_event  # noqa: E402
+from cerberus.bus import EventSource, Heartbeats, Publisher, ensure_topics  # noqa: E402
 from cerberus.collector import Collector  # noqa: E402
 from cerberus.config import Config  # noqa: E402
 from cerberus.connectors import ConnectorRegistry  # noqa: E402
@@ -53,13 +53,13 @@ async def collect(cfg, tmp_path, resend: bool = False) -> int:
     collector = Collector(cfg, ConnectorRegistry(), publisher)
     batch, total, sent = [], 0, []
     for offset, line in golden.timeline(simulate):
-        batch.append(collector.encode(collector.parse(line.encode(), "10.255.0.1", golden.START + offset)))
-        if len(batch) == 2000:
+        batch += collector.encode(collector.parse(line.encode(), "10.255.0.1", golden.START + offset))
+        total += 1
+        if len(batch) >= 2000:
             sent += batch
             await publisher.publish(batch)
-            total, batch = total + len(batch), []
+            batch = []
     await publisher.publish(batch)
-    total += len(batch)
     if resend:
         # What a collector does after a bus outage it cannot be sure about: sends some again.
         await publisher.publish(sent[:: 7])
@@ -142,7 +142,7 @@ def test_reference_traffic_through_collector_bus_and_processor(tmp_path, restart
 
     async def go():
         total = await collect(cfg, tmp_path, resend)
-        extra = len(range(0, (total // 2000) * 2000, 7)) if resend else 0
+        extra = len(range(0, (total // 2000) * 2000, 7)) if resend else 0  # one record per event here
         await process(cfg, tmp_path / "processor.db", total, restart_at=total // 2 if restart else 0, extra=extra)
         return total
     total = asyncio.run(go())
@@ -172,3 +172,116 @@ def test_collector_heartbeats_reach_the_processor(tmp_path):
         return heartbeats.latest
     latest = asyncio.run(go())
     assert latest["edge-1"]["received"] == 42 and latest["edge-1"]["received_at"] > 0
+
+
+def test_reference_traffic_through_detection_workers(tmp_path):
+    """Collectors route events to every family's topic; one detection worker per family
+    runs it and sends candidates back; the processor runs the rest and the alert stage.
+    The same alerts are found, and the same is stored, as in one process."""
+    from aiokafka.structs import TopicPartition
+
+    from cerberus.bus import Deduplicator, candidates_topic
+    from cerberus.detectors import WORKER_FAMILIES
+    from cerberus.models import Candidate
+    from cerberus.worker import DetectionWorker
+
+    expected = reference(tmp_path)
+    cfg = bus_config(tmp_path)
+    cfg.detection_workers = WORKER_FAMILIES
+
+    async def work(family: str) -> int:
+        """One worker for a family, driven on the events' clock like the reference run."""
+        wcfg = bus_config(tmp_path)
+        wcfg.kafka_topic, wcfg.kafka_group = cfg.kafka_topic, cfg.kafka_group
+        wcfg.detection_workers, wcfg.detection_family = WORKER_FAMILIES, family
+        db = Database(tmp_path / f"{family}.db")
+        engine = Engine(wcfg, db, ConnectorRegistry(), Notifier(db))
+        engine.families = {family}
+        watch = {d.id: d.settings() for d in engine.detectors}
+        watch["watchlist"]["entries"] = "45.77.0.0/16"
+        engine.apply_settings(watch, engine.general_settings())
+        worker = DetectionWorker(wcfg, db, engine, Publisher(wcfg, tmp_path / "spool", name=f"w-{family}"))
+        await worker.publisher.start()
+        await worker.source.start()
+        next_tick, idle = golden.START + golden.TICK, 0
+        while idle < 8:  # until the topic has been quiet for a while
+            records = await worker.source.batch(timeout_ms=1000)
+            idle = 0 if records else idle + 1
+            for record in records:
+                ts = json.loads(record.value)["ts"]
+                while next_tick <= ts:
+                    await worker.publisher.publish(worker.tick(next_tick))
+                    next_tick += golden.TICK
+                await worker.publisher.publish(worker.handle([record]))
+            await worker.source.commit(worker.source.snapshot())
+        await worker.publisher.publish(worker.tick(next_tick))
+        await worker.publisher.stop()
+        await worker.source.stop()
+        if family == "port":
+            ports = worker.engine.risk_ports.drain()
+            db.close()
+            return ports
+        db.close()
+        return []
+
+    async def go():
+        total = await collect(cfg, tmp_path)
+        ports = (await asyncio.gather(*(work(f) for f in WORKER_FAMILIES)))[WORKER_FAMILIES.index("port")]
+        # The candidates, then the processor: alerts raised at the time they were found.
+        source = EventSource(cfg, topic=candidates_topic(cfg), group=cfg.kafka_group + "-alerts")
+        await source.start()
+        pending, dedup, idle = [], Deduplicator(), 0
+        while idle < 4:
+            records = await source.batch(timeout_ms=1000)
+            idle = 0 if records else idle + 1
+            for record in records:
+                body = json.loads(record.value)
+                if dedup.fresh(*body["_uid"]):
+                    pending.append(body)
+        await source.stop()
+        pending.sort(key=lambda b: b["_ts"])
+
+        db, engine = processor(cfg, tmp_path / "processor.db", golden.START)
+        engine.families = {"device", "alerts"}
+        await engine.source.start()
+
+        def raise_until(ts, inclusive):
+            while pending and (pending[0]["_ts"] <= ts if inclusive else pending[0]["_ts"] < ts):
+                body = pending.pop(0)
+                engine.raise_alert(Candidate.from_dict(body), body["_ts"])
+
+        next_tick, seen = golden.START + golden.TICK, 0
+        while seen < total:
+            for tp, records in (await engine.source.consumer.getmany(timeout_ms=2000, max_records=5000)).items():
+                for record in records:
+                    ev = Event.from_dict(json.loads(record.value))
+                    while next_tick <= ev.ts:
+                        await engine._flush()
+                        raise_until(next_tick, True)
+                        engine.tick(next_tick)
+                        next_tick += golden.TICK
+                    raise_until(ev.ts, False)
+                    if engine.record(ev, ev.ts):
+                        engine.detect(ev, ev.ts)
+                    engine.source.position[TopicPartition(tp.topic, tp.partition)] = record.offset + 1
+                    seen += 1
+        await engine._flush()
+        raise_until(next_tick, True)
+        engine.tick(next_tick)
+        raise_until(float("inf"), True)
+        from cerberus.storage import Batch
+        db.write_batch(Batch(ports=ports))  # what the port worker writes
+        await engine._flush()
+        await engine.source.stop()
+        db.close()
+        return total
+
+    total = asyncio.run(go())
+    assert total == expected["events"]["rows"]
+    actual = golden.summarise_store(Database(tmp_path / "processor.db"))
+
+    def comparable(alerts):
+        return sorted((a["created"], a["detector"], a["entity"], a["severity"], a["title"], a["count"],
+                       a["description"], a["details"]) for a in alerts)
+    assert comparable(actual.pop("alerts")) == comparable(expected.pop("alerts"))
+    assert actual == expected

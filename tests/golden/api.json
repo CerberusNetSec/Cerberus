@@ -7129,22 +7129,37 @@
      ]
     },
     {
-     "description": "One source trying many different usernames (spraying), or one account being attacked from many sources at once - patterns that slip under a simple failed-login count.",
+     "description": "One source trying many different usernames on a device: a pattern that slips under a simple failed-login count.",
      "enabled": true,
-     "id": "credential_attacks",
-     "name": "Password spraying and distributed guessing",
+     "id": "password_spray",
+     "name": "Password spraying",
      "params": [
       {
        "default": 6,
        "key": "users",
-       "label": "Spraying: distinct usernames from one source",
+       "label": "Distinct usernames from one source",
        "type": "int",
        "value": 6
       },
       {
+       "default": 600,
+       "key": "window",
+       "label": "Within (seconds)",
+       "type": "int",
+       "value": 600
+      }
+     ]
+    },
+    {
+     "description": "One account on a device attacked from many sources at once, which per-source lockouts do not stop.",
+     "enabled": true,
+     "id": "distributed_guessing",
+     "name": "Distributed password guessing",
+     "params": [
+      {
        "default": 5,
        "key": "sources",
-       "label": "Distributed: distinct sources against one account",
+       "label": "Distinct sources against one account",
        "type": "int",
        "value": 5
       },
@@ -7238,10 +7253,25 @@
      ]
     },
     {
-     "description": "Joins separate alerts: an internal host showing several different kinds of attack behaviour is raised as a likely compromise, and an internet address that was scanning or guessing passwords is flagged if the firewall later lets it in.",
+     "description": "An internet address that was scanning, flooding or guessing passwords is later allowed through the firewall to an internal host.",
+     "enabled": true,
+     "id": "hostile_allowed",
+     "name": "Hostile address allowed in",
+     "params": [
+      {
+       "default": 24,
+       "key": "window_hours",
+       "label": "Remember hostile addresses for (hours)",
+       "type": "int",
+       "value": 24
+      }
+     ]
+    },
+    {
+     "description": "Joins separate alerts: an internal host showing several different kinds of attack behaviour is raised as a likely compromise.",
      "enabled": true,
      "id": "correlation",
-     "name": "Correlation",
+     "name": "Correlation: likely compromised host",
      "params": [
       {
        "default": 3,
@@ -7687,22 +7717,37 @@
      ]
     },
     {
-     "description": "One source trying many different usernames (spraying), or one account being attacked from many sources at once - patterns that slip under a simple failed-login count.",
+     "description": "One source trying many different usernames on a device: a pattern that slips under a simple failed-login count.",
      "enabled": true,
-     "id": "credential_attacks",
-     "name": "Password spraying and distributed guessing",
+     "id": "password_spray",
+     "name": "Password spraying",
      "params": [
       {
        "default": 6,
        "key": "users",
-       "label": "Spraying: distinct usernames from one source",
+       "label": "Distinct usernames from one source",
        "type": "int",
        "value": 6
       },
       {
+       "default": 600,
+       "key": "window",
+       "label": "Within (seconds)",
+       "type": "int",
+       "value": 600
+      }
+     ]
+    },
+    {
+     "description": "One account on a device attacked from many sources at once, which per-source lockouts do not stop.",
+     "enabled": true,
+     "id": "distributed_guessing",
+     "name": "Distributed password guessing",
+     "params": [
+      {
        "default": 5,
        "key": "sources",
-       "label": "Distributed: distinct sources against one account",
+       "label": "Distinct sources against one account",
        "type": "int",
        "value": 5
       },
@@ -7796,10 +7841,25 @@
      ]
     },
     {
-     "description": "Joins separate alerts: an internal host showing several different kinds of attack behaviour is raised as a likely compromise, and an internet address that was scanning or guessing passwords is flagged if the firewall later lets it in.",
+     "description": "An internet address that was scanning, flooding or guessing passwords is later allowed through the firewall to an internal host.",
+     "enabled": true,
+     "id": "hostile_allowed",
+     "name": "Hostile address allowed in",
+     "params": [
+      {
+       "default": 24,
+       "key": "window_hours",
+       "label": "Remember hostile addresses for (hours)",
+       "type": "int",
+       "value": 24
+      }
+     ]
+    },
+    {
+     "description": "Joins separate alerts: an internal host showing several different kinds of attack behaviour is raised as a likely compromise.",
      "enabled": true,
      "id": "correlation",
-     "name": "Correlation",
+     "name": "Correlation: likely compromised host",
      "params": [
       {
        "default": 3,
@@ -8249,22 +8309,37 @@
      ]
     },
     {
-     "description": "One source trying many different usernames (spraying), or one account being attacked from many sources at once - patterns that slip under a simple failed-login count.",
+     "description": "One source trying many different usernames on a device: a pattern that slips under a simple failed-login count.",
      "enabled": true,
-     "id": "credential_attacks",
-     "name": "Password spraying and distributed guessing",
+     "id": "password_spray",
+     "name": "Password spraying",
      "params": [
       {
        "default": 6,
        "key": "users",
-       "label": "Spraying: distinct usernames from one source",
+       "label": "Distinct usernames from one source",
        "type": "int",
        "value": 6
       },
       {
+       "default": 600,
+       "key": "window",
+       "label": "Within (seconds)",
+       "type": "int",
+       "value": 600
+      }
+     ]
+    },
+    {
+     "description": "One account on a device attacked from many sources at once, which per-source lockouts do not stop.",
+     "enabled": true,
+     "id": "distributed_guessing",
+     "name": "Distributed password guessing",
+     "params": [
+      {
        "default": 5,
        "key": "sources",
-       "label": "Distributed: distinct sources against one account",
+       "label": "Distinct sources against one account",
        "type": "int",
        "value": 5
       },
@@ -8358,10 +8433,25 @@
      ]
     },
     {
-     "description": "Joins separate alerts: an internal host showing several different kinds of attack behaviour is raised as a likely compromise, and an internet address that was scanning or guessing passwords is flagged if the firewall later lets it in.",
+     "description": "An internet address that was scanning, flooding or guessing passwords is later allowed through the firewall to an internal host.",
+     "enabled": true,
+     "id": "hostile_allowed",
+     "name": "Hostile address allowed in",
+     "params": [
+      {
+       "default": 24,
+       "key": "window_hours",
+       "label": "Remember hostile addresses for (hours)",
+       "type": "int",
+       "value": 24
+      }
+     ]
+    },
+    {
+     "description": "Joins separate alerts: an internal host showing several different kinds of attack behaviour is raised as a likely compromise.",
      "enabled": true,
      "id": "correlation",
-     "name": "Correlation",
+     "name": "Correlation: likely compromised host",
      "params": [
       {
        "default": 3,

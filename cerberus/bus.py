@@ -63,6 +63,10 @@ async def ensure_topics(cfg) -> None:
         have = set(await admin.list_topics())
         wanted = [NewTopic(cfg.kafka_topic, cfg.kafka_partitions, cfg.kafka_replication),
                   NewTopic(cfg.kafka_topic + ".collectors", 1, cfg.kafka_replication)]
+        if cfg.detection_workers:
+            wanted += [NewTopic(family_topic(cfg, f), cfg.kafka_partitions, cfg.kafka_replication)
+                       for f in cfg.detection_workers]
+            wanted.append(NewTopic(candidates_topic(cfg), cfg.kafka_partitions, cfg.kafka_replication))
         missing = [t for t in wanted if t.name not in have]
         if missing:
             try:
@@ -172,14 +176,15 @@ class Spool:
     def __bool__(self) -> bool:
         return bool(self.files())
 
-    def append(self, records: list[tuple[bytes, bytes]]) -> None:
-        for key, value in records:
+    def append(self, records: list[tuple]) -> None:
+        """records: (topic, key, value); a spool line is [topic, key, value]."""
+        for topic, key, value in records:
             if self._open is None or self._open_count >= SPOOL_FILE_EVENTS:
                 self._close_open()
                 self._open = open(self.dir / f"{self._next:012d}.jsonl", "ab")
                 self._next += 1
                 self._open_count = 0
-            self._open.write(json.dumps([key.decode("utf-8", "replace"), value.decode()]).encode() + b"\n")
+            self._open.write(json.dumps([topic, key.decode("utf-8", "replace"), value.decode()]).encode() + b"\n")
             self._open_count += 1
         self._open.flush()
         while self.size() > self.limit and len(self.files()) > 1:
@@ -200,7 +205,7 @@ class Spool:
             self.handle.close()
             self.handle = None
 
-    def oldest(self) -> tuple[Path, list[tuple[bytes, bytes]]] | None:
+    def oldest(self, default_topic: str = "") -> tuple[Path, list[tuple]] | None:
         files = self.files()
         if not files:
             return None
@@ -208,7 +213,9 @@ class Spool:
             self._close_open()  # sending the file being written: start a new one for what follows
         with open(files[0], "rb") as fh:
             rows = [json.loads(line) for line in fh if line.strip()]
-        return files[0], [(k.encode(), v.encode()) for k, v in rows]
+        # 0.5.0 spooled [key, value], all for the event topic.
+        return files[0], [(r[0], r[1].encode(), r[2].encode()) if len(r) == 3 else (default_topic, r[0].encode(), r[1].encode())
+                          for r in rows]
 
 
 def _safe_name(name: str) -> str:
@@ -275,15 +282,20 @@ class Publisher:
         self.down = True
         self.last_error = str(exc)[:200] or type(exc).__name__
 
-    async def _send(self, records: list[tuple[bytes, bytes]]) -> None:
+    def _with_topic(self, records: list[tuple]) -> list[tuple]:
+        """(key, value) pairs go to the event topic; (topic, key, value) to their own."""
+        return [r if len(r) == 3 else (self.topic, *r) for r in records]
+
+    async def _send(self, records: list[tuple]) -> None:
         await self._ensure_started()
-        futures = [await self.producer.send(self.topic, value, key=key) for key, value in records]
+        futures = [await self.producer.send(topic, value, key=key) for topic, key, value in records]
         await asyncio.gather(*futures)
 
-    async def publish(self, records: list[tuple[bytes, bytes]]) -> None:
+    async def publish(self, records: list[tuple]) -> None:
         """Send a batch, keeping order with anything already spooled."""
         if not records:
             return
+        records = self._with_topic(records)
         if self.down or self.spool:
             self.spool.append(records)
             self.spooled += len(records)
@@ -299,7 +311,7 @@ class Publisher:
     async def drain_spool(self) -> bool:
         """Send spooled events, oldest first. Returns True when the spool is empty."""
         while True:
-            item = self.spool.oldest()
+            item = self.spool.oldest(self.topic)
             if item is None:
                 if self.down:
                     log.info("message bus reachable again; spool sent")
@@ -324,7 +336,7 @@ class Publisher:
                 continue  # its collector is running
             orphan = Spool(directory, self.spool.limit, lock=False)
             try:
-                while (item := orphan.oldest()) is not None:
+                while (item := orphan.oldest(self.topic)) is not None:
                     path, records = item
                     await self._send(records)
                     path.unlink()
@@ -392,19 +404,35 @@ class Heartbeats:
                         pass
 
 
-class EventSource:
-    """Processor side: events from the bus, and committing what has been stored."""
+def family_topic(cfg, family: str) -> str:
+    return f"{cfg.kafka_topic}.{family}"
 
-    def __init__(self, cfg, consumer=None):
+
+def candidates_topic(cfg) -> str:
+    return f"{cfg.kafka_topic}.candidates"
+
+
+def encode_candidate(c, ts: float, uid: tuple[str, int]) -> tuple[str, bytes, bytes]:
+    """(topic-less key, value) for an alert candidate from a detection worker."""
+    body = {**c.as_dict(), "_ts": ts, "_uid": list(uid)}
+    return f"{c.detector}|{c.entity}".encode("utf-8", "replace"), json.dumps(body, separators=(",", ":")).encode()
+
+
+class EventSource:
+    """Consuming one topic, and committing only what has been dealt with."""
+
+    def __init__(self, cfg, consumer=None, topic: str = "", group: str = ""):
         self.cfg = cfg
         self.consumer = consumer
+        self.topic = topic or cfg.kafka_topic
+        self.group = group or cfg.kafka_group
         self.position: dict = {}  # TopicPartition -> offset of the next record to process
 
     async def start(self) -> None:
         if self.consumer is None:
             from aiokafka import AIOKafkaConsumer
             self.consumer = AIOKafkaConsumer(
-                self.cfg.kafka_topic, **_common(self.cfg), group_id=self.cfg.kafka_group,
+                self.topic, **_common(self.cfg), group_id=self.group,
                 enable_auto_commit=False, auto_offset_reset="earliest", max_poll_records=5000,
                 fetch_max_bytes=64 * 1024 * 1024)
         await self.consumer.start()

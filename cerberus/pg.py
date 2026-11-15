@@ -126,6 +126,15 @@ class PostgresStore(Store):
         except ValueError:
             return default
 
+    def settings_with_prefix(self, prefix: str) -> dict:
+        out = {}
+        for row in self._q("SELECT key, value FROM settings WHERE left(key, length(%s)) = %s", (prefix, prefix)):
+            try:
+                out[row["key"]] = json.loads(row["value"])
+            except ValueError:
+                pass
+        return out
+
     def set_setting(self, key: str, value) -> None:
         self._x("INSERT INTO settings(key, value) VALUES(%s, %s) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, json.dumps(value)))

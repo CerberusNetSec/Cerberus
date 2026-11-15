@@ -292,11 +292,44 @@ and serves the dashboard. Clustered storage is required.
   (`CERBERUS_SYSLOG_TLS_PORT`, usually 6514), optionally requiring device
   certificates.
 
+### Detection workers
+
+When one processor cannot keep up with detection, run **detection workers**
+(`CERBERUS_MODE=detector`). Detectors fall into families by what they count:
+
+| Family | Keyed by | Detectors |
+|---|---|---|
+| `source` | source address | port scans, host sweeps, floods, brute force, password spraying, threats, large transfers, risky egress, lateral movement, beaconing, hostile addresses allowed in |
+| `target` | target host | services exposed to the internet |
+| `pair` | address pair | watchlist |
+| `port` | port | high-risk ports (and the Risk ports page) |
+| `account` | account | one account guessed from many addresses |
+
+Set `CERBERUS_DETECTION_WORKERS=all` (or some of the families) on the
+collectors, the processor and the workers, and run workers with
+`CERBERUS_DETECTION_FAMILY` set to their family; run as many of each as you
+need. Collectors send each family the events it reads, divided by its key, so
+everything about one source address (say) reaches the same worker. Workers send
+what they find back over the bus; the processor keeps per-device detection
+(rate baselines, silent and new devices, link flaps, notable events, admin
+access), correlation, alerts and notifications. Workers read detector settings
+from storage every 30 seconds, so dashboard changes reach them.
+
+- **Bus traffic grows:** an event goes to the event topic and to each family
+  that reads it - with every family offloaded, firewall traffic is sent about
+  four times.
+- **Worker state is in memory.** When a worker is replaced, or the bus moves
+  its keys to another worker, the windows for those keys start again (the
+  high-risk port history is reloaded from storage). Each worker sends a
+  heartbeat; the processor raises "Detection worker stopped reporting" when
+  one goes quiet.
+- The same alerts are found as by one process: `tests/test_workers.py` and
+  `tests/test_bus.py` run the reference traffic through workers and compare.
+
 Reference deployments: `deploy/compose/scale-out.yml` (HAProxy, collectors,
-Redpanda, processor, both databases) and the Kubernetes `collector` and
-`processor` layers; see [deploy/README.md](deploy/README.md). Detection still
-runs in the one processor; dividing it between several is the next phase of
-[docs/CLUSTERING.md](docs/CLUSTERING.md).
+Redpanda, detection workers, processor, both databases) and the Kubernetes
+`collector`, `detector` and `processor` layers; see
+[deploy/README.md](deploy/README.md) and [docs/CLUSTERING.md](docs/CLUSTERING.md).
 
 ## Many sites
 
@@ -466,7 +499,8 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_CENTRAL_URL`, `CERBERUS_CENTRAL_TOKEN[_FILE]`, `CERBERUS_SITE_NAME`, `CERBERUS_CENTRAL_CA` | | Report to a central console (see [deploy/README.md](deploy/README.md)) |
 | `CERBERUS_CENTRAL`, `CERBERUS_SITE_TOKENS_FILE`, `CERBERUS_SITE_SILENT_MINUTES` | `off`, , `5` | Act as the central console |
 | `CERBERUS_POSTGRES_URL`, `CERBERUS_CLICKHOUSE_URL` (or `_FILE`) | | Store data in PostgreSQL and ClickHouse instead of SQLite; set both (see [Clustered storage](#clustered-storage)) |
-| `CERBERUS_MODE` | `all` | `collector` or `processor` for [scale-out ingest](#scale-out-ingest) |
+| `CERBERUS_MODE` | `all` | `collector`, `processor` or `detector` for [scale-out ingest](#scale-out-ingest) |
+| `CERBERUS_DETECTION_WORKERS`, `CERBERUS_DETECTION_FAMILY` | | Families run by [detection workers](#detection-workers) (`all`, or a comma-separated list), the same everywhere; and a worker's own family |
 | `CERBERUS_KAFKA_BOOTSTRAP`, `_TOPIC`, `_GROUP`, `_PARTITIONS`, `_REPLICATION`, `_SECURITY` (`SSL`), `_CA` | | The message bus between collectors and the processor |
 | `CERBERUS_COLLECTOR_NAME`, `CERBERUS_SPOOL_MB`, `CERBERUS_COLLECTOR_SILENT_SECONDS` | hostname, `1024`, `90` | Collector identity, spool size while the bus is unreachable, and when the processor calls a collector silent |
 | `CERBERUS_SYSLOG_TLS_PORT`, `_TLS_CERT`, `_TLS_KEY`, `_TLS_CLIENT_CA` | `0` | Syslog over TLS (RFC 5425), optionally requiring device certificates |

@@ -24,11 +24,13 @@ EMIT_INTERVAL = 5.0  # seconds between repeat emits for one entity
 # same copy. "split" marks a detector that keys on two things at once and must be
 # divided into two detectors before it can be sharded; "none" reads no events.
 PARTITIONS = {
-    "source": lambda ev: ev.src_ip or "",
-    "source_or_device": lambda ev: ev.src_ip or f"device {ev.device}",
+    # Events without a source address go by device: the brute-force detector counts
+    # failed logins with no address per device; the others ignore such events.
+    "source": lambda ev: ev.src_ip or f"device {ev.device}",
     "device": lambda ev: ev.device,
     "pair": lambda ev: "|".join(sorted((ev.src_ip or "", ev.dst_ip or ""))),
     "port": lambda ev: "" if ev.dst_port is None else str(ev.dst_port),
+    "account": lambda ev: f"{ev.device}|{(ev.user or '')[:64]}",
 }
 
 
@@ -91,7 +93,8 @@ class Detector:
     # The event types process() acts on (None: any). The engine does not call
     # process() for others. Must include every type the detector reacts to.
     event_types: frozenset | None = None
-    # What the detector's state is keyed by: a key of PARTITIONS, "split" or "none".
+    # What the detector's state is keyed by: a key of PARTITIONS (or "target", see
+    # ExposedService), "alerts" for the alert stream, or "none".
     partition = "none"
 
     def partition_key(self, ev: Event) -> str:
@@ -297,7 +300,7 @@ class _AuthState:
 
 class BruteForce(Detector):
     event_types = frozenset({"auth_failure", "auth_success"})
-    partition = "source_or_device"
+    partition = "source"
     id = "brute_force"
     name = "Login brute force"
     description = "Repeated failed logins from one source, and a successful login that follows them."
@@ -716,6 +719,41 @@ class TopologyChange(Detector):
         ("new_neighbors", True, "Alert when a new neighbour appears"),
         ("lost_neighbors", True, "Alert when a neighbour disappears"),
     ]
+
+
+# Families of detectors that share a key and can run in detection workers. The
+# "device" family (baselines, silence, new devices, link flaps, notable events,
+# admin access) stays with the processor, which already sees every event by device;
+# correlation reads the alert stream there too.
+WORKER_FAMILIES = ("source", "target", "pair", "port", "account")
+
+
+def family_detectors(family: str) -> list[Detector]:
+    return [d for d in build_detectors() if d.partition == family]
+
+
+def family_event_types(family: str) -> frozenset:
+    """The event types a family's detectors read: what collectors send to its topic."""
+    types: set = set()
+    for det in family_detectors(family):
+        if det.event_types is None:
+            return frozenset({"*"})
+        types |= det.event_types
+    return frozenset(types)
+
+
+def family_key(family: str, ev: Event) -> str:
+    """The key events of a family's topic are divided by."""
+    return family_detectors_cached(family)[0].partition_key(ev)
+
+
+_FAMILY_CACHE: dict = {}
+
+
+def family_detectors_cached(family: str) -> list[Detector]:
+    if family not in _FAMILY_CACHE:
+        _FAMILY_CACHE[family] = family_detectors(family)
+    return _FAMILY_CACHE[family]
 
 
 def build_detectors() -> list[Detector]:

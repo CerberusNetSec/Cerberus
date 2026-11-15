@@ -78,6 +78,10 @@ class Store:
     def set_setting(self, key: str, value) -> None:
         raise NotImplementedError
 
+    def settings_with_prefix(self, prefix: str) -> dict:
+        """Every setting whose key starts with prefix: {key: value}."""
+        raise NotImplementedError
+
     async def aget_setting(self, key: str, default=None):
         return await asyncio.to_thread(self.get_setting, key, default)
 

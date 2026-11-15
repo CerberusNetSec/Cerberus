@@ -1,0 +1,289 @@
+# One Deployment per family of detectors. Scale each by its replicas; the
+# family's topic has CERBERUS_KAFKA_PARTITIONS partitions, so more replicas than
+# that would sit idle. Workers keep their windows in memory: a replaced pod's keys
+# start their windows again on the pod that takes them over.
+---
+# source: keyed by source address: scans, sweeps, floods, guessing, egress, beacons.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-detector-source
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-source}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-source}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-source}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: detector
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-detector}
+          env:
+            - {name: CERBERUS_DETECTION_FAMILY, value: source}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: CERBERUS_POSTGRES_URL_FILE, value: /run/secrets/storage/postgres-url}
+            - {name: CERBERUS_CLICKHOUSE_URL_FILE, value: /run/secrets/storage/clickhouse-url}
+          ports:
+            - {name: status, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 1, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}  # one core each; add replicas rather than CPU
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}  # spool for alert candidates during a bus outage
+            - {name: storage, mountPath: /run/secrets/storage, readOnly: true}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}
+        - name: storage
+          secret: {secretName: cerberus-storage, defaultMode: 0440}
+---
+# target: keyed by target host: services exposed to the internet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-detector-target
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-target}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-target}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-target}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: detector
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-detector}
+          env:
+            - {name: CERBERUS_DETECTION_FAMILY, value: target}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: CERBERUS_POSTGRES_URL_FILE, value: /run/secrets/storage/postgres-url}
+            - {name: CERBERUS_CLICKHOUSE_URL_FILE, value: /run/secrets/storage/clickhouse-url}
+          ports:
+            - {name: status, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}  # one core each; add replicas rather than CPU
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}  # spool for alert candidates during a bus outage
+            - {name: storage, mountPath: /run/secrets/storage, readOnly: true}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}
+        - name: storage
+          secret: {secretName: cerberus-storage, defaultMode: 0440}
+---
+# pair: keyed by address pair: watchlist matches.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-detector-pair
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-pair}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-pair}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-pair}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: detector
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-detector}
+          env:
+            - {name: CERBERUS_DETECTION_FAMILY, value: pair}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: CERBERUS_POSTGRES_URL_FILE, value: /run/secrets/storage/postgres-url}
+            - {name: CERBERUS_CLICKHOUSE_URL_FILE, value: /run/secrets/storage/clickhouse-url}
+          ports:
+            - {name: status, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}  # one core each; add replicas rather than CPU
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}  # spool for alert candidates during a bus outage
+            - {name: storage, mountPath: /run/secrets/storage, readOnly: true}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}
+        - name: storage
+          secret: {secretName: cerberus-storage, defaultMode: 0440}
+---
+# port: keyed by port: the high-risk port counters, spikes and the Risk ports page.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-detector-port
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-port}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-port}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-port}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: detector
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-detector}
+          env:
+            - {name: CERBERUS_DETECTION_FAMILY, value: port}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: CERBERUS_POSTGRES_URL_FILE, value: /run/secrets/storage/postgres-url}
+            - {name: CERBERUS_CLICKHOUSE_URL_FILE, value: /run/secrets/storage/clickhouse-url}
+          ports:
+            - {name: status, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}  # one core each; add replicas rather than CPU
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}  # spool for alert candidates during a bus outage
+            - {name: storage, mountPath: /run/secrets/storage, readOnly: true}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}
+        - name: storage
+          secret: {secretName: cerberus-storage, defaultMode: 0440}
+---
+# account: keyed by account: one account guessed from many addresses.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-detector-account
+  labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-account}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-account}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cerberus, app.kubernetes.io/component: detector-account}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: detector
+          image: cerberus
+          envFrom:
+            - configMapRef: {name: cerberus-detector}
+          env:
+            - {name: CERBERUS_DETECTION_FAMILY, value: account}
+            - name: CERBERUS_COLLECTOR_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: CERBERUS_POSTGRES_URL_FILE, value: /run/secrets/storage/postgres-url}
+            - {name: CERBERUS_CLICKHOUSE_URL_FILE, value: /run/secrets/storage/clickhouse-url}
+          ports:
+            - {name: status, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}  # one core each; add replicas rather than CPU
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}  # spool for alert candidates during a bus outage
+            - {name: storage, mountPath: /run/secrets/storage, readOnly: true}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}
+        - name: storage
+          secret: {secretName: cerberus-storage, defaultMode: 0440}

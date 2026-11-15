@@ -59,6 +59,48 @@ async def run_collector(cfg: Config) -> None:
         log.info("stopped")
 
 
+async def run_worker(cfg: Config) -> None:
+    from .bus import Publisher, collector_name, ensure_topics
+    from .detectors import WORKER_FAMILIES
+    from .worker import DetectionWorker
+
+    if cfg.detection_family not in WORKER_FAMILIES:
+        raise SystemExit(f"CERBERUS_DETECTION_FAMILY must be one of {', '.join(WORKER_FAMILIES)}.")
+    if cfg.detection_family not in cfg.detection_workers:
+        raise SystemExit("CERBERUS_DETECTION_WORKERS must include this worker's family, as on the collectors "
+                         "and the processor.")
+    if not cfg.postgres_url:
+        raise SystemExit("A detection worker needs clustered storage (CERBERUS_POSTGRES_URL and CERBERUS_CLICKHOUSE_URL).")
+    store = open_store(cfg)
+    await ensure_topics(cfg)
+    engine = Engine(cfg, store, ConnectorRegistry(cfg.data_dir / "connectors"), Notifier(store))
+    engine.families = {cfg.detection_family}
+    worker = DetectionWorker(cfg, store, engine, Publisher(cfg, cfg.data_dir / "spool",
+                                                    name=f"worker-{cfg.detection_family}-{collector_name(cfg)}"))
+    await worker.start()
+
+    from fastapi import FastAPI
+    app = FastAPI(title="Cerberus detection worker", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/healthz")
+    async def healthz():
+        return {"ok": True}
+
+    @app.get("/status")
+    async def status():
+        return worker.status()
+
+    server = uvicorn.Server(uvicorn.Config(app, host=cfg.bind, port=cfg.web_port, log_level="warning", access_log=False))
+    log.info("Cerberus %s detection worker %s; status on http://%s:%d/status", __version__, worker.name, cfg.bind,
+             cfg.web_port)
+    try:
+        await server.serve()
+    finally:
+        await worker.stop()
+        store.close()
+        log.info("stopped")
+
+
 async def amain() -> None:
     cfg = Config.from_env()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -68,6 +110,9 @@ async def amain() -> None:
         raise SystemExit(f"CERBERUS_MODE={cfg.mode} needs CERBERUS_KAFKA_BOOTSTRAP.")
     if cfg.mode == "collector":
         await run_collector(cfg)
+        return
+    if cfg.mode == "detector":
+        await run_worker(cfg)
         return
 
     db = open_store(cfg)
@@ -80,6 +125,14 @@ async def amain() -> None:
         await ensure_topics(cfg)
         engine.source = EventSource(cfg)
         engine.dedup = Deduplicator()
+        if cfg.detection_workers:
+            from .bus import candidates_topic
+            from .detectors import WORKER_FAMILIES
+            engine.families = {"device", "alerts", *(f for f in WORKER_FAMILIES if f not in cfg.detection_workers)}
+            engine.candidates = EventSource(cfg, topic=candidates_topic(cfg), group=f"{cfg.kafka_group}-alerts")
+            await engine.candidates.start()
+            engine.candidate_dedup = Deduplicator()
+            log.info("detection workers run: %s", ", ".join(cfg.detection_workers))
         await engine.source.start()
         heartbeats = Heartbeats(cfg)
         log.info("processor: consuming %s from %s", cfg.kafka_topic, cfg.kafka_bootstrap)
@@ -128,6 +181,8 @@ async def amain() -> None:
         await engine.stop()
         if engine.source:
             await engine.source.stop()
+        if engine.candidates:
+            await engine.candidates.stop()
         notify_task.cancel()
         await notifier.close()
         db.close()
@@ -149,6 +204,15 @@ async def watch_collectors(cfg: Config, engine, heartbeats) -> None:
                 silent.discard(name)
             elif name not in silent:
                 silent.add(name)
+                if status.get("role") == "detector":
+                    family = status.get("family", "")
+                    engine.raise_alert(Candidate(
+                        "collector_silent", f"collector|{name}", "high", f"Detection worker stopped reporting: {name}",
+                        f"Detection worker {name} ({family} family) has not sent a heartbeat for {int(quiet)} seconds. "
+                        f"Its share of the {family} detectors moves to the other {family} workers once the bus "
+                        "notices it has gone; if there are none, those detectors are not running.",
+                        None, "", {"collector": name, "family": family, "silent_seconds": int(quiet)}), now)
+                    continue
                 engine.raise_alert(Candidate(
                     "collector_silent", f"collector|{name}", "high", f"Collector stopped reporting: {name}",
                     f"Collector {name} has not sent a heartbeat for {int(quiet)} seconds. Devices sending to it are "

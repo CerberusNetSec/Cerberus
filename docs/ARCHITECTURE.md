@@ -57,7 +57,7 @@ stages and requires identical results.
 
 | File | Role |
 |---|---|
-| `__main__.py` | Starts everything in one event loop, in the configured mode (`all`, `collector`, `processor`) |
+| `__main__.py` | Starts everything in one event loop, in the configured mode (`all`, `collector`, `processor`, `detector`) |
 | `config.py` | Environment variables |
 | `receiver.py` | Syslog listeners |
 | `syslog_parser.py` | Syslog envelope |
@@ -76,6 +76,7 @@ stages and requires identical results.
 | `snmp.py`, `snmp_poller.py`, `topology.py` | SNMP v2c client, polling, map building |
 | `federation.py` | Site → central console reporting (`Forwarder`) and the console side (`Central`) |
 | `bus.py`, `collector.py` | Scale-out: publishing to and consuming from the message bus, the collector's spool, copy detection, heartbeats; the collector process |
+| `worker.py` | Detection worker: one family of detectors on its share of the events, alert candidates back over the bus |
 | `web.py`, `static/` | JSON API and the single-page UI (no build step) |
 
 ## Storage
@@ -188,11 +189,41 @@ broker and the processor (also with the processor restarted midway, and with
 a share of events sent twice) and requires exactly what the single process
 stores.
 
+## Detection workers
+
+Every detector declares a partition (`Detector.partition`): what its state is
+keyed by. The detectors keyed by `source`, `target`, `pair`, `port` and
+`account` form families (`detectors.WORKER_FAMILIES`) that can run elsewhere;
+`device` detectors and correlation (`alerts`) stay in the processor.
+`CERBERUS_DETECTION_WORKERS` lists the families that workers run. A collector
+then also publishes each event to `<topic>.<family>` for every listed family
+whose detectors read that event type (`family_event_types`), keyed by
+`family_key`, with the same unique id. A worker (`CERBERUS_MODE=detector`,
+`worker.DetectionWorker`) consumes its family's topic in a consumer group
+shared with the family's other workers, so one key always reaches one worker;
+it runs an `Engine` limited to that family (`Engine.families`), ticks on the
+wall clock, and publishes each `Candidate` with the time it was found and a
+unique id to `<topic>.candidates`. The processor's engine skips the offloaded
+families and reads the candidates topic into `raise_alert`, dropping copies
+and committing the candidates' position only after the resulting alerts are
+stored.
+
+Two pieces of cross-detector state follow the families: `hostile_allowed`
+reads the alerts of source detectors, so a source worker feeds it its own
+candidates; and the Risk ports page reads the port detector's memory, so a
+port worker writes the per-minute port counters and publishes a summary under
+the setting `riskports_view:<worker>`, which the dashboard merges.
+
+`tests/test_workers.py` runs the reference traffic through a processor and
+two workers per family (routed by key, events and candidates as JSON) and
+requires the same alerts and identical storage; `tests/test_bus.py` does the
+same through a real broker.
+
 ## Limits by design
 
-- Detection runs in one process (one CPU core). Parsing can be spread over
-  collectors; dividing detection is phase 4 of [CLUSTERING.md](CLUSTERING.md).
-- Syslog input is unauthenticated plain text; SNMP is v2c. Both belong on a
-  management network.
+- Detection of one family runs in one process per key; alerting and the
+  device detectors run in the one processor.
+- Syslog input is plain text unless syslog over TLS is used; SNMP is v2c. Both
+  belong on a management network.
 - No multi-user accounts. Many sites are handled by federation; high
   availability of the processor is phase 5 of [CLUSTERING.md](CLUSTERING.md).

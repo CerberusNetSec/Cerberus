@@ -63,9 +63,10 @@ def run(detector_id: str, shards: int) -> list[tuple]:
     def copy_for(key: str):
         return copies[zlib.crc32(key.encode()) % shards]
 
-    # Correlation also reads the alert stream; feed it every other detector's alerts,
-    # divided by the alert's source address like its events.
-    others = [configured(d) for d in build_detectors() if d.id != detector_id] if detector_id == "correlation" else []
+    # hostile_allowed also reads the alerts of the source family's detectors, which a worker
+    # raises itself: feed it theirs, divided by the alert's source address like its events.
+    others = ([configured(d) for d in build_detectors() if d.partition == "source" and d.id != detector_id]
+              if detector_id == "hostile_allowed" else [])
 
     next_tick = golden.START + TICK
     for ev in EVENTS:
@@ -73,10 +74,10 @@ def run(detector_id: str, shards: int) -> list[tuple]:
             for c in copies:
                 c.tick(next_tick, emitter(next_tick))
             for o in others:
-                o.tick(next_tick, lambda cand, t=next_tick: copy_for(cand.src_ip or "").on_alert(cand, t, emitter(t)))
+                o.tick(next_tick, lambda cand, t=next_tick: copy_for(cand.src_ip or "").on_alert(cand, t))
             next_tick += TICK
         for o in others:
-            o.process(ev, ev.ts, lambda cand, t=ev.ts: copy_for(cand.src_ip or "").on_alert(cand, t, emitter(t)))
+            o.process(ev, ev.ts, lambda cand, t=ev.ts: copy_for(cand.src_ip or "").on_alert(cand, t))
         target = copies[0] if shards == 1 else copy_for(copies[0].partition_key(ev))
         target.process(ev, ev.ts, emitter(ev.ts))
     return sorted(found)
@@ -85,7 +86,7 @@ def run(detector_id: str, shards: int) -> list[tuple]:
 # Detectors that read events through process(). The others (rate baselines, silence,
 # new devices, topology) are fed per device by the engine or the SNMP poller, so
 # dividing them by device is division by their own dictionary key.
-SHARDABLE = [d.id for d in build_detectors() if d.partition not in ("none", "split") and d.event_types != frozenset()]
+SHARDABLE = [d.id for d in build_detectors() if d.partition not in ("none", "alerts") and d.event_types != frozenset()]
 
 
 @pytest.mark.parametrize("detector_id", SHARDABLE)
@@ -98,11 +99,13 @@ def test_divided_by_its_key_a_detector_finds_the_same(detector_id):
         assert whole, f"{detector_id} raised nothing on the reference traffic"
 
 
-def test_undivided_detectors_are_the_known_ones():
-    # credential_attacks keys on source (spraying) and on account (distributed guessing):
-    # it must be split in two before clustering. The rest read no events themselves.
-    assert {d.id: d.partition for d in build_detectors() if d.partition in ("none", "split")} == {
-        "credential_attacks": "split"}
+def test_every_detector_has_one_key():
+    # Since 0.6.0 every detector keys on one thing: credential_attacks became password_spray
+    # (source) and distributed_guessing (account), and correlation gave hostile_allowed
+    # (source) its own detector. Correlation itself reads the alert stream.
+    partitions = {d.id: d.partition for d in build_detectors()}
+    assert {k: v for k, v in partitions.items() if v not in ("source", "device", "target", "pair", "port", "account")} == {
+        "correlation": "alerts"}
 
 
 @pytest.mark.parametrize("detector_id", [d.id for d in build_detectors()])

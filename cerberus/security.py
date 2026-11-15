@@ -268,52 +268,70 @@ class Beaconing(Detector):
         self._prune(now, self.cfg["max_interval"] * 2 + 60)
 
 
-class CredentialAttacks(Detector):
-    event_types = frozenset({"auth_failure"})
-    # Spraying is keyed by source, distributed guessing by account: two detectors in one.
-    partition = "split"
-    id = "credential_attacks"
-    name = "Password spraying and distributed guessing"
-    description = ("One source trying many different usernames (spraying), or one account being attacked from "
-                   "many sources at once - patterns that slip under a simple failed-login count.")
+class PasswordSpray(Detector):
+    id = "password_spray"
+    name = "Password spraying"
+    description = ("One source trying many different usernames on a device: a pattern that slips under a "
+                   "simple failed-login count.")
     params = [
-        ("users", 6, "Spraying: distinct usernames from one source"),
-        ("sources", 5, "Distributed: distinct sources against one account"),
+        ("users", 6, "Distinct usernames from one source"),
         ("window", 600, "Within (seconds)"),
     ]
+    event_types = frozenset({"auth_failure"})
+    partition = "source"
 
     def process(self, ev, now, emit):
-        if ev.event_type != "auth_failure" or not ev.user:
+        if ev.event_type != "auth_failure" or not ev.user or not ev.src_ip:
             return
         user = ev.user[:64]
         host = ev.hostname or ev.device
-        if ev.src_ip:
-            key = ("spray", ev.src_ip, ev.device)
-            users = self._get(key, SlidingSet, now)
-            if users is not None:
-                count = users.add(user, now, self.cfg["window"])
-                if count >= self.cfg["users"] and self._may_emit(key, now):
-                    emit(Candidate(
-                        "password_spray", f"{ev.src_ip}@{ev.device}",
-                        "high" if is_internal(ev.src_ip) else "medium",
-                        f"Password spraying from {ev.src_ip} against {_clip(host, 40)}",
-                        f"{_origin(ev.src_ip).capitalize()} {ev.src_ip} failed to log in to {host} as {count} "
-                        f"different users within {self.cfg['window'] // 60} minutes: "
-                        f"{_clip(', '.join(users.items), 140)}.",
-                        ev.src_ip, ev.device, {"usernames": list(users.items)[-20:]},
-                    ))
-            key = ("dist", ev.device, user)
-            sources = self._get(key, SlidingSet, now)
-            if sources is not None:
-                count = sources.add(ev.src_ip, now, self.cfg["window"])
-                if count >= self.cfg["sources"] and self._may_emit(key, now):
-                    emit(Candidate(
-                        "distributed_brute_force", f"{user}@{ev.device}", "medium",
-                        f"Account '{_clip(user, 30)}' on {_clip(host, 40)} attacked from {count} sources",
-                        f"Logins to {host} as '{_clip(user, 40)}' failed from {count} different addresses within "
-                        f"{self.cfg['window'] // 60} minutes. Per-source lockouts will not stop this.",
-                        None, ev.device, {"user": user, "sources": list(sources.items)[-20:]},
-                    ))
+        key = ("spray", ev.src_ip, ev.device)
+        users = self._get(key, SlidingSet, now)
+        if users is None:
+            return
+        count = users.add(user, now, self.cfg["window"])
+        if count >= self.cfg["users"] and self._may_emit(key, now):
+            emit(Candidate(
+                "password_spray", f"{ev.src_ip}@{ev.device}",
+                "high" if is_internal(ev.src_ip) else "medium",
+                f"Password spraying from {ev.src_ip} against {_clip(host, 40)}",
+                f"{_origin(ev.src_ip).capitalize()} {ev.src_ip} failed to log in to {host} as {count} "
+                f"different users within {self.cfg['window'] // 60} minutes: "
+                f"{_clip(', '.join(users.items), 140)}.",
+                ev.src_ip, ev.device, {"usernames": list(users.items)[-20:]},
+            ))
+
+
+class DistributedGuessing(Detector):
+    id = "distributed_guessing"
+    name = "Distributed password guessing"
+    description = ("One account on a device attacked from many sources at once, which per-source lockouts "
+                   "do not stop.")
+    params = [
+        ("sources", 5, "Distinct sources against one account"),
+        ("window", 600, "Within (seconds)"),
+    ]
+    event_types = frozenset({"auth_failure"})
+    partition = "account"
+
+    def process(self, ev, now, emit):
+        if ev.event_type != "auth_failure" or not ev.user or not ev.src_ip:
+            return
+        user = ev.user[:64]
+        host = ev.hostname or ev.device
+        key = ("dist", ev.device, user)
+        sources = self._get(key, SlidingSet, now)
+        if sources is None:
+            return
+        count = sources.add(ev.src_ip, now, self.cfg["window"])
+        if count >= self.cfg["sources"] and self._may_emit(key, now):
+            emit(Candidate(
+                "distributed_brute_force", f"{user}@{ev.device}", "medium",
+                f"Account '{_clip(user, 30)}' on {_clip(host, 40)} attacked from {count} sources",
+                f"Logins to {host} as '{_clip(user, 40)}' failed from {count} different addresses within "
+                f"{self.cfg['window'] // 60} minutes. Per-source lockouts will not stop this.",
+                None, ev.device, {"user": user, "sources": list(sources.items)[-20:]},
+            ))
 
 
 class AdminAccess(Detector):
@@ -479,53 +497,28 @@ _SAME_KIND = {"port_scan": "network scanning", "host_sweep": "network scanning",
               "brute_force_success": "password guessing"}
 
 
-class Correlation(Detector):
-    # Reads traffic, and every alert through on_alert(); both are keyed by source address.
+class HostileAllowed(Detector):
+    id = "hostile_allowed"
+    name = "Hostile address allowed in"
+    description = ("An internet address that was scanning, flooding or guessing passwords is later allowed "
+                   "through the firewall to an internal host.")
+    params = [
+        ("window_hours", 24, "Remember hostile addresses for (hours)"),
+    ]
+    # Reads traffic, and the alerts of the source detectors through on_alert(); both are
+    # keyed by source address, so a worker sees the alerts its own detectors raise.
     event_types = frozenset({"traffic"})
     partition = "source"
-    id = "correlation"
-    name = "Correlation"
-    description = ("Joins separate alerts: an internal host showing several different kinds of attack behaviour "
-                   "is raised as a likely compromise, and an internet address that was scanning or guessing "
-                   "passwords is flagged if the firewall later lets it in.")
-    params = [
-        ("indicators", 3, "Different kinds of attack behaviour on one host to call it compromised"),
-        ("window_hours", 24, "Look back (hours)"),
-    ]
-
-    _persist = (*Detector._persist, "hosts", "hostile")
+    _persist = (*Detector._persist, "hostile")
 
     def __init__(self):
         super().__init__()
-        self.hosts: dict[str, dict[str, float]] = {}  # internal ip -> {kind of behaviour: last seen}
         self.hostile: dict[str, tuple[float, str]] = {}  # external ip -> (when, why)
 
-    def on_alert(self, c: Candidate, now: float, emit) -> None:
-        """Called for every alert any detector raises."""
-        if not c.src_ip or c.detector not in _INDICATORS:
-            return
-        window = self.cfg["window_hours"] * 3600
-        if not is_internal(c.src_ip):
-            if c.detector in _HOSTILE and (c.src_ip in self.hostile or len(self.hostile) < 20_000):
-                self.hostile[c.src_ip] = (now, _INDICATORS[c.detector])
-            return
-        seen = self.hosts.get(c.src_ip)
-        if seen is None:
-            if len(self.hosts) >= 20_000:
-                return
-            seen = self.hosts[c.src_ip] = {}
-        seen[_SAME_KIND.get(c.detector, _INDICATORS[c.detector])] = now
-        for name in [d for d, t in seen.items() if now - t > window]:
-            del seen[name]
-        if len(seen) >= self.cfg["indicators"] and self._may_emit(("host", c.src_ip), now):
-            what = list(seen)
-            emit(Candidate(
-                "compromise_suspected", c.src_ip, "critical",
-                f"Likely compromised host: {c.src_ip}",
-                f"Internal host {c.src_ip} has shown {len(seen)} different kinds of attack behaviour in the last "
-                f"{self.cfg['window_hours']} hours: {', '.join(what)}.",
-                c.src_ip, c.device, {"indicators": what},
-            ))
+    def on_alert(self, c: Candidate, now: float) -> None:
+        if (c.src_ip and c.detector in _HOSTILE and not is_internal(c.src_ip)
+                and (c.src_ip in self.hostile or len(self.hostile) < 20_000)):
+            self.hostile[c.src_ip] = (now, _INDICATORS[c.detector])
 
     def process(self, ev, now, emit):
         if not self.hostile or ev.event_type != "traffic" or ev.action != "allow" or not ev.src_ip:
@@ -552,6 +545,51 @@ class Correlation(Detector):
         window = self.cfg["window_hours"] * 3600
         for ip in [ip for ip, (t, _) in self.hostile.items() if now - t > window]:
             del self.hostile[ip]
+        self._prune(now, 600)
+
+
+class Correlation(Detector):
+    id = "correlation"
+    name = "Correlation: likely compromised host"
+    description = ("Joins separate alerts: an internal host showing several different kinds of attack "
+                   "behaviour is raised as a likely compromise.")
+    params = [
+        ("indicators", 3, "Different kinds of attack behaviour on one host to call it compromised"),
+        ("window_hours", 24, "Look back (hours)"),
+    ]
+    event_types = frozenset()  # reads alerts, not events
+    partition = "alerts"
+    _persist = (*Detector._persist, "hosts")
+
+    def __init__(self):
+        super().__init__()
+        self.hosts: dict[str, dict[str, float]] = {}  # internal ip -> {kind of behaviour: last seen}
+
+    def on_alert(self, c: Candidate, now: float, emit) -> None:
+        """Called for every alert any detector raises."""
+        if not c.src_ip or c.detector not in _INDICATORS or not is_internal(c.src_ip):
+            return
+        window = self.cfg["window_hours"] * 3600
+        seen = self.hosts.get(c.src_ip)
+        if seen is None:
+            if len(self.hosts) >= 20_000:
+                return
+            seen = self.hosts[c.src_ip] = {}
+        seen[_SAME_KIND.get(c.detector, _INDICATORS[c.detector])] = now
+        for name in [d for d, t in seen.items() if now - t > window]:
+            del seen[name]
+        if len(seen) >= self.cfg["indicators"] and self._may_emit(("host", c.src_ip), now):
+            what = list(seen)
+            emit(Candidate(
+                "compromise_suspected", c.src_ip, "critical",
+                f"Likely compromised host: {c.src_ip}",
+                f"Internal host {c.src_ip} has shown {len(seen)} different kinds of attack behaviour in the last "
+                f"{self.cfg['window_hours']} hours: {', '.join(what)}.",
+                c.src_ip, c.device, {"indicators": what},
+            ))
+
+    def tick(self, now, emit):
+        window = self.cfg["window_hours"] * 3600
         for ip in [ip for ip, seen in self.hosts.items() if all(now - t > window for t in seen.values())]:
             del self.hosts[ip]
         self._prune(now, 600)
@@ -560,5 +598,7 @@ class Correlation(Detector):
 def build_security_detectors() -> list[Detector]:
     from .riskports import RiskPorts  # imported here: riskports.py builds on detectors.py too
 
-    return [ExposedService(), RiskyEgress(), LateralMovement(), Beaconing(), CredentialAttacks(),
-            AdminAccess(), Watchlist(), RiskPorts(), Correlation()]
+    # Order matters only for the order alerts are raised in; it matches 0.5.0, where
+    # PasswordSpray + DistributedGuessing were one detector and Correlation held HostileAllowed.
+    return [ExposedService(), RiskyEgress(), LateralMovement(), Beaconing(), PasswordSpray(), DistributedGuessing(),
+            AdminAccess(), Watchlist(), RiskPorts(), HostileAllowed(), Correlation()]

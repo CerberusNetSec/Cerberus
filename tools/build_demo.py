@@ -41,13 +41,16 @@ def key_for(path: str) -> str:
     return parts.path + ("?" + query if query else "")
 
 
-def seed_history(db, now: float) -> None:
-    """A day of plausible per-minute counters, so the charts have a shape."""
+def seed_history(db, now: float, until: float) -> None:
+    """A day of plausible per-minute counters up to `until`, where the simulated run takes
+    over, so the charts have a shape."""
     rnd = random.Random(11)
     minute0 = int(now // 60) * 60
     stats, ports = [], []
-    for i in range(24 * 60, 75, -1):  # the simulated run fills the last hour or so
+    for i in range(24 * 60, 0, -1):
         minute = minute0 - i * 60
+        if minute >= int(until // 60) * 60:
+            break
         hour = time.gmtime(minute).tm_hour + time.gmtime(minute).tm_min / 60
         day = 0.35 + 0.65 * max(0.0, math.sin((hour - 7) / 12 * math.pi))  # busy in working hours
         events = int(900 * day * rnd.uniform(0.85, 1.15)) + 120
@@ -69,41 +72,42 @@ def timeline(simulate) -> list[tuple[float, str]]:
     and ordinary traffic to the end. About 70 minutes."""
     random.seed(20261116)
     out: list[tuple[float, str]] = []
-    t = 0.0
-    while t < 2400:  # 40 minutes: past the rate baselines' warm-up
-        for line in simulate.baseline(4):
-            out.append((t, line))
-            t += 0.25
-        t = (int(t // TICK) + 1) * TICK
+
+    def ordinary(start: float, seconds: float) -> None:
+        """Background traffic at about the level of the seeded history, and the odd routine
+        line from the switches, so every device is seen to be reporting."""
+        at, n = start, 0
+        while at < start + seconds:
+            for i, line in enumerate(simulate.baseline(28)):
+                out.append((at + i * 0.1, line))
+            if n % 12 == 0:
+                out.append((at + 3, simulate.cisco(1000 + n, "%NTP-6-PEERREACH: Peer 192.168.1.1 is reachable")))
+                out.append((at + 4, f"<14>{simulate.bsd_time()} {simulate.RTL} ntp: time synchronised with 192.168.1.1"))
+            at += TICK
+            n += 1
+
+    t = 2400.0  # 40 minutes: past the rate baselines' warm-up
+    ordinary(0, t)
     for name, scenario in simulate.SCENARIOS.items():
         if name in simulate.SLOW:
             continue
+        began = t
         for line in scenario():
             out.append((t, line))
             t += 0.05
-        for line in simulate.baseline(6):
-            out.append((t, line))
-            t += 2
-        t += 20
+        t = (int(t // TICK) + 3) * TICK
+        ordinary(began, t - began)
+    began = t
     for _ in range(13):  # a beacon: check-ins thirty seconds apart
         out.append((t, simulate.forti_traffic("192.168.3.61", "45.77.12.34", 8443)))
-        for line in simulate.baseline(3):
-            out.append((t + 1, line))
         t += 30
-    end = t + 240
-    while t < end:
-        for line in simulate.baseline(3):
-            out.append((t, line))
-            t += 1.5
-        t = (int(t // TICK) + 1) * TICK
+    t += 180
+    ordinary(began, t - began)
     out.sort(key=lambda item: item[0])
     return out
 
 
-def run_traffic(engine, now: float) -> None:
-    from tools import simulate
-    lines = timeline(simulate)
-    start = now - lines[-1][0] - 45  # the last line lands under a minute ago
+def run_traffic(engine, lines: list[tuple[float, str]], start: float, now: float) -> None:
     loop = asyncio.new_event_loop()
     next_tick = start + TICK
     for offset, line in lines:
@@ -117,6 +121,11 @@ def run_traffic(engine, now: float) -> None:
     engine.tick(now)
     loop.run_until_complete(engine._flush())
     loop.close()
+    # The running service samples its message counter every second for "Messages / second";
+    # here the clock was simulated, so give it the last minute's samples.
+    minute = sum(1 for offset, _ in lines if offset >= lines[-1][0] - 60)
+    engine._rate.clear()
+    engine._rate.extend([(now - 60, engine.received - minute), (now, engine.received)])
 
 
 class Agents:
@@ -158,8 +167,11 @@ def build(out: Path) -> dict:
     cfg.data_dir, cfg.device_identity, cfg.auth_enabled, cfg.password = work, "hostname", True, PASSWORD
     cfg.public_url = "https://cerberus.example.com"
     now = time.time()
+    from tools import simulate
+    lines = timeline(simulate)
+    start = now - lines[-1][0] - 45  # the last line lands under a minute ago
     db = Database(work / "cerberus.db")
-    seed_history(db, now)
+    seed_history(db, now, start)
     notifier = Notifier(db)
     engine = Engine(cfg, db, ConnectorRegistry(), notifier)
     engine.load()
@@ -168,7 +180,7 @@ def build(out: Path) -> dict:
     watch["watchlist"]["entries"] = "45.77.0.0/16"
     engine.apply_settings(watch, engine.general_settings())
     db.set_setting("detectors", watch)
-    run_traffic(engine, now)
+    run_traffic(engine, lines, start, now)
 
     app = web.create_app(cfg, db, engine, notifier, SnmpPoller(engine, db))
 

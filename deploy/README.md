@@ -12,7 +12,10 @@ Five reference deployments, all built from the same image
 | **Helm** | [`helm/cerberus`](helm/cerberus) | Standalone or scaled out on Kubernetes, with [operator-run](kubernetes/operators) Kafka, PostgreSQL and ClickHouse |
 
 One instance handles a few hundred devices (see "Running at scale" in the main
-README). Beyond that, run **one Cerberus per site** and connect the sites to a
+README). For one large estate, scale an instance out
+([below](#scale-out-ingest-collectors-and-a-processor); sizes for 5,000 devices
+are in [docs/REFERENCE-ARCHITECTURE.md](../docs/REFERENCE-ARCHITECTURE.md)).
+For many locations, run **one Cerberus per site** and connect the sites to a
 **central console**:
 
 ```

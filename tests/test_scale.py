@@ -374,3 +374,20 @@ def test_topology_merge_is_linear():
     graph = build_topology(devices, records, {})
     assert len(graph["nodes"]) == 2000 and len(graph["links"]) == 1999
     assert time.perf_counter() - started < 2.0
+
+
+def test_the_limit_on_log_sources_is_a_setting(tmp_path, monkeypatch):
+    """Sources beyond CERBERUS_MAX_DEVICES are ignored and counted; a larger estate raises the limit."""
+    assert Config.from_env().max_devices == 5000
+    monkeypatch.setenv("CERBERUS_MAX_DEVICES", "7500")
+    assert Config.from_env().max_devices == 7500
+
+    engine, db = make_engine(tmp_path, max_devices=3)
+    line = simulate.filterlog("pass", "192.168.1.20", "142.250.1.1", 40000, 443).encode()
+    for i in range(5):
+        engine._process(line, f"10.9.0.{i + 1}", 1_800_000_000.0 + i)
+    assert len(engine.devices) == 3 and engine.refused_devices == 2
+    engine.cfg.max_devices = 10
+    engine._process(line, "10.9.0.5", 1_800_000_010.0)
+    assert len(engine.devices) == 4 and engine.refused_devices == 2
+    db.close()

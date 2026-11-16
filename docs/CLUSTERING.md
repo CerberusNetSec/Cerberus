@@ -2,6 +2,12 @@
 
 Status: **stage 1 (federation) in 0.2.0; stage 2 phase 1 (seams) in 0.3.0, phase 2 (shared storage) in 0.4.0, phase 3 (scale-out ingest) in 0.5.0, phase 4 (sharded detection) in 0.6.0, phase 5 (availability) in 0.7.0.**
 
+What to deploy today for an estate of this size, with measured sizes, is in
+[REFERENCE-ARCHITECTURE.md](REFERENCE-ARCHITECTURE.md). In short: one cluster
+handles about 10,000 messages a second, limited by its one active processor;
+the 100,000 a second below is reached with several clusters under a console,
+not with one.
+
 ## Goal
 
 Serve enterprises with thousands of log sources:

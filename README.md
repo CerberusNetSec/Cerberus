@@ -16,17 +16,20 @@
 ![Tests: 332](https://img.shields.io/badge/tests-332-2ea44f)
 ![Deployments: standalone, Compose, Swarm, Kubernetes, Helm](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes%20%7C%20Helm-0366d6)
 
-Network threat detection from the logs your firewalls and switches already
-produce. Cerberus receives their syslog, detects attacks and behaviour that is
-out of the ordinary, maps them to MITRE ATT&CK, shows them on a web dashboard
-with what to do about each, and tells you by email, Telegram, Pushbullet,
-webhooks or any HTTP API. It can also poll those devices over SNMP and draw
+Cerberus is open-source, self-hosted network threat detection from the logs
+your firewalls and switches already produce. It receives their syslog,
+detects attacks and behaviour that is out of the ordinary (port scans, brute
+force, lateral movement, beaconing, exposed services and more), maps them to
+MITRE ATT&CK, shows them on a web dashboard with what to do about each, and
+tells you by email, Telegram, Pushbullet, webhooks or any HTTP API. No agents
+on your devices: OPNsense, Palo Alto, FortiGate, Cisco, Juniper, Ubiquiti,
+Aruba and others send it the syslog they already can. It can also poll those devices over SNMP and draw
 the network topology they describe. It runs as a single instance for a few
 hundred devices, and scales out to collectors, detection workers and
 clustered storage for [thousands](docs/REFERENCE-ARCHITECTURE.md).
 
-**[Try the live demo](https://cerberusnetsec.github.io/Cerberus/)**: the real
-dashboard on simulated data, read-only.
+**[Try the live demo](https://cerberusnetsec.github.io/Cerberus/demo/)**: the real
+dashboard on simulated data, read-only. · [Website](https://cerberusnetsec.github.io/Cerberus/)
 
 More documentation: [architecture](docs/ARCHITECTURE.md) ·
 [HTTP API](docs/API.md) · [deployments](deploy/README.md) ·
@@ -37,7 +40,8 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
 ## Contents
 
 - [Screenshots](#screenshots)
-- [Quick start](#quick-start) · [Telling devices apart](#telling-devices-apart)
+- [Quick start](#quick-start) · [Set up with an AI assistant](#set-up-with-an-ai-assistant) ·
+  [Telling devices apart](#telling-devices-apart)
 - [Pointing devices at it](#pointing-devices-at-it)
 - [What it detects](#what-it-detects)
   - [Security detections](#security-detections) · [MITRE ATT&CK](#mitre-attck) · [High Risk Ports](#high-risk-ports) ·
@@ -53,7 +57,7 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
 - [Users, roles and single sign-on](#users-roles-and-single-sign-on) · [Audit log](#audit-log)
 - [Notifications](#notifications) · [Agents and the API](#agents-and-the-api) · [Connectors](#connectors)
 - [Configuration](#configuration) · [Security notes](#security-notes)
-- [Development](#development) · [Licence](#licence)
+- [Questions](#questions) · [Development](#development) · [Licence](#licence)
 
 ## Screenshots
 
@@ -75,7 +79,13 @@ This is the standalone deployment: one instance on one Docker host. For Docker
 Swarm, Kubernetes, or several sites reporting to a central console, see
 [deploy/README.md](deploy/README.md).
 
+You need [Docker](https://docs.docker.com/get-docker/) (with the Compose
+plugin) and git.
+
 ```sh
+git clone https://github.com/CerberusNetSec/Cerberus.git
+cd Cerberus
+
 # optional: choose the dashboard password and the URL used in notification links
 cp .env.example .env        # then edit it
 
@@ -86,6 +96,9 @@ docker compose up -d --build
 - Syslog: UDP and TCP port `514` on the host
 - If you did not set `CERBERUS_PASSWORD`, one is generated and printed once in
   `docker logs cerberus`.
+- On Docker Desktop (Windows or macOS), send syslog over TCP and set
+  `CERBERUS_DEVICE_IDENTITY=hostname` in `.env`
+  ([why](#telling-devices-apart)).
 
 Then point your devices at the host (below) and add a channel under
 **Settings → Notifications**. To see it working before you touch a real device:
@@ -94,6 +107,48 @@ Then point your devices at the host (below) and add a channel under
 python tools/simulate.py            # port scan, brute force, exposed RDP, lateral movement, C2, ...
 python tools/simulate.py --list
 ```
+
+### Set up with an AI assistant
+
+Paste this into Claude, ChatGPT, Grok or another assistant. It asks about your
+setup one question at a time, gives you the exact commands for your system,
+and helps with anything that goes wrong. In an agent that can run commands
+(such as Claude Code), it can do the steps for you, asking first.
+
+<!-- setup-prompt:start -->
+```text
+Help me install and set up Cerberus (https://github.com/CerberusNetSec/Cerberus), an open-source, self-hosted tool that detects threats from firewall and switch syslog. Act as my setup guide.
+
+How to work with me:
+- Ask me one question at a time and wait for my answer. Start by asking what I will run it on (a Linux server, Windows or macOS with Docker Desktop, or Kubernetes) and whether Docker is installed.
+- Give me exact commands to copy and paste for my operating system, one step at a time, and ask me to paste back the output before moving on. If you can run commands yourself, tell me what each one does and ask before running it.
+- If something fails, ask for the exact error and fix that before continuing. Never guess about my network: ask.
+- If you can browse the web, read the README at the URL above and prefer it over your memory. Otherwise use the facts below.
+
+Facts about Cerberus:
+- Install: `git clone https://github.com/CerberusNetSec/Cerberus.git`, `cd Cerberus`, optionally `cp .env.example .env` and edit it, then `docker compose up -d --build`. It needs Docker with the Compose plugin and git.
+- Dashboard: http://<host>:8080. The password is CERBERUS_PASSWORD in .env; if that is not set, one is generated and printed once in `docker logs cerberus`.
+- Syslog is received on UDP and TCP port 514 on the host. If 514 or 8080 is taken, change the left-hand side of the port mappings in docker-compose.yml.
+- On Docker Desktop (Windows or macOS): devices must send syslog over TCP, because UDP from other machines often never arrives; and set CERBERUS_DEVICE_IDENTITY=hostname in .env, because Docker Desktop hides each device's address. The host firewall must allow inbound TCP 514.
+- On Linux, UDP works. For busy networks run `sysctl -w net.core.rmem_max=8388608`.
+- To see alerts before touching a real device: `python tools/simulate.py` (add `--tcp` on Docker Desktop). It needs Python 3 and sends simulated attacks to port 514 on this machine.
+- Devices with built-in support: OPNsense, Palo Alto, Fortinet FortiGate, Cisco IOS/IOS-XE, Cisco ASA/Firepower, Juniper, Ubiquiti, Aruba, Dell, Brocade/Ruckus. Anything else that sends standard syslog also works. The README section "Pointing devices at it" has the steps for each vendor; firewalls only log the rules that have logging switched on.
+- Working means: the dashboard's "Messages / second" is above zero and the Devices page lists my devices.
+- Notifications (email, Telegram, Pushbullet, webhook, custom API call) are added in the dashboard under Settings > Notifications, each with a "Send test" button.
+- Keep it safe: only my management network should reach port 514; put the dashboard behind HTTPS if it is reachable from anywhere I do not trust; under Settings > Users, create named accounts and switch off the shared admin password.
+- One instance suits a few hundred devices. If I have more, or want Kubernetes, point me to deploy/README.md and docs/REFERENCE-ARCHITECTURE.md in the repository before installing anything.
+
+Ask me these as they become relevant, not all at once:
+1. What will it run on, and is Docker installed?
+2. Roughly how many devices, and which vendors and models?
+3. Do I want to choose the dashboard password, or use a generated one?
+4. For each device: can I reach its admin interface now, so we can point its syslog at Cerberus?
+5. How do I want to be notified?
+6. Do I want the network topology map (needs a read-only SNMP community on my devices)?
+
+When we are done, summarise what was set up, where the dashboard is, and what I should do next.
+```
+<!-- setup-prompt:end -->
 
 ### Telling devices apart
 
@@ -838,6 +893,38 @@ If a device's logs are attributed to the wrong connector, pin one on the
   need, and switch the built-in admin off; every change is then in the
   [audit log](#audit-log) under a person's name.
 - The container runs as an unprivileged user.
+
+## Questions
+
+**What is Cerberus?**
+Cerberus is a free, open-source, self-hosted tool that detects attacks and unusual behaviour from the syslog that firewalls and switches already send. It raises alerts mapped to MITRE ATT&CK, each with why it matters and what to do, and shows them on a web dashboard. It can notify you by email, Telegram, Pushbullet, webhooks or any HTTP API.
+
+**Is Cerberus a SIEM?**
+No. A SIEM collects and keeps logs from everything: servers, endpoints, cloud services. Cerberus does one part of that job: it analyses network device logs and tells a network security team what needs attention. It keeps events for days rather than years, and it can run beside a SIEM, sending its alerts there by webhook or API.
+
+**Which firewalls and switches does Cerberus support?**
+Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS and IOS-XE, Cisco ASA and Firepower, Juniper SRX and Junos, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, and RTL-Playground switches. Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file.
+
+**Do I need to install agents on my devices?**
+No. Devices send syslog to Cerberus, which every firewall and managed switch can do from its own settings. Optionally Cerberus polls them over read-only SNMP to draw the network topology.
+
+**What attacks does Cerberus detect?**
+Port scans and host sweeps, connection floods, brute-force logins and password spraying, a login that succeeds after many failures, lateral movement between internal hosts, beaconing to a command-and-control server, large data transfers, sensitive services reachable from the internet, risky outbound connections such as Tor or IRC, administrator logins from new places or at odd hours, vendor threat alerts, and passwords or keys sent in clear text. It also watches network health: devices that go quiet, link flapping, spanning-tree trouble and unusual log volume.
+
+**How do I install Cerberus?**
+With Docker: git clone https://github.com/CerberusNetSec/Cerberus.git, cd Cerberus, then docker compose up -d --build. The dashboard is on port 8080 and syslog is received on port 514. There is also a Helm chart for Kubernetes. The README has a prompt you can paste into Claude, ChatGPT or Grok to be walked through the setup.
+
+**Does Cerberus run on Windows or macOS?**
+Yes, with Docker Desktop. Two things differ from Linux: have your devices send syslog over TCP rather than UDP, and set CERBERUS_DEVICE_IDENTITY=hostname, because Docker Desktop hides each device's address. For production, a Linux host is the better choice.
+
+**How many devices can Cerberus handle?**
+One instance handles a few hundred devices; the limit is message rate rather than device count. Scaled out with collectors, detection workers, Kafka, PostgreSQL and ClickHouse, one cluster is planned for about 10,000 messages a second, and several clusters can report to one console. The reference architecture in the repository sizes this for 5,000 devices.
+
+**Is Cerberus free?**
+Yes. It is open source under the Apache License 2.0, with no paid edition. It runs on your own hardware and has no telemetry: it contacts only the notification services you set up.
+
+**Can AI agents work with Cerberus?**
+Yes. Cerberus has a built-in Model Context Protocol (MCP) server, so Claude and other agents can list alerts, read the guidance, search events and, with a triage token, acknowledge alerts or mark false positives. Tokens are scoped, and everything an agent changes is in the audit log.
 
 ## Development
 

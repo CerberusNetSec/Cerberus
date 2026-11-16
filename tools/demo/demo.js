@@ -133,7 +133,7 @@
     strip.className = 'demo-strip';
     strip.setAttribute('role', 'note');
     strip.innerHTML = 'Read-only demo: every device, address and alert here is simulated, and nothing you change is saved.'
-      + '<a href="https://github.com/CerberusNetSec/Cerberus#quick-start">Get Cerberus &rarr;</a>';
+      + '<a href="../">About Cerberus</a><a href="https://github.com/CerberusNetSec/Cerberus#quick-start">Get it &rarr;</a>';
     document.body.prepend(strip);
   });
 })();

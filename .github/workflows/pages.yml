@@ -4,7 +4,7 @@ name: Demo site
 on:
   push:
     branches: [main]
-    paths: ["cerberus/**", "tools/**", ".github/workflows/pages.yml"]
+    paths: ["cerberus/**", "tools/**", "README.md", "llms.txt", "docs/logo.svg", "docs/social-preview.png", "docs/screenshots/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

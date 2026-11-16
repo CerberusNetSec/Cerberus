@@ -1,0 +1,42 @@
+[
+  {
+    "q": "What is Cerberus?",
+    "a": "Cerberus is a free, open-source, self-hosted tool that detects attacks and unusual behaviour from the syslog that firewalls and switches already send. It raises alerts mapped to MITRE ATT&CK, each with why it matters and what to do, and shows them on a web dashboard. It can notify you by email, Telegram, Pushbullet, webhooks or any HTTP API."
+  },
+  {
+    "q": "Is Cerberus a SIEM?",
+    "a": "No. A SIEM collects and keeps logs from everything: servers, endpoints, cloud services. Cerberus does one part of that job: it analyses network device logs and tells a network security team what needs attention. It keeps events for days rather than years, and it can run beside a SIEM, sending its alerts there by webhook or API."
+  },
+  {
+    "q": "Which firewalls and switches does Cerberus support?",
+    "a": "Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS and IOS-XE, Cisco ASA and Firepower, Juniper SRX and Junos, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, and RTL-Playground switches. Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file."
+  },
+  {
+    "q": "Do I need to install agents on my devices?",
+    "a": "No. Devices send syslog to Cerberus, which every firewall and managed switch can do from its own settings. Optionally Cerberus polls them over read-only SNMP to draw the network topology."
+  },
+  {
+    "q": "What attacks does Cerberus detect?",
+    "a": "Port scans and host sweeps, connection floods, brute-force logins and password spraying, a login that succeeds after many failures, lateral movement between internal hosts, beaconing to a command-and-control server, large data transfers, sensitive services reachable from the internet, risky outbound connections such as Tor or IRC, administrator logins from new places or at odd hours, vendor threat alerts, and passwords or keys sent in clear text. It also watches network health: devices that go quiet, link flapping, spanning-tree trouble and unusual log volume."
+  },
+  {
+    "q": "How do I install Cerberus?",
+    "a": "With Docker: git clone https://github.com/CerberusNetSec/Cerberus.git, cd Cerberus, then docker compose up -d --build. The dashboard is on port 8080 and syslog is received on port 514. There is also a Helm chart for Kubernetes. The README has a prompt you can paste into Claude, ChatGPT or Grok to be walked through the setup."
+  },
+  {
+    "q": "Does Cerberus run on Windows or macOS?",
+    "a": "Yes, with Docker Desktop. Two things differ from Linux: have your devices send syslog over TCP rather than UDP, and set CERBERUS_DEVICE_IDENTITY=hostname, because Docker Desktop hides each device's address. For production, a Linux host is the better choice."
+  },
+  {
+    "q": "How many devices can Cerberus handle?",
+    "a": "One instance handles a few hundred devices; the limit is message rate rather than device count. Scaled out with collectors, detection workers, Kafka, PostgreSQL and ClickHouse, one cluster is planned for about 10,000 messages a second, and several clusters can report to one console. The reference architecture in the repository sizes this for 5,000 devices."
+  },
+  {
+    "q": "Is Cerberus free?",
+    "a": "Yes. It is open source under the Apache License 2.0, with no paid edition. It runs on your own hardware and has no telemetry: it contacts only the notification services you set up."
+  },
+  {
+    "q": "Can AI agents work with Cerberus?",
+    "a": "Yes. Cerberus has a built-in Model Context Protocol (MCP) server, so Claude and other agents can list alerts, read the guidance, search events and, with a triage token, acknowledge alerts or mark false positives. Tokens are scoped, and everything an agent changes is in the audit log."
+  }
+]

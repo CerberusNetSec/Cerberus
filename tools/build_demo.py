@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Build the static demo site: the real dashboard on recorded answers.
+"""Build the project's website: a landing page, and the real dashboard on recorded answers.
 
     python tools/build_demo.py --out site
     python -m http.server -d site 8000        # then open http://localhost:8000
+
+The landing page (tools/demo/landing.html, with the questions in tools/demo/faq.json and
+the setup prompt from the README) is plain HTML for people and search engines; the demo
+is under demo/.
 
 A Cerberus instance is run in this process on simulated traffic (the scenarios
 of tools/simulate.py and the fake SNMP agents of tools/snmp_sim.py), a few
@@ -30,6 +34,7 @@ from urllib.parse import parse_qsl, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+SITE = "https://cerberusnetsec.github.io/Cerberus/"
 PASSWORD = "demo-only-password-1"  # for accounts that exist only while this script runs
 TICK = 10.0
 
@@ -239,7 +244,8 @@ def build(out: Path) -> dict:
 
     # --- record what the dashboard asks for ---------------------------------------------
     demo = session("demo")
-    api = out / "api"
+    demo_dir = out / "demo"
+    api = demo_dir / "api"
     api.mkdir(parents=True)
     files: dict[str, str] = {}
 
@@ -273,7 +279,7 @@ def build(out: Path) -> dict:
                  "/collector-storage"):
         record(path)
 
-    static = out / "static"
+    static = demo_dir / "static"
     shutil.copytree(ROOT / "cerberus" / "static", static)
     shutil.copy(ROOT / "tools" / "demo" / "demo.js", static / "demo.js")
     index = (static / "index.html").read_text(encoding="utf-8")
@@ -286,8 +292,10 @@ def build(out: Path) -> dict:
                           '<meta name="description" content="A read-only demo of Cerberus, network threat detection '
                           'from syslog, on simulated data.">')
     (static / "index.html").unlink()
-    (out / "index.html").write_text(index, encoding="utf-8")
+    index = index.replace("</head>", f'<link rel="canonical" href="{SITE}demo/">\n</head>')
+    (demo_dir / "index.html").write_text(index, encoding="utf-8")
     (out / ".nojekyll").write_text("")
+    landing(out, __version__)
     manifest = {"recorded_at": time.time(), "version": __version__, "files": files}
     (api / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
     db.close()
@@ -295,6 +303,42 @@ def build(out: Path) -> dict:
     return {"alerts": len(alerts), "events": engine.received if hasattr(engine, "received") else None,
             "devices_polled": polled, "topology_links": len(topology["links"]), "files": len(files),
             "bytes": sum(f.stat().st_size for f in out.rglob("*") if f.is_file())}
+
+
+def landing(out: Path, version: str) -> None:
+    """The page at the site's root, and what crawlers and AI tools look for beside it."""
+    import html
+    import re
+
+    faq = json.loads((ROOT / "tools" / "demo" / "faq.json").read_text(encoding="utf-8"))
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    found = re.search(r"<!-- setup-prompt:start -->\s*```text\n(.*?)\n```\s*<!-- setup-prompt:end -->", readme, re.S)
+    if not found:
+        raise SystemExit("the setup prompt is missing from README.md (between the setup-prompt markers)")
+    faq_json = json.dumps({"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [
+        {"@type": "Question", "name": item["q"], "acceptedAnswer": {"@type": "Answer", "text": item["a"]}}
+        for item in faq]}, indent=1).replace("</", "<\\/")
+    faq_html = "\n".join(f"    <details{' open' if i == 0 else ''}><summary>{html.escape(item['q'])}</summary>"
+                          f"<p>{html.escape(item['a'])}</p></details>" for i, item in enumerate(faq))
+    page = (ROOT / "tools" / "demo" / "landing.html").read_text(encoding="utf-8")
+    for key, value in (("{{site}}", SITE), ("{{version}}", html.escape(version)), ("{{faq_json}}", faq_json),
+                       ("{{faq_html}}", faq_html), ("{{prompt}}", html.escape(found.group(1)))):
+        assert key in page, key
+        page = page.replace(key, value)
+    assert "{{" not in page
+    (out / "index.html").write_text(page, encoding="utf-8")
+    shots = out / "screenshots"
+    shots.mkdir()
+    for name in ("dashboard.png", "alert-guidance.png", "attack.png", "topology.png"):
+        shutil.copy(ROOT / "docs" / "screenshots" / name, shots / name)
+    for name in ("logo.svg", "social-preview.png"):
+        shutil.copy(ROOT / "docs" / name, out / name)
+    shutil.copy(ROOT / "llms.txt", out / "llms.txt")
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    (out / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "".join(f"  <url><loc>{SITE}{path}</loc><lastmod>{today}</lastmod></url>\n" for path in ("", "demo/"))
+        + "</urlset>\n", encoding="utf-8")
 
 
 def main() -> None:

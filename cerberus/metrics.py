@@ -36,6 +36,10 @@ PUBLISHER = [
     ("cerberus_bus_published_total", "counter", "Records sent to the message bus", "published"),
     ("cerberus_bus_spooled_total", "counter", "Records written to the spool while the bus was unreachable", "spooled"),
     ("cerberus_spool_bytes", "gauge", "Bytes waiting in the spool", "spool_bytes"),
+    ("cerberus_spool_limit_bytes", "gauge", "Bytes the spool may hold before the oldest records are dropped",
+     "spool_limit"),
+    ("cerberus_spool_volume_bytes", "gauge", "Size of the volume the spool is on", "volume_bytes"),
+    ("cerberus_spool_volume_free_bytes", "gauge", "Free space on the volume the spool is on", "volume_free"),
     ("cerberus_spool_dropped_total", "counter", "Records dropped because the spool was full", "spool_dropped"),
     ("cerberus_bus_down", "gauge", "1 while the message bus is unreachable", "bus_down"),
 ]

@@ -334,6 +334,19 @@ PLAYBOOKS: dict[str, dict] = {
             "spooled events and the last bus error.",
         ],
     },
+    "collector_storage": {
+        "stage": "Network health", "technique": None,
+        "why": "A collector keeps events on disk while it cannot reach the message bus, and sends them when it can. "
+               "When that space runs out, the oldest events are dropped: they are never stored or analysed.",
+        "actions": [
+            "Check the message bus: a spool only grows while the bus is unreachable or too slow. The collector's "
+            "/status page shows its last bus error.",
+            "If the bus is healthy and the spool is shrinking, the collector is catching up: nothing to do.",
+            "If outages can last this long, give the collector more room: a larger volume and CERBERUS_SPOOL_MB.",
+            "If it is the volume that is full and the spool is small, find what else is using the volume.",
+            "Change the thresholds under Settings \u2192 General \u2192 Collector storage.",
+        ],
+    },
     "site_silent": {
         "stage": "Network health", "technique": None,
         "why": "While a site is not reporting, nothing it detects reaches this console. The site may be down, cut "

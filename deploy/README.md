@@ -228,6 +228,11 @@ storage and a Kafka-compatible bus.
   (one per node, so each node's devices keep their addresses) and the
   processor as one replica; the same variables apply.
 
+Give each collector's spool room for the longest bus outage you want to ride
+out (`CERBERUS_SPOOL_MB`, 1024 by default, on a volume at least that large).
+Cerberus alerts when a spool or its volume passes 70% and 90% full; change
+the thresholds under Settings → General → Collector storage.
+
 Topics are created on first start if the cluster allows it
 (`CERBERUS_KAFKA_PARTITIONS`, default 12; `CERBERUS_KAFKA_REPLICATION`,
 default 1 - set 3 on a real cluster). With detection workers there is also a

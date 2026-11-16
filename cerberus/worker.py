@@ -31,6 +31,7 @@ import time
 from . import __version__
 from .bus import (HEARTBEAT_SECONDS, Deduplicator, EventSource, Heartbeats, Publisher, candidates_topic,
                   collector_name, encode_candidate, family_topic)
+from .capacity import Peak, usage
 from .models import Event
 from .storage import Batch
 
@@ -56,6 +57,7 @@ class DetectionWorker:
         self.seq = 0
         self.received = self.candidates = self.errors = 0
         self.started = time.time()
+        self.spool_peak = Peak(publisher.spool) if publisher is not None else None
         self.hostile = engine.by_id["hostile_allowed"] if self.family == "source" else None
         self._tasks: list[asyncio.Task] = []
         self._empty = engine.snapshot()  # the state a worker starts from
@@ -191,9 +193,11 @@ class DetectionWorker:
         heartbeats = Heartbeats(self.cfg)
         while True:
             await asyncio.sleep(HEARTBEAT_SECONDS)
+            self.spool_peak.sample()
             if not self.publisher.down:
                 try:
-                    await heartbeats.send(self.publisher.producer, self.status())
+                    await asyncio.wait_for(heartbeats.send(self.publisher.producer, self.status()), 10)
+                    self.spool_peak.reported()
                 except Exception as exc:
                     log.debug("heartbeat not sent: %s", exc)
 
@@ -203,7 +207,8 @@ class DetectionWorker:
                 "candidates": self.candidates, "duplicates": self.dedup.duplicates, "errors": self.errors,
                 "rebuilds": self.rebuilds, "replayed": self.source.replayed, "stale_dropped": self.source.stale_dropped,
                 "published": self.publisher.published, "spooled": self.publisher.spooled,
-                "spool_bytes": self.publisher.spool.size(), "spool_dropped": self.publisher.spool.dropped,
+                **usage(self.publisher.spool, self.publisher.spool.dir, self.spool_peak),
+                "spool_dropped": self.publisher.spool.dropped,
                 "bus_down": self.publisher.down, "bus_error": self.publisher.last_error}
 
     async def start(self) -> None:

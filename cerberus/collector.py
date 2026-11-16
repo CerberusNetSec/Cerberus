@@ -14,6 +14,7 @@ import secrets
 import time
 
 from . import __version__
+from . import capacity
 from .bus import HEARTBEAT_SECONDS, Heartbeats, Publisher, collector_name, encode_event, family_topic
 from .detectors import family_event_types, family_key
 from .engine import QUEUE_SIZE, parse_message
@@ -46,6 +47,7 @@ class Collector:
         # Families run by detection workers: (topic, family, event types read).
         self.routes = [(family_topic(cfg, f), f, family_event_types(f)) for f in cfg.detection_workers]
         self.started = time.time()
+        self.spool_peak = capacity.Peak(publisher.spool)
         self.receiver = None
         self._tasks: list[asyncio.Task] = []
 
@@ -114,19 +116,44 @@ class Collector:
     async def _heartbeat(self, heartbeats: Heartbeats) -> None:
         while True:
             await asyncio.sleep(HEARTBEAT_SECONDS)
+            self.spool_peak.sample()  # also while the bus is down: that is when the spool fills
             if self.publisher.down:
                 continue
             try:
-                await heartbeats.send(self.publisher.producer, self.status())
+                await asyncio.wait_for(heartbeats.send(self.publisher.producer, self.status()), 10)
+                self.spool_peak.reported()
             except Exception as exc:
                 log.debug("heartbeat not sent: %s", exc)
+
+    async def _watch_storage(self) -> None:
+        """Every minute: say so in this collector's own log when its spool or volume crosses a
+        threshold. The processor raises the alert, but cannot hear from a collector that is
+        cut off from the bus - which is when the spool fills."""
+        settings, was = dict(capacity.DEFAULTS), ""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if self.store is not None:
+                    settings = capacity.stored(await asyncio.to_thread(self.store.get_setting, capacity.SETTING, {}))
+                found = capacity.assess(self.status(), settings)
+                now = found["storage_level"]
+                if now and now != was:
+                    log.warning("%s storage threshold reached: the %s is %.0f%% full%s", now, found["storage_what"],
+                                found["storage_percent"],
+                                " (the message bus is unreachable)" if self.publisher.down else "")
+                elif was and not now:
+                    log.info("storage is back under the warning threshold (%.0f%% full)", found["storage_percent"] or 0)
+                was = now
+            except Exception as exc:
+                log.debug("storage check failed: %s", exc)
 
     def status(self) -> dict:
         spool = self.publisher.spool
         return {"name": self.name, "version": __version__, "sent": time.time(), "uptime": int(time.time() - self.started),
                 "received": self.received, "dropped": self.dropped, "parse_errors": self.parse_errors,
                 "published": self.publisher.published, "spooled": self.publisher.spooled,
-                "spool_bytes": spool.size(), "spool_dropped": spool.dropped, "bus_down": self.publisher.down,
+                **capacity.usage(spool, spool.dir, self.spool_peak), "spool_dropped": spool.dropped,
+                "bus_down": self.publisher.down,
                 "bus_error": self.publisher.last_error, "queue": self.queue.qsize(),
                 "devices": len(self.devices),
                 "tcp_refused": self.receiver.refused if self.receiver else 0}
@@ -134,7 +161,8 @@ class Collector:
     async def start(self) -> None:
         await self.publisher.start()
         self._tasks += [asyncio.create_task(c) for c in (
-            self._pipeline(), self.publisher.run(), self._refresh_pins(), self._heartbeat(Heartbeats(self.cfg)))]
+            self._pipeline(), self.publisher.run(), self._refresh_pins(), self._heartbeat(Heartbeats(self.cfg)),
+            self._watch_storage())]
         log.info("collector %s publishing to %s (topic %s)", self.name, self.cfg.kafka_bootstrap, self.cfg.kafka_topic)
 
     async def stop(self) -> None:

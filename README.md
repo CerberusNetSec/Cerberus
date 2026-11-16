@@ -13,17 +13,24 @@
 
 ![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
 ![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
-![Tests: 331](https://img.shields.io/badge/tests-331-2ea44f)
+![Tests: 332](https://img.shields.io/badge/tests-332-2ea44f)
 ![Deployments: standalone, Compose, Swarm, Kubernetes, Helm](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes%20%7C%20Helm-0366d6)
 
-A syslog watchdog for networks of up to a few hundred devices. It runs in one Docker container, receives
-syslog from your firewalls and switches, looks for traffic and behaviour that is
-out of the ordinary, shows it on a web dashboard, and tells you by email,
-Telegram, Pushbullet, webhooks or any HTTP API. It can also poll those devices over SNMP and draw the
-network topology they describe.
+Network threat detection from the logs your firewalls and switches already
+produce. Cerberus receives their syslog, detects attacks and behaviour that is
+out of the ordinary, maps them to MITRE ATT&CK, shows them on a web dashboard
+with what to do about each, and tells you by email, Telegram, Pushbullet,
+webhooks or any HTTP API. It can also poll those devices over SNMP and draw
+the network topology they describe. It runs as a single instance for a few
+hundred devices, and scales out to collectors, detection workers and
+clustered storage for [thousands](docs/REFERENCE-ARCHITECTURE.md).
+
+**[Try the live demo](https://cerberusnetsec.github.io/Cerberus/)**: the real
+dashboard on simulated data, read-only.
 
 More documentation: [architecture](docs/ARCHITECTURE.md) ·
-[HTTP API](docs/API.md) · [many sites](deploy/README.md) ·
+[HTTP API](docs/API.md) · [deployments](deploy/README.md) ·
+[reference architecture for 5,000 devices](docs/REFERENCE-ARCHITECTURE.md) ·
 [scaling plan](docs/CLUSTERING.md) · [security](SECURITY.md) ·
 [contributing](CONTRIBUTING.md)
 
@@ -41,7 +48,8 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
   - [Detection workers](#detection-workers) · [High availability](#high-availability) · [Metrics](#metrics) ·
     [Kafka authentication](#kafka-authentication)
 - [Kubernetes: Helm and operators](#kubernetes-helm-and-operators)
-- [Many sites](#many-sites) · [Running at scale](#running-at-scale)
+- [Many sites](#many-sites) · [Running at scale](#running-at-scale) ·
+  [5,000 devices](docs/REFERENCE-ARCHITECTURE.md)
 - [Users, roles and single sign-on](#users-roles-and-single-sign-on) · [Audit log](#audit-log)
 - [Notifications](#notifications) · [Agents and the API](#agents-and-the-api) · [Connectors](#connectors)
 - [Configuration](#configuration) · [Security notes](#security-notes)
@@ -542,16 +550,19 @@ For more devices than one instance handles, run one Cerberus per site and
 connect them to a central console (`CERBERUS_CENTRAL=on`). Each site keeps
 collecting and analysing on its own; the console shows every site's alerts,
 sends the notifications, hands acknowledgements back to the sites, and alerts
-when a site stops reporting. The four reference deployments (standalone,
-Compose, Swarm and Kubernetes) and the settings are in
+when a site stops reporting. The reference deployments (standalone,
+Compose, Swarm, Kubernetes and Helm) and the settings are in
 [deploy/README.md](deploy/README.md). A published image is at
 `ghcr.io/cerberusnetsec/cerberus`.
-The plan for clustering beyond that is in [docs/CLUSTERING.md](docs/CLUSTERING.md).
+For one large estate, [docs/REFERENCE-ARCHITECTURE.md](docs/REFERENCE-ARCHITECTURE.md)
+sizes a scale-out cluster (and several under one console) for 5,000 devices.
 
 ## Running at scale
 
-Cerberus is one process and one SQLite file. That is enough for a few hundred
-devices; these are the things that decide whether it is enough for yours.
+A standalone Cerberus is one process and one SQLite file. That is enough for
+a few hundred devices; these are the things that decide whether it is enough
+for yours. Past that, see [Scale-out ingest](#scale-out-ingest) and the
+[reference architecture for 5,000 devices](docs/REFERENCE-ARCHITECTURE.md).
 
 **Message rate, not device count, is the limit.** Parsing and detection run on
 one CPU core. On the development machine (a desktop PC) that core handled about
@@ -612,14 +623,17 @@ running after 10 seconds is stopped rather than left to slow everyone else down.
 - The Devices page filters by status, connector and text, and sorts by longest
   quiet; SNMP polling runs sixteen devices at a time and backs off from ones
   that do not answer.
-- Up to 5,000 log sources are tracked. Beyond that new sources are ignored (and
-  the dashboard says so), which also bounds what forged source addresses can do.
+- Up to 5,000 log sources are tracked (`CERBERUS_MAX_DEVICES`). Beyond that new
+  sources are ignored (and the dashboard says so), which also bounds what
+  forged source addresses can do.
 
-**When to use something else.** If you need months of every flow searchable, or
-sustained rates beyond what one core parses, put a log platform (a SIEM or a
-syslog pipeline with its own storage) in front and send Cerberus the firewall
-and switch logs you want analysed. There is no clustering or high availability:
-one container, one data volume.
+**When one instance is not enough.** For sustained rates beyond what one core
+parses, or for high availability, run the [scale-out](#scale-out-ingest)
+form: several collectors, detection workers, an active and a standby
+processor, PostgreSQL and ClickHouse. If you need months of every flow
+searchable, put a log platform (a SIEM or a syslog pipeline with its own
+storage) in front and send Cerberus the firewall and switch logs you want
+analysed.
 
 ## Notifications
 
@@ -791,6 +805,7 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_MAX_EVENTS` | `2000000` | Hard cap on stored events (see [Running at scale](#running-at-scale)) |
 | `CERBERUS_TRAFFIC_SAMPLE` | `1` | Store one in N *allowed* traffic events; `0` stores none. Detection still sees all of them |
 | `CERBERUS_MAX_TCP_CLIENTS` | `1000` | Syslog-over-TCP connections accepted at once |
+| `CERBERUS_MAX_DEVICES` | `5000` | Log sources tracked; messages from further ones are ignored |
 | `CERBERUS_ALERT_RETENTION_DAYS` | `90` | |
 | `CERBERUS_SYSLOG_UDP_PORT` / `_TCP_PORT` | `5514` | Inside the container; `0` disables. Once listeners are saved under Settings → Syslog, those win |
 | `CERBERUS_WEB_PORT` | `8080` | |

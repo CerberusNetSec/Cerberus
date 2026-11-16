@@ -94,6 +94,7 @@ class Config:
     alert_retention_days: int
     traffic_sample: int  # store one in N allowed-traffic events (1 = all, 0 = none)
     max_tcp_clients: int
+    max_devices: int
     device_identity: str  # "ip" or "hostname"
     password: str
     auth_enabled: bool
@@ -163,6 +164,7 @@ class Config:
             alert_retention_days=_int("CERBERUS_ALERT_RETENTION_DAYS", 90),
             traffic_sample=max(0, _int("CERBERUS_TRAFFIC_SAMPLE", 1)),
             max_tcp_clients=max(1, _int("CERBERUS_MAX_TCP_CLIENTS", 1000)),
+            max_devices=max(1, _int("CERBERUS_MAX_DEVICES", 5000)),
             device_identity=identity if identity in ("ip", "hostname") else "ip",
             password=_secret("CERBERUS_PASSWORD"),
             auth_enabled=env("CERBERUS_AUTH", "on").lower() not in ("off", "0", "false", "no"),

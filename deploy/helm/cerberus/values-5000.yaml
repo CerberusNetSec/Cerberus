@@ -1,0 +1,54 @@
+# One scale-out cluster sized for about 10,000 messages a second, as in
+# docs/REFERENCE-ARCHITECTURE.md (5,000 network devices). Use it on top of
+# the values that say where Kafka, PostgreSQL and ClickHouse are, e.g.:
+#
+#   helm install cerberus deploy/helm/cerberus -n cerberus \
+#     -f deploy/helm/cerberus/values-operators.yaml -f deploy/helm/cerberus/values-5000.yaml \
+#     --set auth.password='choose-one' --set publicUrl=https://cerberus.example.com
+#
+# The sizes come from per-core measurements at half their value; measure your
+# own message rate and hardware before relying on them.
+mode: scaleOut
+
+config:
+  CERBERUS_DEVICE_IDENTITY: ip
+  CERBERUS_MAX_DEVICES: "7500"        # log sources tracked (default 5000)
+  CERBERUS_RETENTION_DAYS: "30"
+  CERBERUS_TRAFFIC_SAMPLE: "10"       # store one allowed connection in ten; "1" stores all (2.5 to 4 TB for 30 days)
+  CERBERUS_MAX_EVENTS: "5000000000"   # "26000000000" when storing everything
+  CERBERUS_SPOOL_MB: "24576"          # about 30 minutes of a bus outage per collector
+  CERBERUS_MAX_TCP_CLIENTS: "2000"
+
+kafka:
+  partitions: 12
+  replication: 3
+
+collector:
+  replicas: 4
+  spool:
+    size: 30Gi
+  resources:
+    requests: {cpu: "1", memory: 512Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+processor:
+  replicas: 2  # one active, one standby
+  resources:
+    requests: {cpu: "2", memory: 2Gi}
+    limits: {cpu: "2", memory: 4Gi}
+
+detectors:
+  enabled: true
+  families:
+    source: {replicas: 2}
+    target: {replicas: 1}
+    pair: {replicas: 1}
+    port: {replicas: 1}
+    account: {replicas: 1}
+  resources:
+    requests: {cpu: "1", memory: 512Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+syslog:
+  service:
+    loadBalancerSourceRanges: []  # your management networks, e.g. ["10.0.0.0/8"]

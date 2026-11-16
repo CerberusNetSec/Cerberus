@@ -28,7 +28,6 @@ log = logging.getLogger("cerberus.engine")
 
 QUEUE_SIZE = 50_000
 TOP_KEYS_PER_MINUTE = 20_000
-MAX_DEVICES = 5000
 MAX_PENDING_EVENTS = 200_000  # events waiting to be written; beyond this the disk is not keeping up
 STATE_KEY = "engine_state"  # settings row holding the detectors' working state
 STATE_VERSION = 1
@@ -249,7 +248,7 @@ class Engine:
         self.dropped = 0
         self.unstored = 0  # allowed-traffic events analysed but not written (CERBERUS_TRAFFIC_SAMPLE)
         self.unwritten = 0  # events analysed but not written because the disk fell behind
-        self.refused_devices = 0  # messages from sources beyond MAX_DEVICES
+        self.refused_devices = 0  # messages from sources beyond cfg.max_devices
         self.flush_seconds = 0.0  # how long the last write to disk took
         self._sample = 0
         self.parse_errors = 0
@@ -560,10 +559,10 @@ class Engine:
 
     def record(self, ev: Event, ts: float) -> bool:
         """Stage 2: the device registry, per-minute counters and the storage buffer.
-        Returns False for a message from a source beyond MAX_DEVICES, which goes no further."""
+        Returns False for a message from a source beyond cfg.max_devices, which goes no further."""
         dev = self.devices.get(ev.device)
         if dev is None:
-            if len(self.devices) >= MAX_DEVICES:
+            if len(self.devices) >= self.cfg.max_devices:
                 self.refused_devices += 1
                 return False  # refuse to track an unbounded number of (possibly spoofed) sources
             dev = self.devices[ev.device] = Device(ev.device, ev.source_ip, first_seen=ts)

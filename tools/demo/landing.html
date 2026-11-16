@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerberus: open-source network threat detection from firewall and switch syslog</title>
+<meta name="description" content="Cerberus is a free, self-hosted tool that detects attacks from the syslog your firewalls and switches already send: port scans, brute force, lateral movement, beaconing, exposed services. Alerts are mapped to MITRE ATT&CK and come with what to do. Runs in Docker or Kubernetes.">
+<link rel="canonical" href="{{site}}">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Cerberus">
+<meta property="og:title" content="Cerberus: network threat detection from firewall and switch syslog">
+<meta property="og:description" content="Free and self-hosted. Detects attacks from the logs your network devices already send, maps them to MITRE ATT&CK, and tells you what to do.">
+<meta property="og:url" content="{{site}}">
+<meta property="og:image" content="{{site}}social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{{site}}social-preview.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Cerberus",
+  "description": "Open-source, self-hosted network threat detection from firewall and switch syslog. Detections are mapped to MITRE ATT&CK and come with guidance; includes a high-risk port view, SNMP topology, notifications, single sign-on, an audit log and an MCP server for AI agents.",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Linux, Docker, Kubernetes",
+  "softwareVersion": "{{version}}",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "url": "{{site}}",
+  "codeRepository": "https://github.com/CerberusNetSec/Cerberus",
+  "downloadUrl": "https://github.com/CerberusNetSec/Cerberus/releases/latest",
+  "image": "{{site}}social-preview.png",
+  "screenshot": "{{site}}screenshots/dashboard.png",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+  "keywords": "syslog, network security, threat detection, intrusion detection, MITRE ATT&CK, firewall logs, OPNsense, Palo Alto, FortiGate, Cisco, SIEM alternative, self-hosted"
+}
+</script>
+<script type="application/ld+json">{{faq_json}}</script>
+<style>
+  :root { color-scheme: light; --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f0efec; --text: #0b0b0b; --text-2: #52514e;
+    --muted: #6f6d68; --border: rgba(11,11,11,.12); --accent: #2a78d6; --accent-text: #1f62b5; --code: #f0efec; }
+  @media (prefers-color-scheme: dark) {
+    :root { color-scheme: dark; --page: #0d0d0d; --surface: #1a1a19; --surface-2: #262624; --text: #f0efec; --text-2: #c3c2b7;
+      --muted: #a09e97; --border: rgba(240,239,236,.14); --accent: #2a78d6; --accent-text: #7fb2f0; --code: #1f1f1e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent-text); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+  header.hero { text-align: center; padding: 56px 0 28px; }
+  header.hero img.logo { width: 112px; height: 112px; }
+  h1 { font-size: clamp(34px, 6vw, 52px); line-height: 1.1; margin: 14px 0 10px; letter-spacing: -.02em; }
+  .tagline { font-size: clamp(18px, 2.6vw, 22px); color: var(--text-2); max-width: 720px; margin: 0 auto 24px; text-wrap: balance; }
+  .buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .button { display: inline-block; padding: 11px 20px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); text-decoration: none; font-weight: 600; }
+  .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .button:hover { filter: brightness(1.06); }
+  .shot { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 12px; margin: 32px 0 8px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.12); }
+  .caption { text-align: center; color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+  section { padding: 36px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 28px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.01em; }
+  section > .wrap > p.lead { color: var(--text-2); margin: 0 0 22px; max-width: 760px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 4px; font-size: 17px; }
+  .card p { margin: 0; color: var(--text-2); font-size: 15px; }
+  .shots { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-top: 22px; }
+  .shots figure { margin: 0; }
+  .shots img { width: 100%; height: auto; border: 1px solid var(--border); border-radius: 8px; display: block; }
+  .shots figcaption { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  ul.devices { columns: 2 260px; padding-left: 20px; margin: 0; color: var(--text-2); }
+  pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+    font: 14px/1.5 ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; margin: 12px 0; white-space: pre; }
+  pre.prompt { white-space: pre-wrap; max-height: 340px; overflow-y: auto; }
+  code { font: 14px ui-monospace, "Cascadia Code", Consolas, Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  pre code { background: none; padding: 0; }
+  .copy { display: block; margin: 0 0 -4px auto; font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); cursor: pointer; }
+  details { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin: 10px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 8px 0 2px; color: var(--text-2); }
+  footer { border-top: 1px solid var(--border); padding: 26px 0 40px; color: var(--muted); font-size: 14px; text-align: center; }
+  footer a { margin: 0 8px; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <img class="logo" src="logo.svg" width="112" height="112" alt="Cerberus logo: three hound heads on a shield">
+    <h1>Cerberus</h1>
+    <p class="tagline">Open-source network threat detection from the syslog your firewalls and switches already send.</p>
+    <div class="buttons">
+      <a class="button primary" href="demo/">Try the live demo</a>
+      <a class="button" href="https://github.com/CerberusNetSec/Cerberus">GitHub</a>
+      <a class="button" href="#quick-start">Quick start</a>
+    </div>
+    <a href="demo/"><img class="shot" src="screenshots/dashboard.png" width="1440" height="1180"
+      alt="The Cerberus dashboard: open alerts by severity, message rate over 24 hours, hosts ranked by risk and alerts by attack stage"></a>
+    <p class="caption">The dashboard, on simulated data. The demo is the real interface, read-only.</p>
+  </div>
+</header>
+
+<main>
+<section id="what">
+  <div class="wrap">
+    <h2>What Cerberus does</h2>
+    <p class="lead">Point your devices' syslog at it. Cerberus parses each vendor's logs, looks for attacks and behaviour that is out
+      of the ordinary, and raises an alert that says why it matters and what to do. It is free, self-hosted and needs no agents on
+      your devices. Version {{version}}, Apache 2.0.</p>
+    <div class="grid">
+      <div class="card"><h3>24 detectors</h3><p>Port scans, host sweeps, brute force and password spraying, a login that succeeds after
+        failures, lateral movement, beaconing to a command-and-control server, large transfers, services exposed to the internet,
+        risky outbound connections, admin logins from new places, and passwords or keys sent in clear text.</p></div>
+      <div class="card"><h3>Mapped to MITRE ATT&amp;CK</h3><p>Every detection names its tactic and technique. A matrix page shows where
+        your alerts fall, and which tactics network logs cannot see.</p></div>
+      <div class="card"><h3>Guidance with every alert</h3><p>Why it matters and the steps to take, written for the team that runs the
+        firewalls. Repeats fold into one alert; false positives are marked once, with a reason, and stay quiet.</p></div>
+      <div class="card"><h3>High Risk Ports</h3><p>Traffic and findings on RDP, SMB, Telnet, FTP, databases and the other services
+        attackers go for first: what is open to the internet, what is allowed out, what is in clear text.</p></div>
+      <div class="card"><h3>Topology from SNMP</h3><p>Polls your devices (read-only, LLDP and CDP) and draws the network they
+        describe, with alert counts on each device.</p></div>
+      <div class="card"><h3>Notifications</h3><p>Email, Telegram, Pushbullet, signed webhooks, or any HTTP API with your own
+        template, for ticketing, chat and SOAR tools.</p></div>
+      <div class="card"><h3>AI agents and an API</h3><p>A built-in MCP server lets Claude and other agents read and triage alerts
+        with a scoped token. The same token works on the HTTP API.</p></div>
+      <div class="card"><h3>Accounts, SSO and an audit log</h3><p>Viewer, analyst and admin roles; single sign-on with any OpenID
+        Connect provider; every sign-in and change recorded.</p></div>
+      <div class="card"><h3>One instance, or scaled out</h3><p>A single instance handles a few hundred devices. For thousands:
+        collectors, detection workers, standby processors, Kafka, PostgreSQL and ClickHouse, with a Helm chart.</p></div>
+    </div>
+    <div class="shots">
+      <figure><img src="screenshots/alert-guidance.png" width="1440" height="840" loading="lazy"
+        alt="An alert for a likely compromised host, with why it matters and five steps to take"><figcaption>An alert with its guidance</figcaption></figure>
+      <figure><img src="screenshots/attack.png" width="1440" height="880" loading="lazy"
+        alt="Alerts laid out in the MITRE ATT&CK Enterprise matrix by tactic and technique"><figcaption>Alerts in the MITRE ATT&amp;CK matrix</figcaption></figure>
+      <figure><img src="screenshots/topology.png" width="1440" height="900" loading="lazy"
+        alt="A network map of firewalls and switches built from SNMP, with alert counts per device"><figcaption>Topology built from SNMP</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section id="devices">
+  <div class="wrap">
+    <h2>Devices it understands</h2>
+    <p class="lead">Connectors for these are built in. Anything else that sends RFC 3164 or RFC 5424 syslog works through the generic
+      connector, and a connector is a short YAML file you can write yourself.</p>
+    <ul class="devices">
+      <li>OPNsense</li>
+      <li>Palo Alto Networks (PA-series, PAN-OS)</li>
+      <li>Fortinet FortiGate</li>
+      <li>Cisco IOS and IOS-XE switches and routers</li>
+      <li>Cisco ASA and Firepower</li>
+      <li>Juniper SRX and Junos</li>
+      <li>Ubiquiti UniFi and EdgeOS</li>
+      <li>Aruba AOS-CX, AOS-S and mobility controllers</li>
+      <li>Dell OS9, OS10 and N-series; Brocade and Ruckus ICX</li>
+      <li>RTL-Playground switches</li>
+      <li>Linux hosts: OpenSSH, PAM and netfilter logs</li>
+    </ul>
+  </div>
+</section>
+
+<section id="quick-start">
+  <div class="wrap">
+    <h2>Quick start</h2>
+    <p class="lead">You need Docker. This runs one instance; see the
+      <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/deploy/README.md">deployment guide</a> for Kubernetes, Helm and
+      several sites.</p>
+<pre><code>git clone https://github.com/CerberusNetSec/Cerberus.git
+cd Cerberus
+docker compose up -d --build
+docker logs cerberus        # prints the generated dashboard password once</code></pre>
+    <p>Open <code>http://&lt;host&gt;:8080</code>, then send your devices' syslog to port 514 on the host. To see alerts before touching a
+      real device: <code>python tools/simulate.py</code>.</p>
+    <h3>Or let an AI assistant walk you through it</h3>
+    <p>Paste this into Claude, ChatGPT or Grok. It asks about your setup one question at a time and gives you the exact commands.</p>
+    <button class="copy" type="button" id="copy">Copy prompt</button>
+<pre class="prompt" id="prompt">{{prompt}}</pre>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>Questions</h2>
+{{faq_html}}
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/CerberusNetSec/Cerberus">Source on GitHub</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/releases/latest">Releases</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE.md">Reference architecture for 5,000 devices</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/SECURITY.md">Security</a>
+    <a href="llms.txt">llms.txt</a>
+    <p>Cerberus is open source under the Apache License 2.0. Every address and device in the screenshots and demo is simulated.</p>
+  </div>
+</footer>
+<script>
+  document.getElementById('copy').addEventListener('click', async (e) => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById('prompt').textContent);
+      e.target.textContent = 'Copied';
+    } catch { e.target.textContent = 'Select the text and copy it'; }
+    setTimeout(() => { e.target.textContent = 'Copy prompt'; }, 2500);
+  });
+</script>
+</body>
+</html>

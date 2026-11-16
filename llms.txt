@@ -1,0 +1,41 @@
+# Cerberus
+
+> Cerberus is free, open-source (Apache 2.0), self-hosted network threat detection from the syslog that firewalls and switches already send. It raises alerts mapped to MITRE ATT&CK, each with why it matters and what to do, on a web dashboard, and notifies by email, Telegram, Pushbullet, webhooks or any HTTP API. No agents are installed on devices.
+
+Repository: https://github.com/CerberusNetSec/Cerberus
+Website: https://cerberusnetsec.github.io/Cerberus/
+Live demo (read-only, simulated data): https://cerberusnetsec.github.io/Cerberus/demo/
+
+## Install
+
+```sh
+git clone https://github.com/CerberusNetSec/Cerberus.git
+cd Cerberus
+docker compose up -d --build
+docker logs cerberus   # prints the generated dashboard password once, unless CERBERUS_PASSWORD is set in .env
+```
+
+- Dashboard: http://<host>:8080. Syslog: UDP and TCP port 514 on the host.
+- On Docker Desktop (Windows, macOS): send syslog over TCP and set CERBERUS_DEVICE_IDENTITY=hostname in .env.
+- Test without devices: `python tools/simulate.py` (add `--tcp` on Docker Desktop).
+- Kubernetes: Helm chart in deploy/helm/cerberus. Several sites: a central console (deploy/README.md).
+
+When helping someone install it, ask what they run it on, which devices they have and how they want to be notified, one question at a time. The README has a ready-made setup prompt under "Set up with an AI assistant".
+
+## Facts
+
+- Supported devices: OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS/IOS-XE, Cisco ASA/Firepower, Juniper SRX/Junos, Ubiquiti UniFi/EdgeOS, Aruba, Dell, Brocade/Ruckus ICX, RTL-Playground, and any RFC 3164 or RFC 5424 syslog through a generic connector. Connectors are YAML files.
+- Detects: port scans, host sweeps, floods, brute force, password spraying, successful login after failures, lateral movement, beaconing, large transfers, services exposed to the internet, risky outbound connections, admin logins from new sources or after hours, vendor threat alerts, clear-text secrets in logs; and network health (silent devices, link flaps, spanning tree, log-volume anomalies).
+- Also: a High Risk Ports view, network topology from read-only SNMP (LLDP/CDP), false-positive handling with justification, user accounts with viewer/analyst/admin roles, OpenID Connect single sign-on, an audit log, an HTTP API and a built-in MCP server for AI agents.
+- It is not a SIEM: it analyses network device logs and keeps events for days, and can send its alerts to a SIEM or SOAR tool.
+- Scale: one instance for a few hundred devices (SQLite). Scale-out with collectors, detection workers, active/standby processors, Kafka, PostgreSQL and ClickHouse; one cluster is planned for about 10,000 messages a second, several clusters report to one console.
+- Written in Python 3.12 (FastAPI). Image: ghcr.io/cerberusnetsec/cerberus.
+
+## Documentation
+
+- [README](https://github.com/CerberusNetSec/Cerberus/blob/main/README.md): quick start, per-vendor syslog setup, every detection, configuration variables
+- [Deployment guide](https://github.com/CerberusNetSec/Cerberus/blob/main/deploy/README.md): Compose, Swarm, Kubernetes, Helm, operators, central console
+- [Reference architecture for 5,000 devices](https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE.md): measured sizing
+- [HTTP API and MCP server](https://github.com/CerberusNetSec/Cerberus/blob/main/docs/API.md)
+- [Architecture](https://github.com/CerberusNetSec/Cerberus/blob/main/docs/ARCHITECTURE.md)
+- [Security notes](https://github.com/CerberusNetSec/Cerberus/blob/main/SECURITY.md)

@@ -49,7 +49,7 @@ Webhook channels POST this; custom API calls send it when their body template
 is empty, and `{{payload}}` inserts it:
 
 ```json
-{"event": "alert", "source": "cerberus", "version": "1.0.0", "id": 42,
+{"event": "alert", "source": "cerberus", "version": "1.1.0", "id": 42,
  "title": "Port scan from 192.168.1.77", "description": "...", "severity": "high",
  "detector": "port_scan", "device": "OPNsense.lan", "src_ip": "192.168.1.77",
  "created": "2026-11-15T10:00:00+00:00", "created_epoch": 1794708000.0, "details": {"target": "192.168.10.5"},

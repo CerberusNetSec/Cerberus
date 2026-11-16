@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.svg" width="128" height="128" alt="Cerberus logo: three hound heads on a shield"></p>
+
 # Cerberus
 
 [![CI](https://github.com/CerberusNetSec/Cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CerberusNetSec/Cerberus/actions/workflows/ci.yml)

@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__
+from . import __version__, capacity
 from .config import Config
 from .engine import Engine
 from .federation import MAX_REPORT_BYTES, Central, Forwarder
@@ -620,6 +620,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
                            "blocked": round((row["b"] if row else 0) / minutes, 1)})
             t += bucket
         day_events, day_blocked = await _run(db.traffic_totals, int(now - 86400))
+        storage = capacity.stored(await _run(db.get_setting, capacity.SETTING, {})) if heartbeats else None
         counts = await _run(db.alert_counts_open)
         recent = await _run(db.alerts_recent, 8)
         sources, ports = engine.top_blocked()
@@ -681,7 +682,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
             "federation": forwarder.status() if forwarder else None,
             "duplicates": engine.dedup.duplicates if engine.dedup else None,
             "collectors": [
-                {**{k: v for k, v in status.items() if k not in ("bus_error",)},
+                {**{k: v for k, v in status.items() if k not in ("bus_error",)}, **capacity.assess(status, storage),
                  "state": "silent" if now - status.get("received_at", now) > cfg.collector_silent_seconds else "reporting"}
                 for status in sorted(heartbeats.latest.values(), key=lambda s: str(s.get("name")))
             ] if heartbeats else None,
@@ -879,6 +880,33 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         options = {**await display_options(), **{k: bool(v) for k, v in given.items() if k in DISPLAY_DEFAULTS}}
         await db.aset_setting("display", options)
         return {"display": options}
+
+    # --- collector storage thresholds -----------------------------------------
+    @app.get("/api/collector-storage")
+    async def collector_storage_get():
+        """The thresholds, and (on a processor) each collector's and worker's storage."""
+        settings = capacity.stored(await _run(db.get_setting, capacity.SETTING, {}))
+        now = time.time()
+        return {"settings": settings, "defaults": dict(capacity.DEFAULTS), "available": heartbeats is not None,
+                "collectors": [
+                    {**{k: status.get(k) for k in ("name", "role", "family", "spool_bytes", "spool_limit", "spool_percent",
+                                                   "volume_bytes", "volume_free", "volume_percent", "spool_dropped",
+                                                   "bus_down")},
+                     **capacity.assess(status, settings),
+                     "state": "silent" if now - status.get("received_at", now) > cfg.collector_silent_seconds
+                     else "reporting"}
+                    for status in sorted(heartbeats.latest.values(), key=lambda s: str(s.get("name")))
+                ] if heartbeats else []}
+
+    @app.put("/api/collector-storage")
+    async def collector_storage_put(body: dict = Body(...)):
+        given = body.get("settings", body)
+        try:
+            settings = capacity.clean(given, capacity.stored(await _run(db.get_setting, capacity.SETTING, {})))
+        except ValueError as exc:
+            raise _bad(str(exc)) from None
+        await db.aset_setting(capacity.SETTING, settings)
+        return {"settings": settings}
 
     # --- MITRE ATT&CK --------------------------------------------------------
     ATTACK_RANGES = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400, "all": 0}

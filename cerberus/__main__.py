@@ -179,7 +179,7 @@ async def amain() -> None:
         tasks.append(asyncio.create_task(keep_leadership(leadership)))
     if heartbeats:
         tasks.append(asyncio.create_task(heartbeats.watch()))
-        tasks.append(asyncio.create_task(watch_collectors(cfg, engine, heartbeats)))
+        tasks.append(asyncio.create_task(watch_collectors(cfg, engine, heartbeats, db)))
     forwarder = central = None
     if cfg.central_url:
         if len(cfg.central_token) < 24:
@@ -219,15 +219,27 @@ async def amain() -> None:
         log.info("stopped")
 
 
-async def watch_collectors(cfg: Config, engine, heartbeats) -> None:
-    """Processor: alert when a collector that was reporting goes quiet."""
+async def watch_collectors(cfg: Config, engine, heartbeats, store=None) -> None:
+    """Processor: alert when a collector that was reporting goes quiet, or its storage fills."""
     import time
 
+    from . import capacity
     from .models import Candidate
     silent: set[str] = set()
+    storage = capacity.StorageWatch()
     while True:
         await asyncio.sleep(15)
         now = time.time()
+        try:
+            settings = capacity.stored(await asyncio.to_thread(store.get_setting, capacity.SETTING, {})
+                                       if store is not None else {})
+            # Only what is reporting: a silent process's last figures are old news.
+            fresh = [s for s in heartbeats.latest.values()
+                     if now - s.get("received_at", now) <= cfg.collector_silent_seconds]
+            for candidate in storage.check(fresh, settings):
+                engine.raise_alert(candidate, now)
+        except Exception:
+            logging.getLogger("cerberus").exception("collector storage check failed")
         for name, status in list(heartbeats.latest.items()):
             quiet = now - status.get("received_at", now)
             if quiet <= cfg.collector_silent_seconds:

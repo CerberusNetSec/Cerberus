@@ -49,7 +49,7 @@ Webhook channels POST this; custom API calls send it when their body template
 is empty, and `{{payload}}` inserts it:
 
 ```json
-{"event": "alert", "source": "cerberus", "version": "1.0.0", "id": 42,
+{"event": "alert", "source": "cerberus", "version": "1.1.0", "id": 42,
  "title": "Port scan from 192.168.1.77", "description": "...", "severity": "high",
  "detector": "port_scan", "device": "OPNsense.lan", "src_ip": "192.168.1.77",
  "created": "2026-11-15T10:00:00+00:00", "created_epoch": 1794708000.0, "details": {"target": "192.168.10.5"},
@@ -83,6 +83,8 @@ credentials, SNMP community strings) are never returned: they read back as
 | `PUT /api/users/{id}` | Admin: any of `display_name`, `role` (not for single sign-on users), `disabled`, `password` (local users). A change of role, a new password or disabling signs the user out. `409` if it would leave no admin; you cannot demote or disable yourself |
 | `DELETE /api/users/{id}` | Admin: delete an account; not your own, nor the last admin |
 | `PUT /api/auth/builtin` | Admin: `{"allowed": false}` switches the shared-password admin off; `409` unless another admin account (or a single sign-on admin group) exists |
+| `GET /api/collector-storage` | Storage thresholds for collectors and detection workers: `settings` (`enabled`, `warn` and `critical` in percent, `volume`: also watch the volume the spool is on), `defaults`, whether this is a processor (`available`), and each process's `spool_bytes`, `spool_limit`, `spool_percent`, `volume_bytes`, `volume_free`, `volume_percent`, `storage_percent` (the fuller of the two), `storage_what`, `storage_level` (empty, `warning` or `critical`) and `state` |
+| `PUT /api/collector-storage` | Admin: `{"settings": {"enabled": true, "warn": 70, "critical": 90, "volume": true}}`, any of them; `400` unless 1 ≤ warn < critical ≤ 100 |
 | `GET /api/display`, `PUT /api/display` | Display settings: `{"display": {"attack_hide_uncovered": true}}` hides ATT&CK tactics without a Cerberus detector |
 | `GET /api/summary?range=1h\|6h\|24h\|7d` | Dashboard: message-rate series, open alerts by severity, hosts by risk, alerts by attack stage, top blocked sources and ports, collector health |
 | `GET /api/alerts?status=&severity=&q=&limit=&id=&detector=` | Alerts, newest first. `status`: `open`, `ack`, `resolved`, `false_positive`, `active` (open or acknowledged) or empty for all. `severity` is a minimum. Each alert carries `details` and `advice` (stage, ATT&CK technique, why, actions); a false positive also carries `false_positive` (who, when, why, findings held back since) |

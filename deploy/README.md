@@ -35,10 +35,10 @@ firewall cluster).
 Version tags are published by CI for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/cerberusnetsec/cerberus:1.0.0
+docker pull ghcr.io/cerberusnetsec/cerberus:1.1.0
 ```
 
-To build your own, `docker build -t registry.example.com/cerberus:1.0.0 .`,
+To build your own, `docker build -t registry.example.com/cerberus:1.1.0 .`,
 push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
 `kubernetes/base/kustomization.yaml`.
 
@@ -131,7 +131,7 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE=ghcr.io/cerberusnetsec/cerberus:1.0.0` to use the published image
+Set `CERBERUS_IMAGE=ghcr.io/cerberusnetsec/cerberus:1.1.0` to use the published image
 instead of building locally. Compose (without Swarm) bind-mounts secret files,
 so they must be readable by the container's user (uid 10001); `make-secrets.py`
 writes them mode 0644.
@@ -227,6 +227,11 @@ storage and a Kafka-compatible bus.
 - **Swarm:** run collectors as a replicated service with `mode: host` ports
   (one per node, so each node's devices keep their addresses) and the
   processor as one replica; the same variables apply.
+
+Give each collector's spool room for the longest bus outage you want to ride
+out (`CERBERUS_SPOOL_MB`, 1024 by default, on a volume at least that large).
+Cerberus alerts when a spool or its volume passes 70% and 90% full; change
+the thresholds under Settings → General → Collector storage.
 
 Topics are created on first start if the cluster allows it
 (`CERBERUS_KAFKA_PARTITIONS`, default 12; `CERBERUS_KAFKA_REPLICATION`,

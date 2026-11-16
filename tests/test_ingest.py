@@ -9,6 +9,7 @@ import ssl
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -321,3 +322,42 @@ def test_records_fetched_before_a_seek_are_not_processed():
     assert asyncio.run(go()) == [[], [40, 41], [42]]
     assert seeks == [(0, 40), (0, 40)]  # sent back again when the stale records arrived
     assert source.position[tp] == 43 and source.seeked == {}
+
+
+class SilentProducer(FlakyProducer):
+    """A bus that has vanished: the Kafka client accepts records and never confirms them."""
+
+    def __init__(self):
+        super().__init__()
+        self.silent = False
+
+    async def send(self, topic, value, key=None):
+        if self.silent:
+            return asyncio.get_running_loop().create_future()  # never resolved
+        return await super().send(topic, value, key)
+
+
+def test_a_bus_that_stops_answering_counts_as_down(tmp_path, monkeypatch):
+    """The Kafka client retries for ever when the brokers vanish. The collector must not
+    wait with it, holding events in memory: after a short time it spools them instead."""
+    from cerberus import bus
+    monkeypatch.setattr(bus, "SEND_TIMEOUT", 0.2)
+    producer = SilentProducer()
+    publisher = Publisher(cfg_for(tmp_path), tmp_path / "spool", producer, name="c1")
+
+    async def scenario():
+        await publisher.start()
+        await publisher.publish(records(3))
+        producer.silent = True
+        started = time.monotonic()
+        await publisher.publish(records(4, 3))  # no answer: spooled after the timeout
+        waited = time.monotonic() - started
+        await publisher.publish(records(2, 7))  # already known to be down: spooled at once
+        assert publisher.down and publisher.spooled == 6 and "no answer from the message bus" in publisher.last_error
+        assert 0.15 < waited < 2
+        assert await publisher.drain_spool() is False  # still silent
+        producer.silent = False
+        assert await publisher.drain_spool() is True
+        assert not publisher.down and not publisher.spool
+    asyncio.run(scenario())
+    assert len(producer.sent) == 9

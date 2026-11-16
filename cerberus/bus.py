@@ -156,6 +156,9 @@ def _lock(directory: Path):
     return handle
 
 
+SEND_TIMEOUT = 20.0  # seconds without an answer before the bus counts as unreachable
+
+
 class Spool:
     """Events waiting on disk for the bus to come back: numbered files of
     JSON lines [key, value], read oldest first."""
@@ -300,9 +303,30 @@ class Publisher:
         return [r if len(r) == 3 else (self.topic, *r) for r in records]
 
     async def _send(self, records: list[tuple]) -> None:
+        """Send and wait for the bus to confirm. The Kafka client retries for ever when the
+        brokers vanish, so a bus that does not answer in SEND_TIMEOUT counts as down."""
+        try:
+            await asyncio.wait_for(self._send_now(records), SEND_TIMEOUT)
+        except asyncio.TimeoutError:
+            await self._drop_producer()
+            raise TimeoutError(f"no answer from the message bus in {SEND_TIMEOUT:.0f} seconds") from None
+
+    async def _send_now(self, records: list[tuple]) -> None:
         await self._ensure_started()
         futures = [await self.producer.send(topic, value, key=key) for topic, key, value in records]
         await asyncio.gather(*futures)
+
+    async def _drop_producer(self) -> None:
+        """A producer that stopped answering still holds what it was given, and would send it
+        when the bus returned, as well as the copy now going to the spool. Close it; the
+        next send starts a new one."""
+        if not self._made_producer or self.producer is None:
+            return
+        producer, self.producer, self.started = self.producer, None, False
+        try:
+            await asyncio.wait_for(producer.stop(), 5)
+        except Exception:  # it may not manage a tidy close with no bus to talk to
+            pass
 
     async def publish(self, records: list[tuple]) -> None:
         """Send a batch, keeping order with anything already spooled."""

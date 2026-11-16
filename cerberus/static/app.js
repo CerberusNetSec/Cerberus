@@ -50,6 +50,11 @@ function collectorsTile(d, tile) {
   const notes = [];
   if (all.length > up.length) notes.push(`silent: ${all.filter((c) => c.state !== 'reporting').map((c) => c.name).join(', ')}`);
   if (spooling.length) notes.push(`${spooling.length} spooling while the bus is unreachable`);
+  const filling = up.filter((c) => c.storage_level).sort((a, b) => b.storage_percent - a.storage_percent);
+  if (filling.length) {
+    notes.push(`storage ${filling[0].storage_level}: ${filling[0].name} ${filling[0].storage_what} ${Math.round(filling[0].storage_percent)}% full`
+      + (filling.length > 1 ? ` and ${filling.length - 1} more` : ''));
+  }
   if (dropped) notes.push(`${compact(dropped)} messages dropped`);
   if (d.duplicates) notes.push(`${compact(d.duplicates)} resent copies ignored`);
   const value = all.length ? `${up.length} <span class="muted">/ ${all.length}</span>` : '—';
@@ -68,6 +73,12 @@ function workersTile(d, tile) {
   const value = `${up.length} <span class="muted">/ ${all.length}</span>`;
   return tile('Detection workers', all.length > up.length ? `<span class="error" style="font-size:inherit">${value}</span>` : value,
     esc(notes.filter(Boolean).join(' · ')));
+}
+function sizeText(n) {
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = Number(n) || 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${i < 2 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 const pad = (n) => String(n).padStart(2, '0');
 function clock(ts, withDate) {
@@ -1737,6 +1748,24 @@ pages.general = {
         <p class="muted small" style="margin:4px 0 0 24px">Reconnaissance, Execution, Collection and other tactics that cannot be seen
           from network logs. Showing them makes the gaps in coverage visible; hiding them leaves more room for the rest.</p>
         <div class="actions"><button class="primary" type="submit">Save changes</button></div>
+      </form>
+      <form class="card" id="cs-form" style="margin-top:16px" hidden>
+        <h2>Collector storage</h2>
+        <p class="muted small" style="margin:0 0 6px">A collector keeps events on disk (its spool) while it cannot reach the
+          message bus; when that space is full the oldest are dropped. Cerberus raises an alert when a collector's or detection
+          worker's storage passes these thresholds: medium at the warning, high at the critical one.</p>
+        <label class="check"><input type="checkbox" id="cs-enabled"> Alert when storage passes a threshold</label>
+        <div class="form-grid">
+          <div><label for="cs-warn">Warning at (% full)</label><input id="cs-warn" type="number" min="1" max="99" step="1" required></div>
+          <div><label for="cs-critical">Critical at (% full)</label><input id="cs-critical" type="number" min="2" max="100" step="1" required></div>
+        </div>
+        <label class="check"><input type="checkbox" id="cs-volume"> Also watch the volume the spool is on</label>
+        <p class="muted small" style="margin:4px 0 0 24px">Untick if collectors share a disk with other things and its
+          fullness is watched elsewhere. The spool's own allowance (<code>CERBERUS_SPOOL_MB</code>) is always watched.</p>
+        <div class="actions"><button class="primary" type="submit">Save thresholds</button></div>
+        <div class="table-wrap" style="margin-top:14px"><table>
+          <thead><tr><th>Process</th><th>Spool</th><th>Volume</th><th>Status</th></tr></thead>
+          <tbody id="cs-rows"></tbody></table></div>
       </form>`;
     $('#gen-form').addEventListener('submit', (e) => {
       e.preventDefault();
@@ -1745,9 +1774,46 @@ pages.general = {
         this.show(d);
       }, 'Saved');
     });
+    $('#cs-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      act(async () => {
+        await api('/collector-storage', 'PUT', { settings: { enabled: $('#cs-enabled').checked, volume: $('#cs-volume').checked,
+          warn: Number($('#cs-warn').value), critical: Number($('#cs-critical').value) } });
+        this.editing = false;
+        this.showStorage(await api('/collector-storage'));
+      }, 'Saved');
+    });
+    $('#cs-form').addEventListener('input', () => { this.editing = true; });
+    this.editing = false;
   },
-  async refresh() { this.show(await api('/display')); },
+  async refresh() {
+    const [d, storage] = await Promise.all([api('/display'), api('/collector-storage')]);
+    if (!this.loaded) this.show(d);
+    this.showStorage(storage);
+    this.loaded = true;
+  },
+  interval: 15000,
   show(d) { $('#gen-attack-hide').checked = d.display.attack_hide_uncovered; },
+  showStorage(d) {
+    $('#cs-form').hidden = !d.available;
+    if (!d.available) return;
+    if (!this.editing) {  // never overwrite what is being typed
+      $('#cs-enabled').checked = d.settings.enabled;
+      $('#cs-volume').checked = d.settings.volume;
+      $('#cs-warn').value = d.settings.warn;
+      $('#cs-critical').value = d.settings.critical;
+    }
+    const part = (used, total, percent) => (total
+      ? `${sizeText(used)} <span class="muted">of ${sizeText(total)}</span> · ${Math.round(percent)}%` : '<span class="muted">—</span>');
+    $('#cs-rows').innerHTML = d.collectors.map((c) => `<tr>
+        <td><b>${esc(c.name)}</b><div class="muted small">${c.role === 'detector' ? `detection worker · ${esc(c.family || '')}` : 'collector'}</div></td>
+        <td class="nowrap">${part(c.spool_bytes, c.spool_limit, c.spool_percent)}${c.spool_dropped ? `<div class="error small">${num(c.spool_dropped)} dropped</div>` : ''}</td>
+        <td class="nowrap">${part(c.volume_bytes - c.volume_free, c.volume_bytes, c.volume_percent)}</td>
+        <td class="nowrap">${c.state !== 'reporting' ? '<span class="muted">Not reporting</span>'
+          : c.storage_level ? `<span class="sev ${c.storage_level === 'critical' ? 'high' : 'medium'}">${c.storage_level}</span>`
+          : '<span class="dot on"></span>OK'}</td></tr>`).join('')
+      || '<tr><td colspan="4" class="muted">Waiting for the first heartbeat from a collector.</td></tr>';
+  },
 };
 
 /* --- syslog listeners (Settings → Syslog) --- */
@@ -2009,6 +2075,7 @@ const AUDIT_LABELS = [
   [/^alert_status$/, 'Changed alert status (agent)'],
   [/^POST \/api\/alerts\/status$/, 'Changed alert status'], [/^POST \/api\/ignore$/, 'Stopped alerting on a source'],
   [/^PUT \/api\/detectors$/, 'Changed detection settings'], [/^PUT \/api\/display$/, 'Changed display options'],
+  [/^PUT \/api\/collector-storage$/, 'Changed collector storage thresholds'],
   [/^PUT \/api\/listeners$/, 'Changed syslog listeners'], [/^PUT \/api\/snmp$/, 'Changed SNMP settings'],
   [/^POST \/api\/snmp\/poll$/, 'Polled SNMP'], [/^PUT \/api\/devices$/, 'Changed a device'],
   [/^POST \/api\/devices\/forget$/, 'Forgot a device'], [/^POST \/api\/connectors\/reload$/, 'Reloaded connectors'],

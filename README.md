@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.svg" width="128" height="128" alt="Cerberus logo: three hound heads on a shield"></p>
+
 # Cerberus
 
 [![CI](https://github.com/CerberusNetSec/Cerberus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CerberusNetSec/Cerberus/actions/workflows/ci.yml)
@@ -11,7 +13,7 @@
 
 ![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
 ![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
-![Tests: 314](https://img.shields.io/badge/tests-314-2ea44f)
+![Tests: 331](https://img.shields.io/badge/tests-331-2ea44f)
 ![Deployments: standalone, Compose, Swarm, Kubernetes, Helm](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes%20%7C%20Helm-0366d6)
 
 A syslog watchdog for networks of up to a few hundred devices. It runs in one Docker container, receives
@@ -391,6 +393,16 @@ and serves the dashboard. Clustered storage is required.
 - **Health:** collectors send a heartbeat every 15 seconds; the processor's
   dashboard shows them and raises "Collector stopped reporting" when one goes
   quiet. Each collector's own counters are at `:8080/status`.
+- **Storage thresholds:** every collector and detection worker reports how
+  full its spool is (against `CERBERUS_SPOOL_MB`) and how full the volume under
+  it is. Past the warning threshold (70% by default) the processor raises a
+  medium alert, past the critical one (90%) a high alert, each with what to
+  do; set them under **Settings → General → Collector storage**, which also
+  lists every process's storage. A spool fills while the bus is unreachable,
+  when no heartbeat gets through, so the collector also warns in its own log,
+  and its first heartbeat afterwards carries the peak: you are told a spool
+  reached 93% even if it has emptied again. A bus that stops answering counts
+  as down after 20 seconds.
 - **Syslog over TLS** (RFC 5425) is available in every mode
   (`CERBERUS_SYSLOG_TLS_PORT`, usually 6514), optionally requiring device
   certificates.
@@ -459,8 +471,11 @@ in 8 seconds, every event stored once).
 
 Every role serves Prometheus metrics at `:8080/metrics`: events, errors,
 write times, alerts, notifications and the outbox on the processor; messages,
-spool and bus state on collectors; events, candidates and rebuilds on
-workers; `cerberus_active` is 1 on the active processor and 0 on a standby.
+spool and bus state on collectors (`cerberus_spool_bytes`,
+`cerberus_spool_limit_bytes`, `cerberus_spool_volume_bytes` and
+`cerberus_spool_volume_free_bytes`, for alerting on storage from Prometheus
+too); events, candidates and rebuilds on workers; `cerberus_active` is 1 on
+the active processor and 0 on a standby.
 Set `CERBERUS_METRICS_TOKEN` to require `Authorization: Bearer <token>`.
 
 Reference deployments: `deploy/compose/scale-out.yml` (HAProxy, collectors,

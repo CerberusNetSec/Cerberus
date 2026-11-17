@@ -50,6 +50,9 @@ storage:
 kafka:  # scaleOut
   bootstrap: cerberus-kafka-bootstrap.kafka.svc:9092
   topic: cerberus.events
+  # Consumer groups are named after this (default cerberus-processor). Several
+  # installations sharing one Kafka cluster each need their own topic and group.
+  group: ""
   partitions: 12
   replication: 3
   security: PLAINTEXT  # PLAINTEXT, SSL, SASL_PLAINTEXT or SASL_SSL
@@ -74,6 +77,20 @@ oidc:
   analystGroups: ""
   viewerGroups: ""
   defaultRole: ""  # viewer, analyst or admin for everyone else; empty refuses them
+
+# Federation: report alerts to a central console as a site, or be the console
+# (deploy/README.md; docs/REFERENCE-ARCHITECTURE-50000.md for many clusters).
+federation:
+  site:
+    consoleUrl: ""      # e.g. https://console.example.com; empty: do not report
+    name: ""            # shown at the console; default: the pod's hostname
+    token: ""           # the site's token, made at the console (Sites -> Add site)
+    existingSecret: ""  # or a Secret with a "token" key
+    caSecret: ""        # a Secret with "ca.crt", when the console's certificate is from a private CA
+  console:
+    enabled: false
+    siteTokensSecret: ""  # optional: a Secret with a "sites" key, one "site-name token" line per site
+    silentMinutes: 5      # alert when a site has not reported for this long
 
 metrics:
   token: ""  # if set, /metrics needs "Authorization: Bearer <token>"

@@ -29,7 +29,7 @@
   },
   {
     "q": "How many devices can Cerberus handle?",
-    "a": "One instance handles a few hundred devices; the limit is message rate rather than device count. Scaled out with collectors, detection workers, Kafka, PostgreSQL and ClickHouse, one cluster is planned for about 10,000 messages a second, and several clusters can report to one console. The reference architecture in the repository sizes this for 5,000 devices."
+    "a": "One instance handles a few hundred devices; the limit is message rate rather than device count. Scaled out with collectors, detection workers, Kafka, PostgreSQL and ClickHouse, one cluster is planned for about 10,000 messages a second, and several clusters can report to one console. Reference architectures in the repository size this for 5,000, 50,000, 100,000 and 500,000 devices; past one cluster, clusters are grouped into regions that share Kafka, PostgreSQL and ClickHouse."
   },
   {
     "q": "Is Cerberus free?",

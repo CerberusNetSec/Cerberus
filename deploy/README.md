@@ -14,7 +14,10 @@ Five reference deployments, all built from the same image
 One instance handles a few hundred devices (see "Running at scale" in the main
 README). For one large estate, scale an instance out
 ([below](#scale-out-ingest-collectors-and-a-processor); sizes for 5,000 devices
-are in [docs/REFERENCE-ARCHITECTURE.md](../docs/REFERENCE-ARCHITECTURE.md)).
+are in [docs/REFERENCE-ARCHITECTURE.md](../docs/REFERENCE-ARCHITECTURE.md), and
+for [50,000](../docs/REFERENCE-ARCHITECTURE-50000.md),
+[100,000](../docs/REFERENCE-ARCHITECTURE-100000.md) and
+[500,000](../docs/REFERENCE-ARCHITECTURE-500000.md) in the documents after it).
 For many locations, run **one Cerberus per site** and connect the sites to a
 **central console**:
 
@@ -367,7 +370,14 @@ Chart values worth knowing (all in [`values.yaml`](helm/cerberus/values.yaml)):
 - `oidc.*`: single sign-on; `oidc.existingSecret` holds the client secret.
 - `storage.postgresUrl`/`clickhouseUrl`, `storage.existingSecret`, or
   `storage.postgresUrlFrom`/`clickhouseUrlFrom` (a key of any Secret).
-- `kafka.security`, `kafka.caSecret`, `kafka.sasl.*`.
+- `kafka.security`, `kafka.caSecret`, `kafka.sasl.*`; `kafka.topic` and
+  `kafka.group` give each installation sharing one Kafka cluster its own
+  topics and consumer groups.
+- `federation.site.*`: report to a central console (its URL, this site's
+  name, and its token, or `existingSecret` with a `token` key).
+  `federation.console.enabled` makes the installation the console, with
+  `federation.console.siteTokensSecret` listing the sites (`site-name token`
+  lines under a `sites` key).
 - `syslog.service.loadBalancerSourceRanges`: restrict to your management
   networks. `syslog.tls.*` adds syslog over TLS from a `kubernetes.io/tls` Secret.
 - `metrics.token`; the pods carry `prometheus.io/scrape` annotations.

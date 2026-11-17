@@ -26,14 +26,17 @@ on your devices: OPNsense, Palo Alto, FortiGate, Cisco, Juniper, Ubiquiti,
 Aruba and others send it the syslog they already can. It can also poll those devices over SNMP and draw
 the network topology they describe. It runs as a single instance for a few
 hundred devices, and scales out to collectors, detection workers and
-clustered storage for [thousands](docs/REFERENCE-ARCHITECTURE.md).
+clustered storage for [thousands](docs/REFERENCE-ARCHITECTURE.md), with reference
+architectures up to [500,000 devices](docs/REFERENCE-ARCHITECTURE-500000.md).
 
 **[Try the live demo](https://cerberusnetsec.github.io/Cerberus/demo/)**: the real
 dashboard on simulated data, read-only. · [Website](https://cerberusnetsec.github.io/Cerberus/)
 
 More documentation: [architecture](docs/ARCHITECTURE.md) ·
 [HTTP API](docs/API.md) · [deployments](deploy/README.md) ·
-[reference architecture for 5,000 devices](docs/REFERENCE-ARCHITECTURE.md) ·
+reference architectures for [5,000](docs/REFERENCE-ARCHITECTURE.md),
+[50,000](docs/REFERENCE-ARCHITECTURE-50000.md), [100,000](docs/REFERENCE-ARCHITECTURE-100000.md)
+and [500,000 devices](docs/REFERENCE-ARCHITECTURE-500000.md) ·
 [scaling plan](docs/CLUSTERING.md) · [security](SECURITY.md) ·
 [contributing](CONTRIBUTING.md)
 
@@ -52,8 +55,9 @@ More documentation: [architecture](docs/ARCHITECTURE.md) ·
   - [Detection workers](#detection-workers) · [High availability](#high-availability) · [Metrics](#metrics) ·
     [Kafka authentication](#kafka-authentication)
 - [Kubernetes: Helm and operators](#kubernetes-helm-and-operators)
-- [Many sites](#many-sites) · [Running at scale](#running-at-scale) ·
-  [5,000 devices](docs/REFERENCE-ARCHITECTURE.md)
+- [Many sites](#many-sites) · [Running at scale](#running-at-scale) · Reference architectures:
+  [5,000](docs/REFERENCE-ARCHITECTURE.md) · [50,000](docs/REFERENCE-ARCHITECTURE-50000.md) ·
+  [100,000](docs/REFERENCE-ARCHITECTURE-100000.md) · [500,000 devices](docs/REFERENCE-ARCHITECTURE-500000.md)
 - [Users, roles and single sign-on](#users-roles-and-single-sign-on) · [Audit log](#audit-log)
 - [Notifications](#notifications) · [Agents and the API](#agents-and-the-api) · [Connectors](#connectors)
 - [Configuration](#configuration) · [Security notes](#security-notes)
@@ -611,6 +615,11 @@ Compose, Swarm, Kubernetes and Helm) and the settings are in
 `ghcr.io/cerberusnetsec/cerberus`.
 For one large estate, [docs/REFERENCE-ARCHITECTURE.md](docs/REFERENCE-ARCHITECTURE.md)
 sizes a scale-out cluster (and several under one console) for 5,000 devices.
+Beyond that, clusters are grouped into regions that share Kafka, PostgreSQL
+and ClickHouse, under one console: reference architectures for
+[50,000](docs/REFERENCE-ARCHITECTURE-50000.md),
+[100,000](docs/REFERENCE-ARCHITECTURE-100000.md) and
+[500,000 devices](docs/REFERENCE-ARCHITECTURE-500000.md).
 
 ## Running at scale
 
@@ -918,7 +927,7 @@ With Docker: git clone https://github.com/CerberusNetSec/Cerberus.git, cd Cerber
 Yes, with Docker Desktop. Two things differ from Linux: have your devices send syslog over TCP rather than UDP, and set CERBERUS_DEVICE_IDENTITY=hostname, because Docker Desktop hides each device's address. For production, a Linux host is the better choice.
 
 **How many devices can Cerberus handle?**
-One instance handles a few hundred devices; the limit is message rate rather than device count. Scaled out with collectors, detection workers, Kafka, PostgreSQL and ClickHouse, one cluster is planned for about 10,000 messages a second, and several clusters can report to one console. The reference architecture in the repository sizes this for 5,000 devices.
+One instance handles a few hundred devices; the limit is message rate rather than device count. Scaled out with collectors, detection workers, Kafka, PostgreSQL and ClickHouse, one cluster is planned for about 10,000 messages a second, and several clusters can report to one console. Reference architectures in the repository size this for 5,000, 50,000, 100,000 and 500,000 devices; past one cluster, clusters are grouped into regions that share Kafka, PostgreSQL and ClickHouse.
 
 **Is Cerberus free?**
 Yes. It is open source under the Apache License 2.0, with no paid edition. It runs on your own hardware and has no telemetry: it contacts only the notification services you set up.

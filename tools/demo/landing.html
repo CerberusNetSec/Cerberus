@@ -129,7 +129,9 @@
       <div class="card"><h3>Accounts, SSO and an audit log</h3><p>Viewer, analyst and admin roles; single sign-on with any OpenID
         Connect provider; every sign-in and change recorded.</p></div>
       <div class="card"><h3>One instance, or scaled out</h3><p>A single instance handles a few hundred devices. For thousands:
-        collectors, detection workers, standby processors, Kafka, PostgreSQL and ClickHouse, with a Helm chart.</p></div>
+        collectors, detection workers, standby processors, Kafka, PostgreSQL and ClickHouse, with a Helm chart.
+        Reference architectures go up to
+        <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE-500000.md">500,000 devices</a>.</p></div>
     </div>
     <div class="shots">
       <figure><img src="screenshots/alert-guidance.png" width="1440" height="840" loading="lazy"
@@ -194,7 +196,10 @@ docker logs cerberus        # prints the generated dashboard password once</code
   <div class="wrap">
     <a href="https://github.com/CerberusNetSec/Cerberus">Source on GitHub</a>
     <a href="https://github.com/CerberusNetSec/Cerberus/releases/latest">Releases</a>
-    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE.md">Reference architecture for 5,000 devices</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE.md">Reference architectures: 5,000 devices</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE-50000.md">50,000</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE-100000.md">100,000</a>
+    <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/docs/REFERENCE-ARCHITECTURE-500000.md">500,000</a>
     <a href="https://github.com/CerberusNetSec/Cerberus/blob/main/SECURITY.md">Security</a>
     <a href="llms.txt">llms.txt</a>
     <p>Cerberus is open source under the Apache License 2.0. Every address and device in the screenshots and demo is simulated.</p>

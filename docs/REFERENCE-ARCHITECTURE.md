@@ -5,6 +5,11 @@ and access points. It is a design to start a pilot from, sized from
 measurements of each component; it has **not** been run end to end at this
 size ([what has and has not been tested](#what-has-and-has-not-been-tested)).
 
+Larger estates, built from clusters like this one:
+[50,000 devices](REFERENCE-ARCHITECTURE-50000.md) ·
+[100,000 devices](REFERENCE-ARCHITECTURE-100000.md) ·
+[500,000 devices](REFERENCE-ARCHITECTURE-500000.md).
+
 - [The short version](#the-short-version)
 - [First, your message rate](#first-your-message-rate)
 - [What one core does](#what-one-core-does)
@@ -61,7 +66,7 @@ PostgreSQL 16 and ClickHouse 24.8 on the same machine.
 | Detection worker, `source` family | Scans, sweeps, floods, brute force, beaconing and the rest | 33,000 events/s |
 | Detection worker, `target`, `pair` or `port` family | | about 70,000 events/s each |
 | ClickHouse | Stores an event | 97 bytes (simulated logs; real ones compress less) |
-| Bus | Carries an event to 4.8 topics | about 4.4 KB, before compression |
+| Bus | Carries an event to 4.8 topics | about 4.6 KB before compression, 1.0 KB after the producers' LZ4 (simulated logs) |
 
 The sizes below plan for **half** of these figures, which leaves room for
 bursts, slower cores and a node being away. Run the same measurement on your
@@ -93,7 +98,7 @@ hardware before you buy any.
 |---|---|---|---|
 | Load balancer | 1 (or a pair) | | Kubernetes `LoadBalancer` with `externalTrafficPolicy: Local` (UDP and TCP), or HAProxy with PROXY protocol (TCP and TLS). It must keep source addresses, or set `CERBERUS_DEVICE_IDENTITY=hostname` |
 | Collectors | 4 | 1 CPU, 1 GiB, 30 GiB spool volume | 10,000/s at 3,400 per collector is 3; one more so losing one changes nothing |
-| Kafka (or Redpanda) | 3 brokers | 4 CPU, 8 GiB, 500 GiB | Replication 3. About 44 MB/s before compression; with 6 hours kept that is about 950 GB uncompressed, and LZ4 usually shrinks JSON several times (not measured here) |
+| Kafka (or Redpanda) | 3 brokers | 4 CPU, 8 GiB, 500 GiB | Replication 3. About 46 MB/s before compression and 10 MB/s after LZ4 (4.7 times smaller on simulated logs; plan for 15 MB/s with real ones). With 6 hours kept, about 320 GB per copy |
 | Detection workers | 6 | 1 CPU, 1 GiB | `source` ×2 (the busiest family, and so one can be replaced without a gap), `target`, `pair`, `port` and `account` ×1 |
 | Processors | 2 | 2 CPU, 4 GiB | One active, one standby that takes over in seconds. A second active one is not possible |
 | PostgreSQL | 3 instances | 2 CPU, 4 GiB, 20 GiB | Small: alerts, devices and settings. Replicated, with automatic failover |
@@ -150,6 +155,11 @@ At 50,000 messages a second that is five or six clusters. If that is more
 than you want to run, the alternative is to send Cerberus less: keep
 connection logging on the firewall rules that matter (internet edge, server
 VLANs, management networks) and log only blocks on the rest.
+
+Many clusters can share Kafka, PostgreSQL and ClickHouse servers, each with
+its own topics and databases. How, and the sizes for 50,000, 100,000 and
+500,000 devices, are in the
+[50,000-device reference architecture](REFERENCE-ARCHITECTURE-50000.md).
 
 ## Settings that must change
 
@@ -231,7 +241,7 @@ Not tested:
 
 - A whole cluster at 10,000 messages a second for days. The limit is derived
   from the per-core measurements at half their value, not observed.
-- Kafka sizing: the bus figures are sizes before compression.
+- Kafka sizing with real logs: compression was measured on simulated ones.
 - ClickHouse holding terabytes of Cerberus events, and searches at that size.
 - An SNMP sweep of 5,000 real devices.
 - A scale-out cluster reporting to a console (supported by the same code

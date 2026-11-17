@@ -24,6 +24,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "cerberus.authSecret" -}}{{ .Values.auth.existingSecret | default (printf "%s-auth" (include "cerberus.fullname" .)) }}{{- end -}}
 {{- define "cerberus.storageSecret" -}}{{ .Values.storage.existingSecret | default (printf "%s-storage" (include "cerberus.fullname" .)) }}{{- end -}}
 {{- define "cerberus.kafkaSecret" -}}{{ .Values.kafka.sasl.existingSecret | default (printf "%s-kafka" (include "cerberus.fullname" .)) }}{{- end -}}
+{{- define "cerberus.siteSecret" -}}{{ .Values.federation.site.existingSecret | default (printf "%s-site" (include "cerberus.fullname" .)) }}{{- end -}}
 {{- define "cerberus.oidcSecret" -}}{{ .Values.oidc.existingSecret | default (printf "%s-oidc" (include "cerberus.fullname" .)) }}{{- end -}}
 {{- define "cerberus.urlsFrom" -}}{{ if and .Values.storage.postgresUrlFrom.secret .Values.storage.clickhouseUrlFrom.secret }}true{{ end }}{{- end -}}
 {{- define "cerberus.clustered" -}}{{ if or (eq .Values.mode "scaleOut") (eq .Values.storage.type "clustered") }}true{{ end }}{{- end -}}
@@ -51,6 +52,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if eq .Values.mode "scaleOut" }}
 - {name: CERBERUS_KAFKA_BOOTSTRAP, value: {{ .Values.kafka.bootstrap | quote }}}
 - {name: CERBERUS_KAFKA_TOPIC, value: {{ .Values.kafka.topic | quote }}}
+{{- if .Values.kafka.group }}
+- {name: CERBERUS_KAFKA_GROUP, value: {{ .Values.kafka.group | quote }}}
+{{- end }}
 - {name: CERBERUS_KAFKA_PARTITIONS, value: {{ .Values.kafka.partitions | quote }}}
 - {name: CERBERUS_KAFKA_REPLICATION, value: {{ .Values.kafka.replication | quote }}}
 - {name: CERBERUS_KAFKA_SECURITY, value: {{ .Values.kafka.security | quote }}}
@@ -77,6 +81,25 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - {name: CERBERUS_OIDC_LABEL, value: {{ .Values.oidc.label | quote }}}
 {{- end }}
 {{- end }}
+{{- with .Values.federation.site }}
+{{- if .consoleUrl }}
+- {name: CERBERUS_CENTRAL_URL, value: {{ .consoleUrl | quote }}}
+- {name: CERBERUS_CENTRAL_TOKEN_FILE, value: /run/secrets/cerberus/site/token}
+{{- if .name }}
+- {name: CERBERUS_SITE_NAME, value: {{ .name | quote }}}
+{{- end }}
+{{- if .caSecret }}
+- {name: CERBERUS_CENTRAL_CA, value: /run/secrets/cerberus/site-ca/ca.crt}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.federation.console.enabled }}
+- {name: CERBERUS_CENTRAL, value: "on"}
+- {name: CERBERUS_SITE_SILENT_MINUTES, value: {{ .Values.federation.console.silentMinutes | quote }}}
+{{- if .Values.federation.console.siteTokensSecret }}
+- {name: CERBERUS_SITE_TOKENS_FILE, value: /run/secrets/cerberus/sites/sites}
+{{- end }}
+{{- end }}
 {{- if .Values.metrics.token }}
 - {name: CERBERUS_METRICS_TOKEN, valueFrom: {secretKeyRef: {name: {{ printf "%s-metrics" (include "cerberus.fullname" .) }}, key: token}}}
 {{- end }}
@@ -101,6 +124,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.oidc.issuer }}
 - {name: oidc, mountPath: /run/secrets/cerberus/oidc, readOnly: true}
 {{- end }}
+{{- if .Values.federation.site.consoleUrl }}
+- {name: site, mountPath: /run/secrets/cerberus/site, readOnly: true}
+{{- if .Values.federation.site.caSecret }}
+- {name: site-ca, mountPath: /run/secrets/cerberus/site-ca, readOnly: true}
+{{- end }}
+{{- end }}
+{{- if and .Values.federation.console.enabled .Values.federation.console.siteTokensSecret }}
+- {name: sites, mountPath: /run/secrets/cerberus/sites, readOnly: true}
+{{- end }}
 {{- end -}}
 
 {{- define "cerberus.volumes" -}}
@@ -123,6 +155,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.oidc.issuer }}
 - name: oidc
   secret: {secretName: {{ include "cerberus.oidcSecret" . }}, defaultMode: 0440}
+{{- end }}
+{{- if .Values.federation.site.consoleUrl }}
+- name: site
+  secret: {secretName: {{ include "cerberus.siteSecret" . }}, defaultMode: 0440}
+{{- if .Values.federation.site.caSecret }}
+- name: site-ca
+  secret: {secretName: {{ .Values.federation.site.caSecret }}, defaultMode: 0440}
+{{- end }}
+{{- end }}
+{{- if and .Values.federation.console.enabled .Values.federation.console.siteTokensSecret }}
+- name: sites
+  secret: {secretName: {{ .Values.federation.console.siteTokensSecret }}, defaultMode: 0440}
 {{- end }}
 {{- end -}}
 

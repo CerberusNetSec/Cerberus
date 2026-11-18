@@ -1,0 +1,110 @@
+id: sophos
+name: Sophos Firewall (SFOS / XG)
+description: >
+  Sophos Firewall key=value syslog, in the older device format (priority=,
+  user_name=) and the newer one (severity=, user=): firewall rule hits, IPS,
+  anti-virus and zero-day protection, firewall, VPN and admin logins, admin
+  configuration changes and interface state. Choose the log categories under
+  System services → Log settings.
+priority: 25
+
+match:
+  message:
+    - '\blog_type="?[A-Z][\w -]*"? log_component='
+
+rules:
+  # log_type="Firewall" log_component="Firewall Rule" log_subtype="Allowed" ... src_ip=10.0.0.5 dst_ip=... protocol="TCP"
+  - name: firewall
+    when: {message: '\blog_type="?Firewall\b'}
+    parser: kv
+    rename:
+      device_name: hostname
+      log_subtype: action
+      protocol: proto
+      in_interface: interface
+      sent_bytes: bytes_sent
+      recv_bytes: bytes_received
+      user_name: user
+      fw_rule_id: policy
+    set: {event_type: traffic}
+    map:
+      action: {allowed: allow, _default: block}
+
+  # log_type="IDP" log_component="Signatures" log_subtype="Drop" ... signature_id=... signature_msg="..." rule_priority=1
+  - name: ips
+    when: {message: '\blog_type="?IDP\b'}
+    parser: kv
+    rename:
+      device_name: hostname
+      log_subtype: action
+      protocol: proto
+      in_interface: interface
+      signature_msg: threat_name
+      rule_priority: level
+      user_name: user
+    set: {event_type: threat}
+    map:
+      action: {drop: block, _default: allow}
+      level: {'1': high, '2': medium, '3': low, '4': info, _default: medium}
+
+  - name: malware
+    when: {message: '^(?=.*\blog_type="?(?:Anti-Virus|ATP|Sandbox)\b)(?!.*\blog_subtype="?Clean\b)'}
+    parser: kv
+    rename:
+      device_name: hostname
+      log_subtype: action
+      protocol: proto
+      virus: threat_name
+      threatname: threat_name
+      user_name: user
+    set: {event_type: threat, level: high}
+    map:
+      action: {allowed: allow, _default: block}
+
+  # Firewall, VPN and captive portal authentication, and admin console logins.
+  - name: login-failed
+    when: {message: '^(?=.*\bstatus="?Failed\b)(?:(?=.*\blog_subtype="?Authentication\b)|(?=.*\blog_subtype="?Admin\b)(?=.*(?i:\blog ?in\b)))'}
+    parser: kv
+    rename: {device_name: hostname, user_name: user}
+    extract:
+      - from: message
+        patterns: ['(?i)\buser (?P<user>\S+) failed']
+      - from: message
+        patterns: ['(?i)\bfrom (?P<src_ip>[0-9a-fA-F.:]+)']
+    set: {event_type: auth_failure}
+
+  - name: login
+    when: {message: '^(?=.*\bstatus="?Successful\b)(?:(?=.*\blog_subtype="?Authentication\b)|(?=.*\blog_subtype="?Admin\b)(?=.*(?i:\blog(?:ged)? ?in\b)))'}
+    parser: kv
+    rename: {device_name: hostname, user_name: user}
+    set: {event_type: auth_success}
+
+  # message="Interface 'Port4' was turned off by 'admin' from '10.166.71.1' using 'GUI'"
+  - name: config-change
+    when: {message: '^(?=.*\blog_subtype="?Admin\b)(?=.*\bstatus="?Successful\b)'}
+    parser: kv
+    rename: {device_name: hostname, user_name: user}
+    extract:
+      - from: message
+        patterns: ['\bfrom ''(?P<src_ip>[0-9a-fA-F.:]+)''']
+    set: {event_type: config_change}
+
+  # log_component="Interface" ... interface="Port2" message="Interface Port2 is Down"
+  - name: interface-status
+    when: {message: '\bmessage="Interface \S+ is (?:Up|Down)"'}
+    parser: kv
+    rename: {device_name: hostname}
+    extract:
+      - from: message
+        patterns: ['Interface (?P<interface>\S+) is (?P<state>Up|Down)']
+    set: {event_type: link_state}
+    map:
+      state: {up: up, down: down}
+
+  # Web, application and email filtering, and the rest of the event log.
+  - name: event
+    parser: kv
+    rename: {device_name: hostname, user_name: user, priority: level, severity: level}
+    set: {event_type: system}
+    map:
+      level: {emergency: critical, alert: high, critical: high, error: medium, warning: low, _default: info}

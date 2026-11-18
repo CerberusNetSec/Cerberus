@@ -7,7 +7,8 @@ Each rule uses one parser:
   regex  `pattern` with named groups; the rule applies when it matches.
   csv    positional `columns` / indexed `fields`, with nested `switch` layouts.
   kv     key=value pairs, with `rename` and `extract`.
-  json   a JSON object, with `rename`.
+  json   a JSON object, with `rename`; nested objects become dotted keys
+         (`{"alert": {"severity": 1}}` gives `alert.severity`).
 
 See connectors_builtin/*.yaml for worked examples and README.md for the schema.
 """
@@ -31,7 +32,7 @@ _STR_FIELDS = ("event_type", "action", "proto", "user", "interface", "state", "l
 _INT_FIELDS = ("src_port", "dst_port", "bytes")
 _IP_FIELDS = ("src_ip", "dst_ip")
 _COND_FIELDS = ("app", "message", "hostname", "raw")
-_KV = re.compile(r'([\w.\-]+)=("(?:[^"\\]|\\.)*"|\S*)')
+_KV = re.compile(r'''([\w.\-]+)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S*)''')
 
 
 class ConnectorError(ValueError):
@@ -60,6 +61,23 @@ class _Cond:
             return self.require_all
         results = (any(p.search(parsed[key]) for p in pats) for key, pats in self.checks)
         return all(results) if self.require_all else any(results)
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def _flatten(data: dict, prefix: str, out: dict, depth: int = 0) -> None:
+    """Nested JSON objects become dotted keys, three levels deep; lists are dropped."""
+    for key, value in data.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            if depth < 2:
+                _flatten(value, f"{name}.", out, depth + 1)
+        elif isinstance(value, (str, int, float, bool)):
+            out[name] = value
 
 
 def _prep_layout(layout: dict) -> dict:
@@ -157,7 +175,7 @@ class Rule:
                 return None
             _apply_layout(self.layout, cols, 0, out)
         elif self.parser == "kv":
-            out = {k: v.strip('"') for k, v in _KV.findall(text)}
+            out = {k: _unquote(v) for k, v in _KV.findall(text)}
             if not out:
                 return None
         elif self.parser == "json":
@@ -168,12 +186,13 @@ class Rule:
                 return None
             if not isinstance(data, dict):
                 return None
-            out = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool))}
+            _flatten(data, "", out)
         for old, new in self.rename.items():
             if old in out:
                 out[new] = out.pop(old)
         for source, patterns in self.extract:
-            text = str(out.get(source, ""))
+            # A parsed field, or else the envelope (message, raw, app, hostname).
+            text = str(out[source] if source in out else parsed.get(source, ""))
             for pat in patterns:
                 m = pat.search(text)
                 if m:

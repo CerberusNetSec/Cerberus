@@ -7,7 +7,9 @@ description: >
 priority: 10
 
 match:
-  app: ['^filterlog$', '^suricata$', '^audit$', '^php-fpm$']
+  app: ['^filterlog$', '^audit$', '^php-fpm$']
+  # Suricata's fast.log alerts; its EVE JSON is the suricata connector's.
+  message: ['^\[\d+:\d+:\d+\] ']
 
 rules:
   # https://docs.netgate.com/pfsense/en/latest/monitoring/logs/raw-filter-format.html

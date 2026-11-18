@@ -1,0 +1,77 @@
+id: suricata
+name: Suricata (EVE JSON)
+description: >
+  Suricata's EVE JSON log sent as syslog (an eve-log output with
+  `filetype: syslog`, or a log shipper forwarding eve.json): alerts, flows and
+  the protocol records. Brings detection to a network with a span or mirror
+  port, whatever its firewall. Suricata's one-line fast.log alerts are handled
+  by the OPNsense connector.
+priority: 5
+
+match:
+  message:
+    - '^\s*\{\s*"timestamp"\s*:.*"event_type"\s*:\s*"'
+
+rules:
+  # {"timestamp":"...","flow_id":1,"in_iface":"eth1","event_type":"alert","src_ip":"203.0.113.5","src_port":51515,
+  #  "dest_ip":"10.0.0.5","dest_port":80,"proto":"TCP","alert":{"action":"allowed","signature_id":2014,
+  #  "signature":"ET WEB_SERVER ...","category":"Web Application Attack","severity":1}}
+  - name: alert
+    when: {message: '"event_type"\s*:\s*"alert"'}
+    parser: json
+    rename:
+      event_type: eve_type
+      host: hostname
+      dest_ip: dst_ip
+      dest_port: dst_port
+      in_iface: interface
+      alert.signature: threat_name
+      alert.category: classification
+      alert.signature_id: sid
+      alert.severity: level
+      alert.action: action
+    set: {event_type: threat}
+    map:
+      level: {'1': high, '2': medium, '3': low, _default: info}
+      action: {allowed: allow, blocked: block, _default: ''}
+
+  # Completed connections, with bytes each way. "toserver" is from the side that opened it.
+  - name: flow
+    when: {message: '"event_type"\s*:\s*"flow"'}
+    parser: json
+    rename:
+      event_type: eve_type
+      host: hostname
+      dest_ip: dst_ip
+      dest_port: dst_port
+      in_iface: interface
+      flow.bytes_toserver: bytes_sent
+      flow.bytes_toclient: bytes_received
+      flow.action: action
+    set: {event_type: traffic}
+    map:
+      action: {drop: block, _default: allow}
+
+  - name: netflow
+    when: {message: '"event_type"\s*:\s*"netflow"'}
+    parser: json
+    rename:
+      event_type: eve_type
+      host: hostname
+      dest_ip: dst_ip
+      dest_port: dst_port
+      in_iface: interface
+      netflow.bytes: bytes_sent
+    set: {event_type: traffic}
+
+  - name: anomaly
+    when: {message: '"event_type"\s*:\s*"anomaly"'}
+    parser: json
+    rename: {event_type: eve_type, host: hostname, dest_ip: dst_ip, dest_port: dst_port, in_iface: interface}
+    set: {event_type: ids_anomaly}
+
+  # dns, http, tls, ssh, fileinfo, stats, ...: stored with the EVE type in eve_type.
+  - name: record
+    parser: json
+    rename: {event_type: eve_type, host: hostname, dest_ip: dst_ip, dest_port: dst_port, in_iface: interface}
+    set: {event_type: ids}

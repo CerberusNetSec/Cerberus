@@ -1,0 +1,147 @@
+id: sonicwall
+name: SonicWall (SonicOS)
+description: >
+  SonicOS key=value syslog ("id=firewall sn=... m=... msg=..."): connections
+  and dropped packets, IPS and anti-spyware alerts, gateway anti-virus,
+  administrator and user logins, configuration changes and interface links.
+  Use the default syslog format (Log → Syslog), not CEF. Log "Connection
+  Closed" events to get byte counts.
+priority: 25
+
+match:
+  message:
+    - '^id=\S+ sn=[0-9A-Fa-f]{12}\b'
+    - '\bsn=[0-9A-Fa-f]{12} time="[^"]+" fw=\S+ pri=\d'
+
+rules:
+  # msg="IPS Prevention Alert: WEB-ATTACKS Generic SQL Injection" sid=1188 ipscat="WEB-ATTACKS" ipspri=1
+  - name: ips
+    when: {message: '\bmsg="(?:IPS|Anti-Spyware) (?:Detection|Prevention) Alert'}
+    parser: kv
+    rename: {ipspri: level, usr: user, proto: proto_service}
+    extract:
+      - from: msg
+        patterns: ['(?P<action>Detection|Prevention) Alert: (?P<threat_name>.+)$']
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+):(?P<src_port>\d+)(?::(?P<interface>[^:\s]+))?']
+      - from: dst
+        patterns: ['^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)(?::(?P<out_interface>[^:\s]+))?']
+      - from: proto_service
+        patterns: ['^(?P<proto>[a-z0-9]+)']
+    set: {event_type: threat}
+    map:
+      action: {prevention: block, _default: allow}
+      level: {'1': high, '2': medium, '3': low, _default: medium}
+
+  - name: antivirus
+    when: {message: '\bmsg="Gateway Anti-Virus Alert'}
+    parser: kv
+    rename: {usr: user, proto: proto_service}
+    extract:
+      - from: msg
+        patterns: ['Alert: (?P<threat_name>.+?)(?: blocked\.?)?$']
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+):(?P<src_port>\d+)(?::(?P<interface>[^:\s]+))?']
+      - from: dst
+        patterns: ['^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)(?::(?P<out_interface>[^:\s]+))?']
+      - from: proto_service
+        patterns: ['^(?P<proto>[a-z0-9]+)']
+    set: {event_type: threat, level: high, action: block}
+
+  # msg="Administrator login denied due to bad credentials" ... usr="admin" src=203.0.113.5::X1
+  - name: login-failed
+    when: {message: '(?i)\bmsg="[^"]*(?:login denied|bad credentials|login fail|authentication fail|incorrect password)'}
+    parser: kv
+    rename: {usr: user}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+)(?::\d*)?(?::(?P<interface>[^:\s]+))?']
+      - from: msg
+        patterns: ['(?i)\buser(?:name)? ''?(?P<user>[^'' ]+)''?']
+    set: {event_type: auth_failure}
+
+  - name: login
+    when: {message: '(?i)\bmsg="[^"]*(?:login allowed|logged in|login succe)'}
+    parser: kv
+    rename: {usr: user}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+)(?::\d*)?(?::(?P<interface>[^:\s]+))?']
+    set: {event_type: auth_success}
+
+  - name: config-change
+    when: {message: '(?i)\bmsg="[^"]*(?:configuration (?:was )?change|preferences (?:saved|imported|changed))'}
+    parser: kv
+    rename: {usr: user}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+)']
+    set: {event_type: config_change}
+
+  # msg="Interface X2 Link Is Down"
+  - name: interface-status
+    when: {message: '\bmsg="Interface \S+ Link Is (?:Up|Down)'}
+    parser: kv
+    extract:
+      - from: msg
+        patterns: ['Interface (?P<interface>\S+) Link Is (?P<state>Up|Down)']
+    set: {event_type: link_state}
+    map:
+      state: {up: up, down: down}
+
+  # Logged as well as "Connection Closed"; kept, but not counted as a second connection.
+  - name: connection-opened
+    when: {message: '\bm=98\b|\bmsg="Connection Opened"'}
+    parser: kv
+    rename: {usr: user, proto: proto_service}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+):(?P<src_port>\d+)(?::(?P<interface>[^:\s]+))?']
+      - from: dst
+        patterns: ['^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)(?::(?P<out_interface>[^:\s]+))?']
+      - from: proto_service
+        patterns: ['^(?P<proto>[a-z0-9]+)']
+    set: {event_type: session_start}
+
+  - name: web
+    when: {message: '\bm=97\b'}
+    parser: kv
+    rename: {usr: user, proto: proto_service}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+):(?P<src_port>\d+)(?::(?P<interface>[^:\s]+))?']
+      - from: dst
+        patterns: ['^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)(?::(?P<out_interface>[^:\s]+))?']
+      - from: proto_service
+        patterns: ['^(?P<proto>[a-z0-9]+)']
+    set: {event_type: web}
+
+  # id=firewall sn=... m=537 msg="Connection Closed" src=10.0.0.5:50000:X0 dst=93.184.216.34:443:X1 proto=tcp/https sent=1500 rcvd=4000
+  # m=36 msg="TCP packet received on non-existent/closed connection; TCP packet dropped" ... fw_action="drop"
+  - name: traffic
+    when: {message: '\bsrc=[\d.]+:\d+\S* .*\bdst=[\d.]+:\d+'}
+    parser: kv
+    rename: {proto: proto_service, sent: bytes_sent, rcvd: bytes_received, usr: user, fw_action: action}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+):(?P<src_port>\d+)(?::(?P<interface>[^:\s]+))?']
+      - from: dst
+        patterns: ['^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)(?::(?P<out_interface>[^:\s]+))?']
+      - from: proto_service
+        patterns: ['^(?P<proto>[a-z0-9]+)']
+      - from: msg
+        patterns: ['(?i)\b(?P<action>dropped|drop|denied|blocked)\b']
+    set: {event_type: traffic}
+    map:
+      action: {drop: block, dropped: block, denied: block, blocked: block, _default: allow}
+
+  # The rest. pri is the syslog level (0 emergency ... 7 debug).
+  - name: event
+    parser: kv
+    rename: {pri: level, usr: user}
+    extract:
+      - from: src
+        patterns: ['^(?P<src_ip>[\d.]+)']
+    set: {event_type: system}
+    map:
+      level: {'0': critical, '1': high, '2': high, '3': medium, '4': low, _default: info}

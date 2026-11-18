@@ -1,0 +1,148 @@
+id: meraki
+name: Cisco Meraki (MX, MS, MR)
+description: >
+  Meraki syslog ("<epoch> <device> <category> key=value ..."): MX firewall,
+  layer 7 and group policy rule hits, flows, IDS/IPS alerts, malware
+  (security events), URLs and AnyConnect logins; MS port status; MR 802.1X and
+  wireless floods; and the remaining event log. Enable the roles under Network-wide →
+  General → Reporting → Syslog servers. Admin logins and configuration changes
+  are in the dashboard's change log, not syslog.
+priority: 22
+
+match:
+  message:
+    - '^(?:1 )?\d{9,10}\.\d{3,9} \S+ (?:flows|firewall|vpn_firewall|cellular_firewall|l7_firewall|gp_firewall|ip_flow_start|ip_flow_end|urls|ids-alerts|security_event|events|airmarshal_events)\b'
+
+rules:
+  # 1374543986.038687615 MX84 firewall src=192.168.1.186 dst=8.8.8.8 mac=... protocol=udp sport=55719 dport=53 pattern: allow all
+  # 1787058162.285901262 MX67 l7_firewall src=10.10.10.3 dst=104.21.4.210 protocol=tcp sport=59526 dport=443 decision=blocked
+  - name: firewall
+    when: {message: '^(?:1 )?\S+ \S+ (?:flows|firewall|vpn_firewall|cellular_firewall|l7_firewall|gp_firewall|ip_flow_start) '}
+    parser: kv
+    rename: {protocol: proto, sport: src_port, dport: dst_port, decision: action}
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) (?P<category>\S+)']
+      - from: message
+        patterns: ['\bpattern: (?P<action>allow|deny)\b']
+      - from: src
+        patterns: ['^\[(?P<src_ip>[^\]]+)\]:(?P<src_port>\d+)$', '^(?P<src_ip>[\d.]+):(?P<src_port>\d+)$', '^(?P<src_ip>[0-9a-fA-F.:]+)$']
+      - from: dst
+        patterns: ['^\[(?P<dst_ip>[^\]]+)\]:(?P<dst_port>\d+)$', '^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)$', '^(?P<dst_ip>[0-9a-fA-F.:]+)$']
+      - from: category
+        patterns: ['^(?P<action>ip_flow_start)$']
+    set: {event_type: traffic}
+    map:
+      action: {allow: allow, allowed: allow, ip_flow_start: allow, deny: block, blocked: block, _default: ''}
+
+  - name: flow-end
+    when: {message: '^(?:1 )?\S+ \S+ ip_flow_end '}
+    parser: kv
+    rename: {protocol: proto, sport: src_port, dport: dst_port}
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) ']
+      - from: src
+        patterns: ['^\[(?P<src_ip>[^\]]+)\]:(?P<src_port>\d+)$', '^(?P<src_ip>[\d.]+):(?P<src_port>\d+)$', '^(?P<src_ip>[0-9a-fA-F.:]+)$']
+      - from: dst
+        patterns: ['^\[(?P<dst_ip>[^\]]+)\]:(?P<dst_port>\d+)$', '^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)$', '^(?P<dst_ip>[0-9a-fA-F.:]+)$']
+    set: {event_type: session_end}
+
+  # ... ids-alerts signature=129:4:1 priority=3 timestamp=... direction=ingress protocol=tcp/ip src=74.125.140.132:80 dst=...
+  # ... security_event ids_alerted signature=1:28423:1 priority=1 ... decision=blocked action=rst message: EXPLOIT-KIT ...
+  - name: ids
+    when: {message: '^(?:1 )?\S+ \S+ (?:ids-alerts|security_event ids_alerted) '}
+    parser: kv
+    # Renamed in order: the response (action=rst) moves aside before decision becomes the action.
+    rename: {action: response, decision: action, signature: sid, priority: level, protocol: protocol_raw}
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) ']
+      - from: message
+        patterns: ['\bmessage: (?P<threat_name>.+)$']
+      - from: protocol_raw
+        patterns: ['^(?P<proto>tcp|udp|icmp6?|icmp)\b']
+      - from: src
+        patterns: ['^\[(?P<src_ip>[^\]]+)\]:(?P<src_port>\d+)$', '^(?P<src_ip>[\d.]+):(?P<src_port>\d+)$', '^(?P<src_ip>[0-9a-fA-F.:]+)$']
+      - from: dst
+        patterns: ['^\[(?P<dst_ip>[^\]]+)\]:(?P<dst_port>\d+)$', '^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)$', '^(?P<dst_ip>[0-9a-fA-F.:]+)$']
+    set: {event_type: threat}
+    map:
+      level: {'1': high, '2': medium, '3': low, _default: info}
+      action: {blocked: block, allowed: allow, _default: ''}
+
+  # ... security_event security_filtering_file_scanned url=... src=...:80 dst=... name='EICAR:...' disposition=malicious action=block
+  - name: malware
+    when: {message: '^(?=(?:1 )?\S+ \S+ security_event )(?=.*\bdisposition=malicious\b)'}
+    parser: kv
+    rename: {name: threat_name}
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) security_event (?P<security_event>\S+)']
+      - from: src
+        patterns: ['^\[(?P<src_ip>[^\]]+)\]:(?P<src_port>\d+)$', '^(?P<src_ip>[\d.]+):(?P<src_port>\d+)$', '^(?P<src_ip>[0-9a-fA-F.:]+)$']
+      - from: dst
+        patterns: ['^\[(?P<dst_ip>[^\]]+)\]:(?P<dst_port>\d+)$', '^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)$', '^(?P<dst_ip>[0-9a-fA-F.:]+)$']
+    set: {event_type: threat, level: high}
+    map:
+      action: {block: block, blocked: block, allow: allow, allowed: allow, _default: ''}
+
+  # Web requests are stored, not alerted on.
+  - name: urls
+    when: {message: '^(?:1 )?\S+ \S+ urls '}
+    parser: kv
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) ']
+      - from: message
+        patterns: ['\brequest: (?P<method>\S+) (?P<url>\S+)']
+      - from: src
+        patterns: ['^\[(?P<src_ip>[^\]]+)\]:(?P<src_port>\d+)$', '^(?P<src_ip>[\d.]+):(?P<src_port>\d+)$']
+      - from: dst
+        patterns: ['^\[(?P<dst_ip>[^\]]+)\]:(?P<dst_port>\d+)$', '^(?P<dst_ip>[\d.]+):(?P<dst_port>\d+)$']
+    set: {event_type: web}
+
+  # 1379967288.409907239 MS220_8P events port 3 status changed from 100fdx to down
+  - name: port-status
+    pattern: '^(?:1 )?\S+ (?P<hostname>\S+) events port (?P<interface>\S+) status changed from (?P<previous>\S+) to (?P<state>\S+)'
+    set: {event_type: link_state}
+    map:
+      state: {down: down, _default: up}
+
+  # ... events anyconnect_vpn_connect user id 'miles@meraki.net' local ip 192.168.5.224 connected from 192.168.0.1
+  - name: anyconnect-login
+    pattern: '^(?:1 )?\S+ (?P<hostname>\S+) events anyconnect_vpn_connect user id ''(?P<user>[^'']+)'' local ip (?P<assigned_ip>\S+) connected from (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # ... events type=8021x_eap_success port='' identity='employee@example.com'
+  # Network access logins: kept with the user, but they carry no source address to alert on.
+  - name: dot1x
+    when: {message: '^(?:1 )?\S+ \S+ events type=8021x_'}
+    parser: kv
+    rename: {identity: user}
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) ']
+    set: {event_type: network_access}
+
+  # ... events type=device_packet_flood packet='deauth' device='00:18:0A:27:43:80' radio='0' state='start'
+  - name: wireless-flood
+    when: {message: '^(?=(?:1 )?\S+ \S+ (?:events|airmarshal_events) )(?=.*\btype=device_packet_flood\b)(?=.*\bstate=''?start)'}
+    parser: kv
+    rename: {state: flood_state}
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) ']
+    set: {event_type: threat, level: medium, threat_name: Wireless packet flood}
+
+  - name: event
+    parser: kv
+    extract:
+      - from: message
+        patterns: ['^(?:1 )?\S+ (?P<hostname>\S+) (?P<category>\S+)']
+    set: {event_type: system}
+
+  # Events without key=value pairs ("events Cellular connection up").
+  - name: event-text
+    pattern: '^(?:1 )?\S+ (?P<hostname>\S+) (?P<category>\S+) ?(?P<detail>.*)$'
+    set: {event_type: system}

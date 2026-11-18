@@ -7050,6 +7050,20 @@
   "body": {
    "connectors": [
     {
+     "description": "Suricata's EVE JSON log sent as syslog (an eve-log output with `filetype: syslog`, or a log shipper forwarding eve.json): alerts, flows and the protocol records. Brings detection to a network with a span or mirror port, whatever its firewall. Suricata's one-line fast.log alerts are handled by the OPNsense connector.",
+     "id": "suricata",
+     "name": "Suricata (EVE JSON)",
+     "origin": "builtin",
+     "priority": 5,
+     "rules": [
+      "alert",
+      "flow",
+      "netflow",
+      "anomaly",
+      "record"
+     ]
+    },
+    {
      "description": "pf filterlog (CSV firewall log), Suricata fast-format IDS alerts and web GUI logins. SSH logins and interface link changes from the same box are picked up by the generic connector.",
      "id": "opnsense",
      "name": "OPNsense / pfSense",
@@ -7120,6 +7134,26 @@
      ]
     },
     {
+     "description": "Meraki syslog (\"<epoch> <device> <category> key=value ...\"): MX firewall, layer 7 and group policy rule hits, flows, IDS/IPS alerts, malware (security events), URLs and AnyConnect logins; MS port status; MR 802.1X and wireless floods; and the remaining event log. Enable the roles under Network-wide \u2192 General \u2192 Reporting \u2192 Syslog servers. Admin logins and configuration changes are in the dashboard's change log, not syslog.",
+     "id": "meraki",
+     "name": "Cisco Meraki (MX, MS, MR)",
+     "origin": "builtin",
+     "priority": 22,
+     "rules": [
+      "firewall",
+      "flow-end",
+      "ids",
+      "malware",
+      "urls",
+      "port-status",
+      "anyconnect-login",
+      "dot1x",
+      "wireless-flood",
+      "event",
+      "event-text"
+     ]
+    },
+    {
      "description": "UniFi gateways (USG, UDM, UXG, Cloud Gateway) and EdgeRouters: firewall rule logs, whose tag ends -A (accept), -D (drop) or -R (reject), and Threat Management (Suricata) alerts. Turn on logging for the firewall rules you want to see. Port up/down from UniFi and EdgeSwitch switches is recognised by the FASTPATH rules of the Dell/Brocade connector and the generic one.",
      "id": "ubiquiti",
      "name": "Ubiquiti UniFi / EdgeOS",
@@ -7147,6 +7181,42 @@
       "config-change",
       "interface-status",
       "restart",
+      "event"
+     ]
+    },
+    {
+     "description": "SonicOS key=value syslog (\"id=firewall sn=... m=... msg=...\"): connections and dropped packets, IPS and anti-spyware alerts, gateway anti-virus, administrator and user logins, configuration changes and interface links. Use the default syslog format (Log \u2192 Syslog), not CEF. Log \"Connection Closed\" events to get byte counts.",
+     "id": "sonicwall",
+     "name": "SonicWall (SonicOS)",
+     "origin": "builtin",
+     "priority": 25,
+     "rules": [
+      "ips",
+      "antivirus",
+      "login-failed",
+      "login",
+      "config-change",
+      "interface-status",
+      "connection-opened",
+      "web",
+      "traffic",
+      "event"
+     ]
+    },
+    {
+     "description": "Sophos Firewall key=value syslog, in the older device format (priority=, user_name=) and the newer one (severity=, user=): firewall rule hits, IPS, anti-virus and zero-day protection, firewall, VPN and admin logins, admin configuration changes and interface state. Choose the log categories under System services \u2192 Log settings.",
+     "id": "sophos",
+     "name": "Sophos Firewall (SFOS / XG)",
+     "origin": "builtin",
+     "priority": 25,
+     "rules": [
+      "firewall",
+      "ips",
+      "malware",
+      "login-failed",
+      "login",
+      "config-change",
+      "interface-status",
       "event"
      ]
     },

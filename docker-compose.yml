@@ -8,6 +8,7 @@ services:
       - "514:5514/udp"   # syslog from your devices (on Docker Desktop for Windows, send TCP: external UDP may not arrive)
       - "514:5514/tcp"
       - "8080:8080"      # dashboard
+      # - "2055:2055/udp" # NetFlow v5/v9 and IPFIX, with CERBERUS_FLOW_PORT: 2055 below
       # SNMP polling is outbound (to UDP 161 on your devices) and needs no port here.
     environment:
       # Dashboard password. If unset, one is generated and printed once in `docker logs cerberus`.
@@ -20,6 +21,7 @@ services:
       # For busy networks (see "Running at scale" in the README):
       # CERBERUS_MAX_EVENTS: 20000000     # about 850 bytes each, so ~17 GB
       # CERBERUS_TRAFFIC_SAMPLE: 20       # store 1 in 20 allowed connections; everything is still analysed
+      # CERBERUS_FLOW_PORT: 2055          # receive NetFlow/IPFIX (publish the port above too)
       TZ: ${TZ:-UTC}
     volumes:
       - cerberus-data:/data

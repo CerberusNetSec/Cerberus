@@ -1,0 +1,83 @@
+id: extreme
+name: Extreme Networks (EXOS, VOSS)
+description: >
+  ExtremeXOS <Severity:component.condition> messages (port links, logins,
+  CLI commands, spanning tree) and the link and login messages of VOSS
+  (VSP/Fabric Engine).
+priority: 28
+
+match:
+  raw:
+    - '<(?:Emer|Alert|Crit|Erro?r?|Warn|Noti|Info|Summ|Verb|Debu?g?)\w*:[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+>'
+    - '\b(?:GlobalRouter|CPU\d) (?:SW|HW) (?:INFO|WARNING|ERROR|CRITICAL|FATAL) '
+
+rules:
+  # <Info:vlan.msgs.portLinkStateDown> Port 1:5 link down
+  # <Info:vlan.msgs.portLinkStateUp> Port 1:5 link UP at speed 1 Gbps and full-duplex
+  - name: exos-link
+    source: raw
+    pattern: '<\w+:vlan\.msgs\.portLinkState(?:Up|Down)> Port (?P<interface>[\d:]+) link (?P<state>up|down|UP|DOWN)'
+    set: {event_type: link_state}
+    map:
+      state: {up: up, down: down}
+
+  # <Warn:AAA.authFail> Login failed for user admin through ssh (203.0.113.5)
+  - name: exos-login-failed
+    source: raw
+    pattern: '<\w+:AAA\.\w*[Ff]ail\w*> Login failed for user (?P<user>\S+) through (?P<service>\S+)(?: \((?P<src_ip>[0-9a-fA-F.:]+)\))?'
+    set: {event_type: auth_failure}
+
+  # <Info:AAA.authPass> Login passed for user admin through ssh (10.0.0.9)
+  - name: exos-login
+    source: raw
+    pattern: '<\w+:AAA\.\w*[Pp]ass\w*> Login passed for user (?P<user>\S+) through (?P<service>\S+)(?: \((?P<src_ip>[0-9a-fA-F.:]+)\))?'
+    set: {event_type: auth_success}
+
+  # <Info:cli.logRemoteCmd> Login: admin; Cmd: show ports; Session: ssh(10.0.0.9)  (shows are recorded, not alerted on)
+  - name: exos-show-command
+    source: raw
+    pattern: '<\w+:cli\.log\w*Cmd> (?:Login: (?P<user>[^;\s]+);? )?.*?Cmd: (?P<command>(?:show|sh|ping|traceroute|clear|top|history)\b[^;]*)'
+    set: {event_type: command}
+
+  - name: exos-command
+    source: raw
+    pattern: '<\w+:cli\.log\w*Cmd> (?:Login: (?P<user>[^;\s]+);? )?.*?Cmd: (?P<command>[^;]*)(?:.*?\((?P<src_ip>[0-9a-fA-F.:]+)\))?'
+    set: {event_type: config_change}
+
+  - name: exos-stp
+    source: raw
+    pattern: '<\w+:STP\.\w*(?:BpduGuard|BPDU|RootGuard|Loop)\w*> .*?[Pp]ort (?P<interface>[\d:]+)'
+    set: {event_type: stp_guard}
+
+  # VOSS: GlobalRouter HW INFO Link Down(1/5)
+  - name: voss-link
+    source: raw
+    pattern: '\b(?:GlobalRouter|CPU\d) (?:SW|HW) \w+ Link (?P<state>Up|Down)\((?P<interface>[\d/:]+)\)'
+    set: {event_type: link_state}
+    map:
+      state: {up: up, down: down}
+
+  # VOSS: GlobalRouter SW WARNING Login Failure: user admin from 203.0.113.5 via ssh
+  - name: voss-login-failed
+    source: raw
+    pattern: '\b(?:GlobalRouter|CPU\d) SW \w+ .*?(?i:login fail\w*|authentication fail\w*|incorrect password).*?user (?P<user>\S+).*?(?:from|IP) (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  - name: voss-login
+    source: raw
+    pattern: '\b(?:GlobalRouter|CPU\d) SW \w+ .*?user (?P<user>\S+) connected from (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  - name: exos-other
+    source: raw
+    pattern: '<(?P<level>\w+?):(?P<component>[\w.]+)> (?P<detail>.*)'
+    set: {event_type: system}
+    map:
+      level: {emerg: critical, alert: high, crit: high, erro: medium, error: medium, err: medium, warn: low, _default: info}
+
+  - name: voss-other
+    source: raw
+    pattern: '\b(?:GlobalRouter|CPU\d) (?:SW|HW) (?P<level>\w+) (?P<detail>.*)'
+    set: {event_type: system}
+    map:
+      level: {fatal: critical, critical: high, error: medium, warning: low, _default: info}

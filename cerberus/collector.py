@@ -49,6 +49,7 @@ class Collector:
         self.started = time.time()
         self.spool_peak = capacity.Peak(publisher.spool)
         self.receiver = None
+        self.flows = None
         self._tasks: list[asyncio.Task] = []
 
     # --- intake ---------------------------------------------------------------------
@@ -156,7 +157,8 @@ class Collector:
                 "bus_down": self.publisher.down,
                 "bus_error": self.publisher.last_error, "queue": self.queue.qsize(),
                 "devices": len(self.devices),
-                "tcp_refused": self.receiver.refused if self.receiver else 0}
+                "tcp_refused": self.receiver.refused if self.receiver else 0,
+                **({"flows": self.flows.status()} if self.flows and self.flows.port else {})}
 
     async def start(self) -> None:
         await self.publisher.start()

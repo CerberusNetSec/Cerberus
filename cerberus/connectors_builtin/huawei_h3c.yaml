@@ -1,0 +1,113 @@
+id: huawei_h3c
+name: Huawei VRP / HPE Comware (H3C)
+description: >
+  The %%NN MODULE/severity/MNEMONIC messages of Huawei VRP (CloudEngine, S
+  series, AR, USG) and HPE Comware / H3C switches and routers: interface
+  state, SSH, Telnet and console logins, configuration commands and saves,
+  spanning tree protection and MAC flapping.
+priority: 27
+
+match:
+  raw: ['%%\d{2}[A-Z0-9_]+/\d/[A-Z0-9_]+']
+
+rules:
+  # Huawei: %%01IFPDT/4/IF_STATE(l)[0]:Interface GigabitEthernet0/0/5 has turned into DOWN state.
+  # Huawei: %%01IFNET/4/LINK_STATE(l)[1]:The line protocol IP on the interface GigabitEthernet0/0/1 has entered the DOWN state.
+  - name: huawei-link
+    source: raw
+    pattern: '%%\d+IF(?:PDT|NET)/\d/(?:IF_STATE|LINK_STATE|IF_PVCDOWN|PHY_STATE)\w*(?:\(\w\))?(?:\[\d+\])?:.*?[Ii]nterface (?P<interface>[A-Za-z][\w/:.\-]*) has (?:turned into|entered) (?:the )?(?P<state>UP|DOWN) state'
+    set: {event_type: link_state}
+    map:
+      state: {up: up, down: down}
+
+  # Comware: %%10IFNET/3/PHY_UPDOWN: Physical state on the interface GigabitEthernet1/0/1 changed to down.
+  - name: comware-link
+    source: raw
+    pattern: '%%\d+IFNET/\d/PHY_UPDOWN: Physical state on the interface (?P<interface>\S+) changed to (?P<state>up|down)'
+    set: {event_type: link_state}
+
+  # Follows every PHY_UPDOWN, so recorded but not counted as a flap.
+  - name: comware-line-protocol
+    source: raw
+    pattern: '%%\d+IFNET/\d/LINK_UPDOWN: Line protocol state on the interface (?P<interface>\S+) changed to (?P<state>up|down)'
+    set: {event_type: link_protocol}
+
+  # Huawei: %%01SSH/5/SSH_USER_LOGIN_FAIL(s)[3]:The SSH user failed to login. (ServiceType=stelnet, UserName=admin, UserAddress=203.0.113.5, ...)
+  - name: huawei-login-failed
+    source: raw
+    pattern: '%%\d+(?:SSH|SSHS|TELNET|SHELL|FTPS|HTTP|AAA)/\d/\w*(?:LOGIN_FAIL|LOGINFAIL|LOGIN_FAILED|AUTH_FAIL|USER_LOGIN_FAIL)\w*(?:\(\w\))?(?:\[\d+\])?:.*?(?:UserName|User|user)\s*=\s*(?P<user>[^,\s)]*).*?(?:UserAddress|IPAddress|Ip|IP|IpAddress|SourceIP)\s*=\s*(?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  # Huawei: %%01SSH/5/SSH_USER_LOGIN(s)[1]:The SSH user succeeded in logging in. (ServiceType=stelnet, UserName=admin, UserAddress=10.0.0.9, ...)
+  - name: huawei-login
+    source: raw
+    pattern: '%%\d+(?:SSH|SSHS|TELNET|SHELL|HTTP)/\d/\w*(?:USER_LOGIN|LOGIN_SUCC\w*|LOGIN)(?:\(\w\))?(?:\[\d+\])?:.*?(?:UserName|User|user)\s*=\s*(?P<user>[^,\s)]*).*?(?:UserAddress|IPAddress|Ip|IP|IpAddress|SourceIP)\s*=\s*(?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # Comware: %%10LOGIN/5/LOGIN_FAILED: admin (in VTY0) failed to log in from 203.0.113.5.
+  # Comware: %%10SSHS/6/SSHS_AUTH_FAIL: SSH user admin (IP: 203.0.113.5) didn't pass public key authentication for wrong public key algorithm.
+  - name: comware-login-failed
+    source: raw
+    pattern: '%%\d+(?:LOGIN/\d/LOGIN_\w*FAIL\w*: (?P<user>\S+) (?:\([^)]*\) )?failed to log ?in from (?P<src_ip>[0-9a-fA-F.:]+)|SSHS/\d/SSHS_\w*FAIL\w*: SSH user (?P<user2>\S+) \(IP: (?P<src_ip2>[0-9a-fA-F.:]+)\))'
+    extract:
+      - from: user2
+        patterns: ['^(?P<user>.+)$']
+      - from: src_ip2
+        patterns: ['^(?P<src_ip>.+)$']
+    set: {event_type: auth_failure}
+
+  # Comware: %%10SHELL/5/SHELL_LOGIN: admin logged in from 10.0.0.9.
+  - name: comware-login
+    source: raw
+    pattern: '%%\d+SHELL/\d/SHELL_LOGIN: (?P<user>\S+) logged in from (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # Huawei: %%01SHELL/5/CMDRECORD(s)[5]:Recorded command information. (Task=VT0, Ip=10.0.0.9, VpnName=, User=admin, AuthenticationMethod="Local-user", Command="display version")
+  - name: huawei-show-command
+    source: raw
+    pattern: '%%\d+(?:SHELL|CLI)/\d/CMDRECORD\w*(?:\(\w\))?(?:\[\d+\])?:.*?\bIp=(?P<src_ip>[0-9a-fA-F.:]*).*?\bUser=(?P<user>[^,]*).*?\bCommand="(?P<command>(?:dis(?:play)?|ping|tracert|screen-length|return|quit|q|system-view|sys|undo terminal|terminal)\b[^"]*)"'
+    set: {event_type: command}
+
+  - name: huawei-command
+    source: raw
+    pattern: '%%\d+(?:SHELL|CLI)/\d/CMDRECORD\w*(?:\(\w\))?(?:\[\d+\])?:.*?\bIp=(?P<src_ip>[0-9a-fA-F.:]*).*?\bUser=(?P<user>[^,]*).*?\bCommand="(?P<command>[^"]*)"'
+    set: {event_type: config_change}
+
+  # Comware: %%10SHELL/6/SHELL_CMD: -Line=vty0-IPAddr=10.0.0.9-User=admin; Command is interface GigabitEthernet1/0/1
+  - name: comware-show-command
+    source: raw
+    pattern: '%%\d+SHELL/\d/SHELL_CMD: .*?IPAddr=(?P<src_ip>[0-9a-fA-F.:]+).*?User=(?P<user>[^;\s]+); Command is (?P<command>(?:dis(?:play)?|ping|tracert|screen-length|return|quit|system-view|sys)\b.*)$'
+    set: {event_type: command}
+
+  - name: comware-command
+    source: raw
+    pattern: '%%\d+SHELL/\d/SHELL_CMD: .*?IPAddr=(?P<src_ip>[0-9a-fA-F.:]+).*?User=(?P<user>[^;\s]+); Command is (?P<command>.*)$'
+    set: {event_type: config_change}
+
+  - name: config-saved
+    source: raw
+    pattern: '%%\d+(?:CFGMAN/\d/CFGMAN_CFGCHANGED|CFM/\d/(?:CFM_SAVE\w*|SAVE_FILE_RECORD)|CFG/\d/CFG_\w*)\w*(?:\(\w\))?(?:\[\d+\])?:\s*(?P<detail>.*)'
+    set: {event_type: config_change}
+
+  - name: stp-guard
+    source: raw
+    pattern: '%%\d+(?:MSTP|STP)/\d/\w*(?P<cause>BPDU_PROTECTION|ROOT_PROTECTION|LOOP_PROTECTION|BPDU_PROTECT|ROOT_PROTECT|LOOP_PROTECT)\w*(?:\(\w\))?(?:\[\d+\])?:.*?(?:port|Port|interface) (?P<interface>[A-Za-z][\w/:.\-]*)'
+    set: {event_type: stp_guard}
+
+  - name: stp-change
+    source: raw
+    pattern: '%%\d+(?:MSTP|STP)/\d/\w*(?:TC|TOPOLOGY|ROOT)\w*(?:\(\w\))?(?:\[\d+\])?:\s*(?P<detail>.*)'
+    set: {event_type: stp_change}
+
+  # Huawei: %%01L2IFPPI/4/MFLPVLANALARM(l)[2]:MAC flapping detected, VlanId = 10, MacAddress = 0011-2233-4455, Original-Port = GE0/0/1, Flapping port = GE0/0/2.
+  - name: mac-flap
+    source: raw
+    pattern: '%%\d+\w+/\d/\w*(?:MFLP|MAC_FLAP|MACFLAP)\w*(?:\(\w\))?(?:\[\d+\])?:.*?[Vv]lan\s*(?:Id\s*=\s*|ID\s*=\s*)?(?P<vlan>\d+).*?Mac\s*Address\s*=\s*(?P<mac>[0-9a-fA-F.:-]+).*?Original-Port\s*=\s*(?P<interface>[^,\s]+).*?Flapping port\s*=\s*(?P<interface2>[^,\s.]+(?:\.\d+)?)'
+    set: {event_type: mac_flap}
+
+  - name: other
+    source: raw
+    pattern: '%%\d+(?P<module>[A-Z0-9_]+)/(?P<level>\d)/(?P<mnemonic>[A-Z0-9_]+)(?:\(\w\))?(?:\[\d+\])?:\s*(?P<detail>.*)'
+    set: {event_type: system}
+    map:
+      level: {'0': critical, '1': high, '2': high, '3': medium, '4': low, _default: info}

@@ -31,6 +31,9 @@ spec:
   {{- end }}
   selector: {{- include "cerberus.selector" . | nindent 4 }}
     app.kubernetes.io/component: {{ ternary "standalone" "collector" (eq .Values.mode "standalone") }}
+  {{- if .Values.flows.enabled }}
+  sessionAffinity: ClientIP  # flow templates are per exporter: keep each on one collector
+  {{- end }}
   ports:
     {{- if .Values.syslog.tcp }}
     - {name: syslog-tcp, port: {{ .Values.syslog.service.port }}, targetPort: syslog-tcp, protocol: TCP}
@@ -40,6 +43,9 @@ spec:
     {{- end }}
     {{- if .Values.syslog.tls.enabled }}
     - {name: syslog-tls, port: {{ .Values.syslog.tls.port }}, targetPort: syslog-tls, protocol: TCP}
+    {{- end }}
+    {{- if .Values.flows.enabled }}
+    - {name: flows, port: {{ .Values.flows.port }}, targetPort: flows, protocol: UDP}
     {{- end }}
 {{- if .Values.ingress.enabled }}
 ---

@@ -1,0 +1,88 @@
+id: cisco_nxos
+name: Cisco NX-OS (Nexus)
+description: >
+  Nexus switches: interface up and down, SSH and console logins (failed and
+  accepted), configuration changes, ACL log entries, spanning tree guards and
+  MAC moves, and crashed services. Use `logging server <ip> 6` and, for the
+  hostname in each message, `logging origin-id hostname`.
+priority: 29
+
+match:
+  raw:
+    - '%(?:ETHPORT|ETH_PORT_CHANNEL|ETHPM|VSHD|AUTHPRIV|DAEMON|SYSMGR|VPC|L2FM|ACLLOG|STP)-[0-7]-[A-Z0-9_]+:'
+
+rules:
+  - name: link-admin-down
+    source: raw
+    pattern: '%ETHPORT-\d-IF_DOWN_ADMIN_DOWN: Interface (?P<interface>\S+) is down'
+    set: {event_type: link_state, state: administratively down}
+
+  - name: link-down
+    source: raw
+    pattern: '%ETHPORT-\d-IF_DOWN_(?P<cause>\w+): Interface (?P<interface>\S+) is down'
+    set: {event_type: link_state, state: down}
+
+  - name: link-up
+    source: raw
+    pattern: '%ETHPORT-\d-IF_UP: (?:Interface )?(?P<interface>[A-Za-z][\w/.\-]*) is up'
+    set: {event_type: link_state, state: up}
+
+  # %AUTHPRIV-3-SYSTEM_MSG: pam_unix(dcos_sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.5  user=admin - dcos_sshd[1234]
+  - name: login-failed-pam
+    source: raw
+    pattern: '%(?:AUTHPRIV|DAEMON)-\d-SYSTEM_MSG: pam_\w+\([^)]*\): authentication failure;.*?\brhost=(?P<src_ip>[0-9a-fA-F.:]+)(?:\s+user=(?P<user>\S+))?'
+    set: {event_type: auth_failure}
+
+  # %DAEMON-3-SYSTEM_MSG: error: PAM: Authentication failure for illegal user bob from 203.0.113.5 - dcos_sshd[1234]
+  # %AUTHPRIV-6-SYSTEM_MSG: Failed password for admin from 203.0.113.5 port 51515 ssh2 - dcos_sshd[1234]
+  - name: login-failed
+    source: raw
+    pattern: '%(?:AUTHPRIV|DAEMON)-\d-SYSTEM_MSG: (?:error: PAM: )?(?:[Aa]uthentication failure|Failed \S+) for (?:illegal user |invalid user )?(?P<user>\S+) from (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  # %AUTHPRIV-6-SYSTEM_MSG: Accepted password for admin from 10.0.0.9 port 51515 ssh2 - dcos_sshd[1234]
+  - name: login
+    source: raw
+    pattern: '%(?:AUTHPRIV|DAEMON)-\d-SYSTEM_MSG: Accepted \S+ for (?P<user>\S+) from (?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_success}
+
+  # %VSHD-5-VSHD_SYSLOG_CONFIG_I: Configured from vty by admin on 10.0.0.9@pts/0
+  - name: config-change
+    source: raw
+    pattern: '%VSHD-\d-VSHD_SYSLOG_CONFIG_I: Configured from (?P<config_source>\S+) by (?P<user>\S+?)(?: on (?:(?P<src_ip>[0-9a-fA-F.:]+)@)?(?P<line>\S+))?\s*$'
+    set: {event_type: config_change}
+
+  # %ACLLOG-6-ACLLOG_FLOW_INTERVAL: Src IP: 203.0.113.5, Dst IP: 10.0.0.5, Src Port: 51515, Dst Port: 22, Src Intf: Ethernet1/1, Protocol: "TCP"(6), Hit-count = 3
+  # Logged ACL entries, permit or deny alike: NX-OS does not say which.
+  - name: acl-log
+    source: raw
+    pattern: '%ACLLOG-\d-ACLLOG_\w+: Src IP: (?P<src_ip>[0-9a-fA-F.:]+), Dst IP: (?P<dst_ip>[0-9a-fA-F.:]+)(?:, Src Port: (?P<src_port>\d+), Dst Port: (?P<dst_port>\d+))?(?:, Src Intf: (?P<interface>[^,]+))?(?:, Protocol: "?(?P<proto>[A-Za-z]+)"?)?'
+    set: {event_type: traffic}
+
+  - name: stp-guard
+    source: raw
+    pattern: '%STP-\d-(?P<cause>BLOCK_BPDUGUARD|ROOTGUARD_BLOCK|LOOPGUARD_BLOCK|BRIDGE_ASSURANCE_BLOCK|BLOCK_PVID_\w+)\w*: .*?(?:port|Port|interface) (?P<interface>[A-Za-z][^\s,.]*(?:\.\d+)?)'
+    set: {event_type: stp_guard}
+
+  - name: stp-change
+    source: raw
+    pattern: '%STP-\d-(?:ROOT|TOPOLOGY_CHANGE\w*|BRIDGE_ROOT)\w*: (?P<detail>.*)'
+    set: {event_type: stp_change}
+
+  # %L2FM-4-L2FM_MAC_MOVE: Mac 0011.2233.4455 in vlan 10 has moved from Eth1/1 to Eth1/2
+  - name: mac-move
+    source: raw
+    pattern: '%L2FM-\d-L2FM_MAC_(?:MOVE|FLAP)\w*: Mac (?P<mac>\S+) in vlan (?P<vlan>\d+) has moved (?:from )?(?P<interface>\S+) to (?P<interface2>\S+)'
+    set: {event_type: mac_flap}
+
+  - name: service-crash
+    source: raw
+    pattern: '%SYSMGR-\d-(?:SERVICE_CRASHED|HEARTBEAT_FAILURE|CFGWRITE_ABORTED)\w*: (?P<detail>.*)'
+    set: {event_type: system, level: high}
+
+  - name: other
+    source: raw
+    pattern: '%(?P<facility_name>[A-Z0-9_]+)-(?P<level>[0-7])-(?P<mnemonic>[A-Z0-9_]+): (?P<detail>.*)'
+    set: {event_type: system}
+    map:
+      level: {'0': critical, '1': high, '2': high, '3': medium, '4': low, _default: info}

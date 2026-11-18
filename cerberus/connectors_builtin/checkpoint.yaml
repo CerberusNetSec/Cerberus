@@ -1,0 +1,97 @@
+id: checkpoint
+name: Check Point (Log Exporter)
+description: >
+  Check Point Log Exporter in its default syslog format ([key:"value"; ...]):
+  firewall accepts and drops, IPS, Anti-Bot, Anti-Virus and Threat Emulation
+  detections, SmartConsole and VPN logins, and policy installs. Log Exporter's
+  CEF output is read by the CEF connector instead.
+priority: 20
+
+match:
+  raw:
+    - '\b(?:action|product|origin|loguid|operation|administrator|auth_status):"[^"]*"[;\]]'
+
+rules:
+  # [action:"Drop"; ifdir:"inbound"; ifname:"eth1"; origin:"10.0.0.1"; ... product:"VPN-1 & FireWall-1"; proto:"6";
+  #  s_port:"51515"; service:"22"; src:"203.0.113.5"; dst:"10.0.0.5"; rule_name:"Cleanup"]
+  - name: threat
+    when: {raw: '\bproduct:"(?:IPS|SmartDefense|Anti-Bot|Anti-Virus|Anti-Malware|Threat Emulation|Threat Extraction|Threat Prevention|New Anti Virus|Zero Phishing)"'}
+    source: raw
+    parser: kv
+    separator: ":"
+    rename:
+      src: src_ip
+      dst: dst_ip
+      s_port: src_port
+      service: dst_port
+      ifname: interface
+      origin_sic_name: gateway
+      protection_name: threat_name
+      malware_action: malware_detail
+      severity: level
+    extract:
+      - from: attack
+        patterns: ['^(?P<threat_name>.+)$']
+      - from: malware_family
+        patterns: ['^(?P<threat_name>.+)$']
+    set: {event_type: threat}
+    map:
+      action: {prevent: block, drop: block, block: block, reject: block, detect: allow, inform: allow, ask: allow, _default: ''}
+      proto: {'1': icmp, '6': tcp, '17': udp, '58': icmpv6}
+      level: {'0': info, '1': low, '2': medium, '3': high, '4': critical, informational: info, low: low, medium: medium, high: high, critical: critical, _default: medium}
+
+  # SmartConsole and gateway logins: operation:"Log In"; status:"Failure"; administrator:"admin"; client_ip:"..."
+  # Remote access: auth_status:"Failed Login"; user:"jdoe"; src:"203.0.113.5"
+  - name: login-failed
+    when: {raw: '(?i)\b(?:operation:"Log ?In"; .*?status:"Fail|auth_status:"Failed Log ?In"|status:"Fail\w*"; .*?operation:"Log ?In")'}
+    source: raw
+    parser: kv
+    separator: ":"
+    rename: {administrator: user, client_ip: src_ip, src: src_ip, dst: dst_ip}
+    set: {event_type: auth_failure}
+
+  - name: login
+    when: {raw: '(?i)\b(?:operation:"Log ?In"; .*?status:"Success|auth_status:"Successful Log ?In"|status:"Success\w*"; .*?operation:"Log ?In")'}
+    source: raw
+    parser: kv
+    separator: ":"
+    rename: {administrator: user, client_ip: src_ip, src: src_ip, dst: dst_ip}
+    set: {event_type: auth_success}
+
+  # Policy installs and published changes (audit logs).
+  - name: config-change
+    when: {raw: '(?i)\boperation:"(?:Install Policy|Publish|Modify Object|Create Object|Delete Object|Modify Rule|Add Rule|Delete Rule)"'}
+    source: raw
+    parser: kv
+    separator: ":"
+    rename: {administrator: user, client_ip: src_ip}
+    set: {event_type: config_change}
+
+  - name: traffic
+    when: {raw: '\baction:"(?:Accept|Allow|Drop|Reject|Block|Encrypt|Decrypt|Key Install)"'}
+    source: raw
+    parser: kv
+    separator: ":"
+    rename:
+      src: src_ip
+      dst: dst_ip
+      s_port: src_port
+      service: dst_port
+      ifname: interface
+      rule_name: policy
+      client_outbound_bytes: bytes_sent
+      client_inbound_bytes: bytes_received
+      src_user_name: user
+    set: {event_type: traffic}
+    map:
+      action: {accept: allow, allow: allow, encrypt: allow, decrypt: allow, drop: block, reject: block, block: block, _default: ''}
+      proto: {'1': icmp, '6': tcp, '17': udp, '47': gre, '50': esp, '58': icmpv6}
+
+  - name: event
+    source: raw
+    parser: kv
+    separator: ":"
+    rename: {src: src_ip, dst: dst_ip, administrator: user, severity: level}
+    set: {event_type: system}
+    map:
+      level: {'3': high, '4': critical, high: high, critical: critical, _default: info}

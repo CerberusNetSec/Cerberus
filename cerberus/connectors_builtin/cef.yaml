@@ -1,0 +1,86 @@
+id: cef
+name: CEF (Common Event Format)
+description: >
+  Any device or product that sends ArcSight CEF over syslog: Check Point Log
+  Exporter, Sophos, Forcepoint, Trend Micro, Barracuda, Imperva, F5, Citrix and
+  many others. Connections, blocks, threats, logins and configuration changes
+  are told apart from the standard CEF keys and the event name; the rest is
+  stored. A vendor's own connector, where there is one, is tried first.
+priority: 60
+
+match:
+  raw: ['\bCEF:\d+\|']
+
+rules:
+  # Threats: an attack, malware or intrusion by name or category.
+  - name: threat
+    when: {raw: '(?i)CEF:\d+\|(?:[^|]*\|){4}[^|]*(?:attack|intrusion|ips\b|ids\b|malware|virus|spyware|botnet|\bbot\b|exploit|trojan|worm|ransom|threat|phishing|c&c|command and control|vulnerab|remote code|injection|overflow|brute.?force|scan\b|backdoor|rootkit|shellcode)|\bcat=[^=]*(?:attack|intrusion|malware|virus|exploit|threat)'}
+    source: raw
+    parser: cef
+    rename:
+      <<: &names
+        src: src_ip
+        dst: dst_ip
+        spt: src_port
+        dpt: dst_port
+        act: action
+        suser: user
+        deviceInboundInterface: interface
+        deviceOutboundInterface: out_interface
+        out: bytes_sent
+        in: bytes_received
+        dvchost: hostname
+        cef_severity: level
+        c6a2: src_ipv6
+        c6a3: dst_ipv6
+      cef_name: threat_name
+    extract: &ipv6
+      - from: src_ipv6
+        patterns: ['^(?P<src_ip>[0-9a-fA-F:]+)$']
+      - from: dst_ipv6
+        patterns: ['^(?P<dst_ip>[0-9a-fA-F:]+)$']
+    set: {event_type: threat}
+    map:
+      action: &actions {allow: allow, allowed: allow, accept: allow, accepted: allow, permit: allow, permitted: allow, pass: allow, detect: allow, detected: allow, alert: allow, log: allow, monitor: allow, _default: block}
+      level: &levels {'0': info, '1': info, '2': low, '3': low, '4': medium, '5': medium, '6': medium, '7': high, '8': high, '9': critical, '10': critical, unknown: info, low: low, medium: medium, high: high, very-high: critical, 'very high': critical, critical: critical, _default: medium}
+
+  - name: login-failed
+    when: {raw: '(?i)CEF:\d+\|(?:[^|]*\|){4}[^|]*(?:log ?in|logon|authentication|auth)[^|]*(?:fail|denied|invalid|rejected|bad)|CEF:\d+\|(?:[^|]*\|){4}[^|]*(?:fail|invalid|bad)[^|]*(?:log ?in|logon|authentication|password)'}
+    source: raw
+    parser: cef
+    rename: *names
+    set: {event_type: auth_failure}
+
+  - name: login
+    when: {raw: '(?i)CEF:\d+\|(?:[^|]*\|){4}[^|]*(?:log ?in|logon|authenticat)[^|]*(?:success|succeeded|accepted|allowed|ok\b)|CEF:\d+\|(?:[^|]*\|){4}[^|]*(?:successful|user) (?:log ?in|logon)'}
+    source: raw
+    parser: cef
+    rename: *names
+    set: {event_type: auth_success}
+
+  - name: config-change
+    when: {raw: '(?i)CEF:\d+\|(?:[^|]*\|){4}[^|]*(?:config\w*|policy|settings?|rule) (?:change|changed|modified|install\w*|updated|saved|published|added|deleted)'}
+    source: raw
+    parser: cef
+    rename: *names
+    set: {event_type: config_change}
+
+  # Connections: an address on each side and a port or protocol.
+  - name: traffic
+    when: {raw: '^(?=.*\b(?:src|c6a2)=\S)(?=.*\b(?:dst|c6a3)=\S)(?=.*\b(?:dpt|proto)=\S)'}
+    source: raw
+    parser: cef
+    rename: *names
+    extract: *ipv6
+    set: {event_type: traffic}
+    map:
+      action: *actions
+      proto: {'6': tcp, '17': udp, '1': icmp, '58': icmpv6}
+
+  - name: event
+    source: raw
+    parser: cef
+    rename: *names
+    set: {event_type: system}
+    map:
+      level: {'9': critical, '10': critical, '7': high, '8': high, very-high: critical, high: high, _default: info}

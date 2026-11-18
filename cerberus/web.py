@@ -672,6 +672,7 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
             "traffic_sample": cfg.traffic_sample,
             "refused_devices": engine.refused_devices,
             "refused_tcp": engine.receiver.refused if engine.receiver else 0,
+            "flows": engine.flows.status() if engine.flows is not None and engine.flows.port else None,
             "flush_ms": round(engine.flush_seconds * 1000),
             "unwritten": engine.unwritten,
             "events_since": db.oldest_event_ts(),
@@ -1342,6 +1343,8 @@ def create_app(cfg: Config, db: Store, engine: Engine, notifier: Notifier, polle
         }
         if engine.receiver is not None:
             out["listeners"] = engine.receiver.status()
+        if engine.flows is not None and engine.flows.port:
+            out["flows"] = engine.flows.status()
         if heartbeats is not None:
             out["collectors_and_workers"] = [{"name": n, "role": s.get("role", "collector"),
                                               "seconds_since_report": round(now - s.get("received_at", now))}

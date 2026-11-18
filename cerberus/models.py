@@ -29,7 +29,7 @@ def _octets(value: str) -> tuple[int, int] | None:
 @lru_cache(maxsize=262144)
 def clean_ip(value: str) -> str | None:
     """Return a canonical IP string, or None if the value is not an address."""
-    value = value.strip().strip("[]")
+    value = value.strip().strip("[]").rstrip(".")  # "... from 203.0.113.5." ends a sentence
     if _octets(value):
         return value
     try:

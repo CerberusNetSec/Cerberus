@@ -11,7 +11,7 @@
 [![Stars](https://img.shields.io/github/stars/CerberusNetSec/Cerberus?style=flat)](https://github.com/CerberusNetSec/Cerberus/stargazers)
 [![Open issues](https://img.shields.io/github/issues/CerberusNetSec/Cerberus)](https://github.com/CerberusNetSec/Cerberus/issues)
 
-![Connectors: 15](https://img.shields.io/badge/connectors-15-6f42c1)
+![Connectors: 25](https://img.shields.io/badge/connectors-25-6f42c1)
 ![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
 ![Tests: 332](https://img.shields.io/badge/tests-332-2ea44f)
 ![Deployments: standalone, Compose, Swarm, Kubernetes, Helm](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes%20%7C%20Helm-0366d6)
@@ -22,8 +22,9 @@ detects attacks and behaviour that is out of the ordinary (port scans, brute
 force, lateral movement, beaconing, exposed services and more), maps them to
 MITRE ATT&CK, shows them on a web dashboard with what to do about each, and
 tells you by email, Telegram, Pushbullet, webhooks or any HTTP API. No agents
-on your devices: OPNsense, Palo Alto, FortiGate, Cisco, Meraki, Juniper,
-SonicWall, Sophos, Ubiquiti, Aruba and others send it the syslog they already can. It can also poll those devices over SNMP and draw
+on your devices: OPNsense, Palo Alto, FortiGate, Check Point, Cisco, Meraki,
+Juniper, Arista, SonicWall, Sophos, WatchGuard, MikroTik, Huawei, Ubiquiti,
+Aruba and others send it the syslog (or NetFlow/IPFIX) they already can. It can also poll those devices over SNMP and draw
 the network topology they describe. It runs as a single instance for a few
 hundred devices, and scales out to collectors, detection workers and
 clustered storage for [thousands](docs/REFERENCE-ARCHITECTURE.md), with reference
@@ -136,7 +137,7 @@ Facts about Cerberus:
 - On Docker Desktop (Windows or macOS): devices must send syslog over TCP, because UDP from other machines often never arrives; and set CERBERUS_DEVICE_IDENTITY=hostname in .env, because Docker Desktop hides each device's address. The host firewall must allow inbound TCP 514.
 - On Linux, UDP works. For busy networks run `sysctl -w net.core.rmem_max=8388608`.
 - To see alerts before touching a real device: `python tools/simulate.py` (add `--tcp` on Docker Desktop). It needs Python 3 and sends simulated attacks to port 514 on this machine.
-- Devices with built-in support: OPNsense, Palo Alto, Fortinet FortiGate, Cisco IOS/IOS-XE, Cisco ASA/Firepower, Cisco Meraki, Juniper, SonicWall, Sophos Firewall, Ubiquiti, Aruba, Dell, Brocade/Ruckus, and Suricata sensors (EVE JSON). Anything else that sends standard syslog also works. The README section "Pointing devices at it" has the steps for each vendor; firewalls only log the rules that have logging switched on.
+- Devices with built-in support: OPNsense, Palo Alto, Fortinet FortiGate, Check Point, Cisco IOS/IOS-XE, Cisco NX-OS, Cisco ASA/Firepower, Cisco Meraki, Cisco wireless controllers, Juniper, Arista, SonicWall, Sophos Firewall, WatchGuard, MikroTik, Huawei, HPE Comware/H3C, Extreme, Ubiquiti, Aruba, Dell, Brocade/Ruckus, Suricata sensors (EVE JSON), anything that sends CEF, and NetFlow v5/v9/IPFIX (needs CERBERUS_FLOW_PORT and a published UDP port). Anything else that sends standard syslog also works. The README section "Pointing devices at it" has the steps for each vendor; firewalls only log the rules that have logging switched on.
 - Working means: the dashboard's "Messages / second" is above zero and the Devices page lists my devices.
 - Notifications (email, Telegram, Pushbullet, webhook, custom API call) are added in the dashboard under Settings > Notifications, each with a "Send test" button.
 - Keep it safe: only my management network should reach port 514; put the dashboard behind HTTPS if it is reachable from anywhere I do not trust; under Settings > Users, create named accounts and switch off the shared admin password.
@@ -194,7 +195,38 @@ works as normal.
 | **SonicWall** | Device → Log → Syslog: add the server, *Syslog Format* Default (not CEF), and turn on the categories to send under Log → Settings | Keep *Connection Closed* logging on: it carries the byte counts. IPS, anti-spyware and gateway anti-virus alerts, and admin and user logins, are recognised. |
 | **Sophos Firewall** | System services → Log settings: add a syslog server, then tick the categories (Firewall, IPS, Anti-Virus, ATP, Events: Admin, Authentication, System) | Both the older (19.0) and newer log formats. Firewall rules appear only when *Log firewall traffic* is on in the rule. |
 | **Suricata** (EVE JSON) | In `suricata.yaml`, an `eve-log` output with `filetype: syslog` (and `identity: suricata`), or forward `eve.json` with rsyslog or another shipper | Alerts, flows (with bytes each way) and protocol records. A sensor on a span port gives traffic and threat detection without firewall logging. On OPNsense, its fast.log alerts work too. |
+| **Check Point** | Log Exporter on the management server: `cp_log_export add name cerberus target-server <ip> target-port 514 protocol tcp format syslog` (or `format cef`), then `cp_log_export restart name cerberus` | Firewall, IPS, Anti-Bot, Anti-Virus and Threat Emulation logs, SmartConsole and VPN logins, policy installs. The CEF format is read by the CEF connector. |
+| **MikroTik RouterOS** | `/system logging action add name=cerberus target=remote remote=<ip> remote-port=514 remote-log-format=syslog`, then `/system logging add topics=info action=cerberus` (and `topics=firewall`, `topics=critical`) | Plain syslog goes over UDP only; for TCP or TLS, use `remote-log-format=cef`. RouterOS does not log a rule's action, so put DROP, BLOCK or REJECT (or ACCEPT) in the log prefix of rules with logging on. |
+| **WatchGuard Firebox** | Fireware Web UI → System → Logging → Syslog Server: add the server, format *Syslog*, and the log types to send | Allowed and denied packets appear for policies with *Send a log message* ticked. IPS, proxy, login and configuration messages are recognised. |
+| **Cisco NX-OS** (Nexus) | `logging server <ip> 6 use-vrf management`, `logging origin-id hostname`, `logging level authpriv 6` | ACL entries need the `log` keyword and `logging ip access-list cache` settings to appear; NX-OS does not say whether a logged entry permitted or denied. |
+| **Arista EOS** | `logging host <ip>`, `logging trap informational`, `logging source-interface <mgmt>` | Link changes, configuration sessions, ACL hits, spanning tree guards and MAC flaps. SSH logins arrive from `sshd` and use the generic connector. |
+| **Huawei VRP / HPE Comware (H3C)** | Huawei: `info-center loghost <ip>` and `info-center source default channel loghost log level informational`. Comware: `info-center loghost <ip>` | Interface state, SSH, Telnet and console logins, commands (shown commands are kept, others are configuration changes), saves, spanning tree protection and MAC flapping. |
+| **Extreme** (EXOS, VOSS) | EXOS: `configure syslog add <ip> vr VR-Mgmt local0` and `enable log target syslog <ip> vr VR-Mgmt local0`. VOSS: `syslog host 1 address <ip>` and `syslog host 1 enable` | Port links, logins and CLI commands (EXOS: `enable cli-config-logging`). |
+| **Cisco wireless controllers** (AireOS, Catalyst 9800) | AireOS: `config logging syslog host <ip>` and `config logging syslog level informational`. 9800: `logging host <ip>` | Client authentication failures and exclusions (Wi-Fi password guessing shows as many of them), rogue and attack reports, admin logins. |
+| **Anything that sends CEF** | Choose CEF as the syslog format: Forcepoint, Trend Micro, Barracuda, Imperva, F5, Citrix, Fortinet's and SonicWall's CEF option, and others | Connections, blocks, threats, logins and configuration changes are told apart from the standard CEF keys and the event name. A vendor's own connector, where there is one, gives more. |
+| **NetFlow / IPFIX** | Set `CERBERUS_FLOW_PORT` (2055 is usual) and publish it over UDP; point the router's, switch's or firewall's flow exporter at it | See [Flows](#flows-netflow-and-ipfix) below. |
 | Anything else | Send RFC 3164 or RFC 5424 syslog | The generic connector understands OpenSSH/PAM logins, netfilter logs and common link up/down wording. Write a connector for the rest. |
+
+### Flows (NetFlow and IPFIX)
+
+Routers, switches and firewalls that export NetFlow v5, NetFlow v9 or IPFIX
+describe every connection they forward, without a log line per firewall rule.
+Set `CERBERUS_FLOW_PORT=2055`, publish `2055:2055/udp` in `docker-compose.yml`
+(or `flows.enabled=true` in the Helm chart), and point the exporter at it. Each
+flow becomes a connection event from the exporter, and the detectors that need
+allowed connections (lateral movement, beaconing, large transfers, exposed
+services, port scans and sweeps) work on them. Cisco ASA's NSEL and IPFIX
+firewall events mark denied connections as blocked.
+
+- One event per flow record: a busy core router exports thousands a second.
+  Export from the edges and server networks, or sample at the exporter, and see
+  [Running at scale](#running-at-scale) for the rate one instance handles.
+- v9 and IPFIX send their templates every few minutes (Cisco: `template data
+  timeout 60` shortens it); records that arrive before their template are
+  dropped. `/api/summary` reports the listener under `flows`: datagrams, flow
+  records, unreadable datagrams and records that came before their template.
+- In a scale-out deployment, keep each exporter on one collector (the Helm
+  chart's syslog Service uses session affinity when flows are on).
 
 ## What it detects
 
@@ -841,8 +873,11 @@ rules:                    # first rule that applies wins
 Parsers: `regex` (named groups), `csv` (`columns` in order and/or `fields:
 {name: index}`, plus nested `switch: {field: <name>, cases: {...}, default:
 {...}}` layouts and `extract` to regex a column), `kv` (`key=value` pairs, values
-bare or in double or single quotes, with `rename`), `json` (with `rename`;
-nested objects become dotted names such as `alert.severity`). Renames apply in
+bare or in double or single quotes, with `rename`; `separator: ":"` reads
+`key:"value"` pairs instead), `json` (with `rename`; nested objects become
+dotted names such as `alert.severity`), `cef` (ArcSight CEF: the header as
+`cef_vendor`, `cef_product`, `cef_signature_id`, `cef_name` and `cef_severity`,
+and the extension's keys, whose values may contain spaces). Renames apply in
 the order written. Any rule can add `extract: [{from: <field>,
 patterns: [...]}]` to pull named groups out of a field it already parsed, as
 the Fortinet connector does to get the client address out of `ui="ssh(10.0.0.5)"`;
@@ -897,6 +932,7 @@ If a device's logs are attributed to the wrong connector, pin one on the
 | `CERBERUS_OIDC_ROLE_CLAIM`, `_ADMIN_GROUPS`, `_ANALYST_GROUPS`, `_VIEWER_GROUPS`, `_DEFAULT_ROLE` | `groups` | Which groups get which role (comma-separated), and the role for people in none of them (default: refused) |
 | `CERBERUS_COLLECTOR_NAME`, `CERBERUS_SPOOL_MB`, `CERBERUS_COLLECTOR_SILENT_SECONDS` | hostname, `1024`, `90` | Collector identity, spool size while the bus is unreachable, and when the processor calls a collector silent |
 | `CERBERUS_SYSLOG_TLS_PORT`, `_TLS_CERT`, `_TLS_KEY`, `_TLS_CLIENT_CA` | `0` | Syslog over TLS (RFC 5425), optionally requiring device certificates |
+| `CERBERUS_FLOW_PORT` | `0` | NetFlow v5/v9 and IPFIX over UDP (2055 is usual); `0` is off. See [Flows](#flows-netflow-and-ipfix) |
 | `CERBERUS_PROXY_PROTOCOL_FROM` | | Load balancer addresses whose TCP connections start with a PROXY protocol header carrying the device's address |
 
 ## Security notes
@@ -921,7 +957,7 @@ Cerberus is a free, open-source, self-hosted tool that detects attacks and unusu
 No. A SIEM collects and keeps logs from everything: servers, endpoints, cloud services. Cerberus does one part of that job: it analyses network device logs and tells a network security team what needs attention. It keeps events for days rather than years, and it can run beside a SIEM, sending its alerts there by webhook or API.
 
 **Which firewalls and switches does Cerberus support?**
-Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS and IOS-XE, Cisco ASA and Firepower, Cisco Meraki (MX, MS, MR), Juniper SRX and Junos, SonicWall, Sophos Firewall, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, RTL-Playground switches, and Suricata sensors (EVE JSON). Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file.
+Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Check Point, Cisco IOS and IOS-XE, Cisco NX-OS, Cisco ASA and Firepower, Cisco Meraki (MX, MS, MR), Cisco wireless controllers (AireOS, Catalyst 9800), Juniper SRX and Junos, Arista EOS, SonicWall, Sophos Firewall, WatchGuard Firebox, MikroTik RouterOS, Huawei VRP, HPE Comware and H3C, Extreme EXOS and VOSS, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, RTL-Playground switches, Suricata sensors (EVE JSON), and any product that sends CEF. Cerberus also receives NetFlow v5, NetFlow v9 and IPFIX. Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file.
 
 **Do I need to install agents on my devices?**
 No. Devices send syslog to Cerberus, which every firewall and managed switch can do from its own settings. Optionally Cerberus polls them over read-only SNMP to draw the network topology.

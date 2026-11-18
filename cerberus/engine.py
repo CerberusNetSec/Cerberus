@@ -258,6 +258,7 @@ class Engine:
         self._rate: deque = deque(maxlen=7)
         self._tasks: list[asyncio.Task] = []
         self.receiver = None  # set by __main__, for the health figures on the dashboard
+        self.flows = None  # the NetFlow/IPFIX listener, when this process receives
         # Which detector partitions this engine runs: None for all. The processor leaves out the
         # families detection workers run; a worker runs only its own.
         self.families: set | None = None

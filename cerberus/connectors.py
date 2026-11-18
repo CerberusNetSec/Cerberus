@@ -6,9 +6,13 @@ Each rule uses one parser:
 
   regex  `pattern` with named groups; the rule applies when it matches.
   csv    positional `columns` / indexed `fields`, with nested `switch` layouts.
-  kv     key=value pairs, with `rename` and `extract`.
+  kv     key=value pairs, with `rename` and `extract`; `separator: ":"` reads
+         key:"value" pairs instead (Check Point).
   json   a JSON object, with `rename`; nested objects become dotted keys
          (`{"alert": {"severity": 1}}` gives `alert.severity`).
+  cef    ArcSight Common Event Format: the header as cef_vendor, cef_product,
+         cef_version, cef_signature_id, cef_name and cef_severity, and the
+         extension's key=value pairs (values may contain spaces).
 
 See connectors_builtin/*.yaml for worked examples and README.md for the schema.
 """
@@ -33,6 +37,44 @@ _INT_FIELDS = ("src_port", "dst_port", "bytes")
 _IP_FIELDS = ("src_ip", "dst_ip")
 _COND_FIELDS = ("app", "message", "hostname", "raw")
 _KV = re.compile(r'''([\w.\-]+)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S*)''')
+_KV_COLON = re.compile(r'([\w.\-]+):"((?:[^"\\]|\\.)*)"')
+_CEF_KEY = re.compile(r"(?:^|(?<=\s))([A-Za-z0-9_.\-\[\]]+)=")
+_CEF_HEADER = ("cef_format", "cef_vendor", "cef_product", "cef_device_version", "cef_signature_id", "cef_name",
+               "cef_severity")
+
+
+def parse_cef(text: str) -> dict | None:
+    """CEF:Version|Vendor|Product|Version|Signature ID|Name|Severity|Extension.
+    Header fields escape | and \\ with a backslash; extension values run to the next
+    ` key=` and escape = with a backslash."""
+    start = text.find("CEF:")
+    if start < 0:
+        return None
+    text = text[start + 4:]
+    header: list[str] = []
+    field, i = [], 0
+    while i < len(text) and len(header) < 7:
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text) and text[i + 1] in "|\\":
+            field.append(text[i + 1])
+            i += 2
+            continue
+        if ch == "|":
+            header.append("".join(field).strip())
+            field = []
+        else:
+            field.append(ch)
+        i += 1
+    if len(header) < 7:
+        return None
+    out: dict = dict(zip(_CEF_HEADER, header))
+    ext = text[i:]
+    keys = [m for m in _CEF_KEY.finditer(ext) if m.start() == 0 or ext[m.start() - 1] != "\\"]
+    for n, m in enumerate(keys):
+        end = keys[n + 1].start() if n + 1 < len(keys) else len(ext)
+        value = ext[m.end():end].strip()
+        out[m.group(1)] = value.replace("\\=", "=").replace("\\n", " ").replace("\\\\", "\\")
+    return out
 
 
 class ConnectorError(ValueError):
@@ -153,7 +195,12 @@ class Rule:
             self.layout = _prep_layout(spec)
             self.set = {}  # applied by the layout, so nested cases can override it
             self.extract = []
-        elif self.parser not in ("kv", "json"):
+        elif self.parser == "kv":
+            separator = str(spec.get("separator", "="))
+            if separator not in ("=", ":"):
+                raise ConnectorError(f"rule {self.name}: kv separator must be '=' or ':'")
+            self.colon = separator == ":"
+        elif self.parser not in ("json", "cef"):
             raise ConnectorError(f"rule {self.name}: unknown parser '{self.parser}'")
 
     def apply(self, parsed: dict) -> dict | None:
@@ -175,7 +222,10 @@ class Rule:
                 return None
             _apply_layout(self.layout, cols, 0, out)
         elif self.parser == "kv":
-            out = {k: _unquote(v) for k, v in _KV.findall(text)}
+            if self.colon:
+                out = dict(_KV_COLON.findall(text))
+            else:
+                out = {k: _unquote(v) for k, v in _KV.findall(text)}
             if not out:
                 return None
         elif self.parser == "json":
@@ -187,6 +237,11 @@ class Rule:
             if not isinstance(data, dict):
                 return None
             _flatten(data, "", out)
+        elif self.parser == "cef":
+            parsed_cef = parse_cef(text)
+            if parsed_cef is None:
+                return None
+            out = parsed_cef
         for old, new in self.rename.items():
             if old in out:
                 out[new] = out.pop(old)

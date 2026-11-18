@@ -188,6 +188,9 @@ prometheus.io/path: /metrics
 {{- if .Values.syslog.tls.enabled }}
 - {name: syslog-tls, containerPort: 6514, protocol: TCP}
 {{- end }}
+{{- if .Values.flows.enabled }}
+- {name: flows, containerPort: 2055, protocol: UDP}
+{{- end }}
 {{- end -}}
 
 {{- define "cerberus.syslogEnv" -}}
@@ -200,5 +203,8 @@ prometheus.io/path: /metrics
 {{- if .Values.syslog.tls.requireClientCertificates }}
 - {name: CERBERUS_SYSLOG_TLS_CLIENT_CA, value: /run/secrets/cerberus/tls/ca.crt}
 {{- end }}
+{{- end }}
+{{- if .Values.flows.enabled }}
+- {name: CERBERUS_FLOW_PORT, value: "2055"}
 {{- end }}
 {{- end -}}

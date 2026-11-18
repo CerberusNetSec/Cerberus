@@ -1,4 +1,5 @@
-"""Juniper, Cisco ASA/Firepower, Ubiquiti, Aruba and Dell/Brocade connectors.
+"""Juniper, Cisco ASA/Firepower, Ubiquiti, Aruba, Dell/Brocade, Meraki, SonicWall, Sophos and Suricata
+connectors.
 
 Each sample is a line in the vendor's documented format, with the fields it
 must produce. Fields not listed are not checked."""
@@ -9,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cerberus.connectors import ConnectorRegistry  # noqa: E402
+from cerberus.connectors import Connector, ConnectorRegistry  # noqa: E402
 from cerberus.syslog_parser import parse_syslog  # noqa: E402
 
 REG = ConnectorRegistry()
@@ -153,6 +154,187 @@ SAMPLES = [
     ('<12>Nov 14 10:00:00 sansw01 raslogd: 2026/11/14-10:00:00, [SEC-1193], 1234, FID 128, INFO, sansw01, Security '
      'violation: Login failure attempt via SSH. IP Addr: 203.0.113.5',
      dict(connector="dell_brocade", event_type="auth_failure", src_ip="203.0.113.5")),
+
+    # --- Cisco Meraki -------------------------------------------------------------------------
+    ('<134>1 1374543986.038687615 MX84 firewall src=192.168.1.186 dst=8.8.8.8 mac=58:1F:AA:CE:61:F2 protocol=udp '
+     'sport=55719 dport=53 pattern: allow all',
+     dict(connector="meraki", hostname="MX84", event_type="traffic", action="allow", proto="udp", src_ip="192.168.1.186",
+          src_port=55719, dst_ip="8.8.8.8", dst_port=53)),
+    ('<134>1 1374543986.038687615 MX84 flows src=203.0.113.5 dst=10.0.0.5 mac=58:1F:AA:CE:61:F2 protocol=tcp '
+     'sport=51515 dport=3389 pattern: deny all',
+     dict(connector="meraki", event_type="traffic", action="block", proto="tcp", dst_port=3389)),
+    ('<134>1 1787058162.285901262 MX67 l7_firewall src=10.10.10.3 dst=104.21.4.210 protocol=tcp sport=59526 '
+     'dport=443 decision=blocked',
+     dict(connector="meraki", hostname="MX67", event_type="traffic", action="block", dst_ip="104.21.4.210", dst_port=443)),
+    ('<134>1 1792173599.743929631 MX85 gp_firewall src=10.203.1.19 dst=23.111.186.186 vlan=1 protocol=udp sport=48915 '
+     'dport=123 decision=allowed rule=vlan:1:id:3705899543372497478',
+     dict(connector="meraki", event_type="traffic", action="allow", dst_port=123)),
+    ('<134>1 1792173599.743929631 MX85 ip_flow_start src=10.0.0.5 dst=93.184.216.34 protocol=tcp sport=50000 dport=443 '
+     'translated_src_ip=198.51.100.10 translated_port=61000',
+     dict(connector="meraki", event_type="traffic", action="allow", src_ip="10.0.0.5", dst_port=443)),
+    ('<134>1 1792173599.743929631 MX85 ip_flow_end src=10.0.0.5 dst=93.184.216.34 protocol=tcp sport=50000 dport=443 '
+     'translated_src_ip=198.51.100.10 translated_port=61000',
+     dict(connector="meraki", event_type="session_end", dst_port=443)),
+    ('<134>1 1377449842.514782056 MX84 ids-alerts signature=129:4:1 priority=3 timestamp=1377449842.512569 '
+     'direction=ingress protocol=tcp/ip src=74.125.140.132:80 dst=192.168.1.10:51515 '
+     'message: STREAM5 TCP Timestamp is outside of PAWS window',
+     dict(connector="meraki", event_type="threat", level="low", proto="tcp", src_ip="74.125.140.132", src_port=80,
+          dst_ip="192.168.1.10", dst_port=51515, threat_name="STREAM5 TCP Timestamp is outside of PAWS window")),
+    ('<134>1 1468531589.810079 MX84 security_event ids_alerted signature=1:28423:1 priority=1 timestamp=1468531589.810079 '
+     'dhost=98:5A:EB:E1:81:2F direction=ingress protocol=tcp/ip src=151.101.52.238:80 dst=192.168.128.2:53023 '
+     'decision=blocked action=rst message: EXPLOIT-KIT Multiple exploit kit single digit exe detection',
+     dict(connector="meraki", event_type="threat", level="high", action="block", src_ip="151.101.52.238",
+          dst_port=53023, threat_name="EXPLOIT-KIT Multiple exploit kit single digit exe detection")),
+    ("<134>1 1468531589.810079 MX84 security_event security_filtering_file_scanned "
+     "url=http://www.eicar.org/download/eicar.com.txt src=192.168.128.2:53150 dst=188.40.238.250:80 "
+     "mac=98:5A:EB:E1:81:2F name='EICAR:EICAR_Test_File-tpd' sha256=275a021bbfb6489e54d471899f7db9d1 "
+     "disposition=malicious action=block",
+     dict(connector="meraki", event_type="threat", level="high", action="block", threat_name="EICAR:EICAR_Test_File-tpd",
+          src_ip="192.168.128.2", dst_ip="188.40.238.250")),
+    ('<134>1 1374543213.342705328 MX84 urls src=192.168.1.186:63735 dst=69.58.188.40:80 mac=58:1F:AA:CE:61:F2 '
+     'request: GET https://example.com/',
+     dict(connector="meraki", event_type="web", src_ip="192.168.1.186", dst_port=80, url="https://example.com/")),
+    ('<134>1 1379967288.409907239 MS220_8P events port 3 status changed from 100fdx to down',
+     dict(connector="meraki", hostname="MS220_8P", event_type="link_state", interface="3", state="down")),
+    ('<134>1 1379967288.409907239 MS220_8P events port 3 status changed from down to 1Gfdx',
+     dict(connector="meraki", event_type="link_state", interface="3", state="up")),
+    ("<134>1 1720045578.495767745 labs_appliance events anyconnect_vpn_connect user id 'miles@example.com' "
+     "local ip 192.168.5.224 connected from 203.0.113.5",
+     dict(connector="meraki", hostname="labs_appliance", event_type="auth_success", user="miles@example.com",
+          src_ip="203.0.113.5")),
+    ("<134>1 1380653443.857790533 MR18 events type=8021x_eap_success radio='0' vap='3' identity='woody@example.com' "
+     "aid='1849280097'",
+     dict(connector="meraki", event_type="network_access", user="woody@example.com")),
+    ("<134>1 1380653443.857790533 MR18 events type=device_packet_flood packet='deauth' device='00:18:0A:27:43:80' "
+     "radio='0' state='start'",
+     dict(connector="meraki", event_type="threat", level="medium", packet="deauth")),
+    ("<134>1 1380664922.583851938 MX84 events type=vpn_connectivity_change vpn_type='site-to-site' "
+     "peer_contact='98.68.191.209:51856' peer_ident='2814ee002c075181bb1b7478ee073860' connectivity='false'",
+     dict(connector="meraki", hostname="MX84", event_type="system", connectivity="false", vpn_type="site-to-site")),
+    ('<134>1 1380664922.583851938 MX84 events Cellular connection up',
+     dict(connector="meraki", event_type="system", detail="Cellular connection up")),
+
+    # --- SonicWall ----------------------------------------------------------------------------
+    ('<134>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=6 c=1024 m=537 '
+     "msg=\"Connection Closed\" app=49175 appName='General HTTPS' n=12345 src=10.0.0.5:50000:X0 "
+     'dst=93.184.216.34:443:X1 srcMac=00:11:22:33:44:55 proto=tcp/https sent=1500 rcvd=4000 fw_action="NA"',
+     dict(connector="sonicwall", event_type="traffic", action="allow", proto="tcp", src_ip="10.0.0.5", src_port=50000,
+          interface="X0", dst_ip="93.184.216.34", dst_port=443, out_interface="X1", bytes_sent="1500",
+          appName="General HTTPS")),
+    ('<132>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=4 c=32 m=36 '
+     'msg="TCP packet received on non-existent/closed connection; TCP packet dropped" n=7 src=203.0.113.5:51515:X1 '
+     'dst=198.51.100.10:22:X1 proto=tcp/ssh fw_action="drop"',
+     dict(connector="sonicwall", event_type="traffic", action="block", src_ip="203.0.113.5", dst_port=22, proto="tcp")),
+    ('<132>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=4 c=32 m=38 '
+     'msg="ICMP packet dropped due to Policy" n=7 src=203.0.113.5:8:X1 dst=198.51.100.10:0:X1 proto=icmp',
+     dict(connector="sonicwall", event_type="traffic", action="block", proto="icmp")),
+    ('<129>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=1 c=32 m=609 '
+     'msg="IPS Prevention Alert: WEB-ATTACKS Generic SQL Injection" sid=1188 ipscat="WEB-ATTACKS" ipspri=1 n=3 '
+     'src=203.0.113.5:51515:X1 dst=10.0.0.5:80:X0 proto=tcp/http',
+     dict(connector="sonicwall", event_type="threat", level="high", action="block", src_ip="203.0.113.5", dst_port=80,
+          threat_name="WEB-ATTACKS Generic SQL Injection")),
+    ('<131>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=3 c=32 m=608 '
+     'msg="IPS Detection Alert: INFO SIP Session Progress" sid=1188 ipscat="INFO SIP Session Progress" ipspri=3 n=3 '
+     'src=203.0.113.5:5060:X1 dst=10.0.0.5:5060:X0 proto=udp/5060',
+     dict(connector="sonicwall", event_type="threat", level="low", action="allow", proto="udp")),
+    ('<129>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=1 c=32 m=809 '
+     'msg="Gateway Anti-Virus Alert: EICAR (Test File) blocked." n=1 src=93.184.216.34:80:X1 dst=10.0.0.5:50000:X0',
+     dict(connector="sonicwall", event_type="threat", level="high", action="block", threat_name="EICAR (Test File)",
+          dst_ip="10.0.0.5")),
+    ('<133>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=5 c=32 m=30 '
+     'msg="Administrator login denied due to bad credentials" n=4 usr="admin" src=203.0.113.5::X1 dst=198.51.100.10::X1',
+     dict(connector="sonicwall", event_type="auth_failure", user="admin", src_ip="203.0.113.5")),
+    ('<134>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=6 c=32 m=29 '
+     'msg="Administrator login allowed" n=5 usr="admin" src=10.0.0.9::X0 dst=10.0.0.1::X0',
+     dict(connector="sonicwall", event_type="auth_success", user="admin", src_ip="10.0.0.9")),
+    ('<134>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=6 c=4 m=1382 '
+     'msg="Configuration changed: Access rule added" n=2 usr="admin" src=10.0.0.9::X0',
+     dict(connector="sonicwall", event_type="config_change", user="admin", src_ip="10.0.0.9")),
+    ('<130>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=2 c=16 m=1 '
+     'msg="Interface X2 Link Is Down" n=1',
+     dict(connector="sonicwall", event_type="link_state", interface="X2", state="down")),
+    ('<134>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=6 c=262144 m=98 '
+     'msg="Connection Opened" n=1 src=10.0.0.5:50000:X0 dst=93.184.216.34:443:X1 proto=tcp/https',
+     dict(connector="sonicwall", event_type="session_start", dst_port=443)),
+    ('<131>id=firewall sn=18B1690729A8 time="2026-11-14 10:00:00 UTC" fw=198.51.100.10 pri=3 c=4 m=520 '
+     'msg="Too many failed DHCP leases" n=1',
+     dict(connector="sonicwall", event_type="system", level="medium")),
+
+    # --- Sophos Firewall ----------------------------------------------------------------------
+    ('<30>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" device_id=C01001K234RXPA1 '
+     'log_id=010101600001 log_type="Firewall" log_component="Firewall Rule" log_subtype="Allowed" status="Allow" '
+     'priority=Information duration=30 fw_rule_id=5 user_name="" src_ip=10.0.0.5 dst_ip=93.184.216.34 protocol="TCP" '
+     'src_port=50000 dst_port=443 sent_bytes=1500 recv_bytes=4000 in_interface="Port1" out_interface="Port2"',
+     dict(connector="sophos", hostname="XG230", event_type="traffic", action="allow", proto="tcp", src_ip="10.0.0.5",
+          dst_port=443, interface="Port1", bytes_sent="1500", policy="5")),
+    ('<30>device_name="SFW" timestamp="2026-11-14T10:00:00+0000" device_model="XG230" device_serial_id="C01001K234RXPA1" '
+     'log_id="010102600002" log_type="Firewall" log_component="Firewall Rule" log_subtype="Denied" log_version=1 '
+     'severity="Information" fw_rule_id="0" src_ip="203.0.113.5" dst_ip="198.51.100.10" protocol="TCP" '
+     'src_port="51515" dst_port="22" in_interface="Port2"',
+     dict(connector="sophos", event_type="traffic", action="block", src_ip="203.0.113.5", dst_port=22)),
+    ('<28>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" log_id=020804407002 '
+     'log_type="IDP" log_component="Signatures" log_subtype="Drop" priority=Warning idp_policy_id=2 fw_rule_id=1 '
+     'signature_id=1151209031 signature_msg="SERVER-WEBAPP SQL injection attempt" '
+     'classification="Web Application Attack" rule_priority=1 src_ip=203.0.113.5 dst_ip=10.0.0.5 protocol="TCP" '
+     'src_port=51515 dst_port=80',
+     dict(connector="sophos", event_type="threat", action="block", level="high", src_ip="203.0.113.5", dst_port=80,
+          threat_name="SERVER-WEBAPP SQL injection attempt")),
+    ('<28>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" log_id=020804406001 '
+     'log_type="IDP" log_component="Anomaly" log_subtype="Detect" priority=Warning idp_policy_id=1 fw_rule_id=2 '
+     'signature_msg="Port scan" rule_priority=2 src_ip=203.0.113.5 dst_ip=10.0.0.5',
+     dict(connector="sophos", event_type="threat", action="allow", level="medium")),
+    ('<26>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" log_id=030906208001 '
+     'log_type="Anti-Virus" log_component="HTTPS" log_subtype="Virus" status="" priority=Critical user_name="jdoe" '
+     'virus="EICAR-AV-Test" src_ip=10.0.0.5 dst_ip=93.184.216.34 dst_port=443',
+     dict(connector="sophos", event_type="threat", action="block", level="high", threat_name="EICAR-AV-Test", user="jdoe")),
+    ('<30>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" log_id=030906208003 '
+     'log_type="Anti-Virus" log_component="HTTP" log_subtype="Clean" status="" priority=Information src_ip=10.0.0.5',
+     dict(connector="sophos", event_type="system")),
+    ('<29>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" log_id=062910617701 '
+     'log_type="Event" log_component="Admin" log_subtype="Admin" status="Failed" priority=Notice user_name="admin" '
+     'src_ip=203.0.113.5 message="User admin failed to login to Webadmin from 203.0.113.5 because of wrong credentials"',
+     dict(connector="sophos", event_type="auth_failure", user="admin", src_ip="203.0.113.5")),
+    ('<30>device_name="SFW" timestamp="2026-11-14T10:00:00+0000" log_id="062910617702" messageid="17702" '
+     'log_type="Event" log_component="Firewall Authentication" log_subtype="Authentication" status="Failed" '
+     'user="test1" client_used="Web Client" reason="wrong credentials" src_ip="203.0.113.5"',
+     dict(connector="sophos", event_type="auth_failure", user="test1", src_ip="203.0.113.5")),
+    ('<30>device_name="SFW" timestamp="2026-11-14T10:00:00+0000" log_id="062910617701" log_type="Event" '
+     'log_component="SSL VPN Authentication" log_subtype="Authentication" status="Successful" user="jdoe" '
+     'src_ip="203.0.113.7"',
+     dict(connector="sophos", event_type="auth_success", user="jdoe", src_ip="203.0.113.7")),
+    ('<30>device_name="SFW" timestamp="2026-11-14T10:00:00+0000" log_id="062009617504" messageid="17504" '
+     'log_type="Event" log_component="GUI" log_subtype="Admin" status="Successful" user="admin" '
+     "message=\"Interface 'Port4' was turned off by 'admin' from '10.166.71.1' using 'GUI'\"",
+     dict(connector="sophos", event_type="config_change", user="admin", src_ip="10.166.71.1")),
+    ('<30>device="SFW" date=2026-11-14 time=10:00:00 timezone="UTC" device_name="XG230" log_id=063411617813 '
+     'log_type="Event" log_component="Interface" log_subtype="System" priority=Information interface="Port2" '
+     'message="Interface Port2 is Down"',
+     dict(connector="sophos", event_type="link_state", interface="Port2", state="down")),
+
+    # --- Suricata EVE JSON --------------------------------------------------------------------
+    ('<9>Nov 14 10:00:00 sensor01 suricata[1234]: {"timestamp":"2026-11-14T10:00:00.000000+0000","flow_id":1,'
+     '"in_iface":"eth1","event_type":"alert","src_ip":"203.0.113.5","src_port":51515,"dest_ip":"10.0.0.5",'
+     '"dest_port":80,"proto":"TCP","alert":{"action":"allowed","gid":1,"signature_id":2014,"rev":4,'
+     '"signature":"ET WEB_SERVER SQL Injection","category":"Web Application Attack","severity":1,'
+     '"metadata":{"tag":["SQL"]}}}',
+     dict(connector="suricata", hostname="sensor01", event_type="threat", level="high", action="allow", proto="tcp",
+          src_ip="203.0.113.5", dst_ip="10.0.0.5", dst_port=80, interface="eth1",
+          threat_name="ET WEB_SERVER SQL Injection", sid="2014")),
+    ('<9>1 2026-11-14T10:00:00Z sensor01 suricata 1234 - - {"timestamp":"2026-11-14T10:00:00.000000+0000",'
+     '"event_type":"alert","src_ip":"2001:db8::5","src_port":51515,"dest_ip":"2001:db8::10","dest_port":22,'
+     '"proto":"TCP","alert":{"action":"blocked","signature_id":2001219,"signature":"ET SCAN Potential SSH Scan",'
+     '"category":"Attempted Information Leak","severity":2}}',
+     dict(connector="suricata", event_type="threat", level="medium", action="block", src_ip="2001:db8::5", dst_port=22)),
+    ('<14>Nov 14 10:00:00 sensor01 suricata[1234]: {"timestamp":"2026-11-14T10:00:00.000000+0000","flow_id":2,'
+     '"event_type":"flow","src_ip":"10.0.0.5","src_port":50000,"dest_ip":"93.184.216.34","dest_port":443,'
+     '"proto":"TCP","app_proto":"tls","flow":{"pkts_toserver":10,"pkts_toclient":8,"bytes_toserver":1500,'
+     '"bytes_toclient":4000,"start":"x","end":"y","age":3,"state":"closed","reason":"timeout","alerted":false}}',
+     dict(connector="suricata", event_type="traffic", action="", proto="tcp", src_ip="10.0.0.5", dst_port=443,
+          bytes_sent="1500", app_proto="tls")),
+    ('<14>Nov 14 10:00:00 sensor01 suricata[1234]: {"timestamp":"2026-11-14T10:00:00.000000+0000",'
+     '"event_type":"dns","src_ip":"10.0.0.5","src_port":53000,"dest_ip":"10.0.0.53","dest_port":53,"proto":"UDP",'
+     '"dns":{"type":"query","rrname":"example.com","rrtype":"A"}}',
+     dict(connector="suricata", event_type="ids", eve_type="dns", dst_port=53, **{"dns.rrname": "example.com"})),
 ]
 
 
@@ -173,7 +355,7 @@ def test_vendor_samples(line, want):
 def test_every_new_connector_loads_and_is_covered():
     assert not REG.errors, REG.errors
     ids = {c.id for c in REG.connectors}
-    new = {"cisco_asa", "juniper", "ubiquiti", "aruba", "dell_brocade"}
+    new = {"cisco_asa", "juniper", "ubiquiti", "aruba", "dell_brocade", "meraki", "sonicwall", "sophos", "suricata"}
     assert new <= ids
     covered = {w["connector"] for _, w in SAMPLES if "connector" in w}
     assert new <= covered
@@ -183,6 +365,33 @@ def test_cisco_ios_still_handles_ios():
     ev = event("<189>123: core-sw1: Nov 14 10:00:00.123 UTC: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/5, "
                "changed state to down")
     assert (ev.connector, ev.event_type, ev.state) == ("cisco_ios", "link_state", "down")
+
+
+def test_eve_json_from_an_opnsense_box_is_not_taken_by_the_opnsense_connector():
+    """A device's last connector is tried first; EVE lines from a box that also sends fast.log alerts must still
+    reach the suricata connector."""
+    fast = parse_syslog("<1>Nov 14 10:00:00 fw suricata[1]: [1:2010935:3] ET SCAN x [Classification: y] "
+                        "[Priority: 2] {TCP} 203.0.113.5:5555 -> 10.0.0.5:1433")
+    eve = parse_syslog('<1>Nov 14 10:00:00 fw suricata[1]: {"timestamp":"t","event_type":"alert",'
+                       '"src_ip":"203.0.113.5","dest_ip":"10.0.0.5","dest_port":1433,"proto":"TCP",'
+                       '"alert":{"severity":2,"signature":"x"}}')
+    assert REG.build_event(fast, 1.0, "fw", "10.0.0.1").connector == "opnsense"
+    ev = REG.build_event(eve, 1.0, "fw", "10.0.0.1", hint="opnsense")
+    assert (ev.connector, ev.event_type, ev.level, ev.dst_port) == ("suricata", "threat", "medium", 1433)
+
+
+def test_kv_single_quotes_json_nesting_and_envelope_extract():
+    conn = Connector({"id": "t", "match": "always", "rules": [
+        {"name": "kv", "when": {"message": "^kv "}, "parser": "kv",
+         "extract": [{"from": "message", "patterns": [r"^kv (?P<word>\w+)"]}]},
+        {"name": "json", "parser": "json", "rename": {"a.b.c": "deep"}},
+    ]}, "test")
+    envelope = {"raw": "", "app": "", "hostname": ""}
+    _, out = conn.parse({**envelope, "message": "kv hello name='two words' q=\"x y\" bare=z"})
+    assert (out["word"], out["name"], out["q"], out["bare"]) == ("hello", "two words", "x y", "z")
+    # Three levels of nesting are kept; deeper objects and lists are dropped.
+    _, out = conn.parse({**envelope, "message": '{"a":{"b":{"c":1,"d":{"e":2}}},"l":[1],"s":"v"}'})
+    assert out == {"deep": 1, "s": "v"}
 
 
 def test_syslog_header_variants():

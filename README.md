@@ -11,7 +11,7 @@
 [![Stars](https://img.shields.io/github/stars/CerberusNetSec/Cerberus?style=flat)](https://github.com/CerberusNetSec/Cerberus/stargazers)
 [![Open issues](https://img.shields.io/github/issues/CerberusNetSec/Cerberus)](https://github.com/CerberusNetSec/Cerberus/issues)
 
-![Connectors: 11](https://img.shields.io/badge/connectors-11-6f42c1)
+![Connectors: 15](https://img.shields.io/badge/connectors-15-6f42c1)
 ![Detectors: 24](https://img.shields.io/badge/detectors-24-d73a49)
 ![Tests: 332](https://img.shields.io/badge/tests-332-2ea44f)
 ![Deployments: standalone, Compose, Swarm, Kubernetes, Helm](https://img.shields.io/badge/deploy-standalone%20%7C%20Compose%20%7C%20Swarm%20%7C%20Kubernetes%20%7C%20Helm-0366d6)
@@ -22,8 +22,8 @@ detects attacks and behaviour that is out of the ordinary (port scans, brute
 force, lateral movement, beaconing, exposed services and more), maps them to
 MITRE ATT&CK, shows them on a web dashboard with what to do about each, and
 tells you by email, Telegram, Pushbullet, webhooks or any HTTP API. No agents
-on your devices: OPNsense, Palo Alto, FortiGate, Cisco, Juniper, Ubiquiti,
-Aruba and others send it the syslog they already can. It can also poll those devices over SNMP and draw
+on your devices: OPNsense, Palo Alto, FortiGate, Cisco, Meraki, Juniper,
+SonicWall, Sophos, Ubiquiti, Aruba and others send it the syslog they already can. It can also poll those devices over SNMP and draw
 the network topology they describe. It runs as a single instance for a few
 hundred devices, and scales out to collectors, detection workers and
 clustered storage for [thousands](docs/REFERENCE-ARCHITECTURE.md), with reference
@@ -136,7 +136,7 @@ Facts about Cerberus:
 - On Docker Desktop (Windows or macOS): devices must send syslog over TCP, because UDP from other machines often never arrives; and set CERBERUS_DEVICE_IDENTITY=hostname in .env, because Docker Desktop hides each device's address. The host firewall must allow inbound TCP 514.
 - On Linux, UDP works. For busy networks run `sysctl -w net.core.rmem_max=8388608`.
 - To see alerts before touching a real device: `python tools/simulate.py` (add `--tcp` on Docker Desktop). It needs Python 3 and sends simulated attacks to port 514 on this machine.
-- Devices with built-in support: OPNsense, Palo Alto, Fortinet FortiGate, Cisco IOS/IOS-XE, Cisco ASA/Firepower, Juniper, Ubiquiti, Aruba, Dell, Brocade/Ruckus. Anything else that sends standard syslog also works. The README section "Pointing devices at it" has the steps for each vendor; firewalls only log the rules that have logging switched on.
+- Devices with built-in support: OPNsense, Palo Alto, Fortinet FortiGate, Cisco IOS/IOS-XE, Cisco ASA/Firepower, Cisco Meraki, Juniper, SonicWall, Sophos Firewall, Ubiquiti, Aruba, Dell, Brocade/Ruckus, and Suricata sensors (EVE JSON). Anything else that sends standard syslog also works. The README section "Pointing devices at it" has the steps for each vendor; firewalls only log the rules that have logging switched on.
 - Working means: the dashboard's "Messages / second" is above zero and the Devices page lists my devices.
 - Notifications (email, Telegram, Pushbullet, webhook, custom API call) are added in the dashboard under Settings > Notifications, each with a "Send test" button.
 - Keep it safe: only my management network should reach port 514; put the dashboard behind HTTPS if it is reachable from anywhere I do not trust; under Settings > Users, create named accounts and switch off the shared admin password.
@@ -190,6 +190,10 @@ works as normal.
 | **Ubiquiti UniFi / EdgeOS** | UniFi: Settings → Control Plane → Integrations (or System → Remote Logging on older versions), syslog server and port. EdgeOS: `set system syslog host <ip> facility all level info` | Firewall rules only appear when the rule's logging is on; Threat Management alerts are included. |
 | **Aruba** | AOS-CX: `logging <ip> severity info`. AOS-S/ProCurve: `logging <ip>` and `logging severity info`. Mobility controller: `logging <ip>` with `logging level informational user` and `security` | Controller user authentication covers Wi-Fi and 802.1X logins, so password spraying against users is seen too. |
 | **Dell / Brocade** | OS10: `logging server <ip>`. OS9 and N-series: `logging <ip>`. Brocade/Ruckus ICX: `logging host <ip>`. Fabric OS: `syslogadmin --set -ip <ip>` | N-series and other FASTPATH switches (UniFi gen 1, EdgeSwitch) send `%% Link Up/Down`, which is recognised too. |
+| **Cisco Meraki** | Network-wide → General → Reporting → Syslog servers: add the server (UDP/514) and its roles (*Appliance event log*, *Flows*, *Security events*, *IDS alerts*, *URLs*, *Switch event log*, *Wireless event log*) | Meraki sends UDP only, so on Docker Desktop relay it through a Linux host. Firewall rules appear only with their syslog box ticked. Admin logins and configuration changes are in the dashboard's change log, not syslog. |
+| **SonicWall** | Device → Log → Syslog: add the server, *Syslog Format* Default (not CEF), and turn on the categories to send under Log → Settings | Keep *Connection Closed* logging on: it carries the byte counts. IPS, anti-spyware and gateway anti-virus alerts, and admin and user logins, are recognised. |
+| **Sophos Firewall** | System services → Log settings: add a syslog server, then tick the categories (Firewall, IPS, Anti-Virus, ATP, Events: Admin, Authentication, System) | Both the older (19.0) and newer log formats. Firewall rules appear only when *Log firewall traffic* is on in the rule. |
+| **Suricata** (EVE JSON) | In `suricata.yaml`, an `eve-log` output with `filetype: syslog` (and `identity: suricata`), or forward `eve.json` with rsyslog or another shipper | Alerts, flows (with bytes each way) and protocol records. A sensor on a span port gives traffic and threat detection without firewall logging. On OPNsense, its fast.log alerts work too. |
 | Anything else | Send RFC 3164 or RFC 5424 syslog | The generic connector understands OpenSSH/PAM logins, netfilter logs and common link up/down wording. Write a connector for the rest. |
 
 ## What it detects
@@ -836,10 +840,15 @@ rules:                    # first rule that applies wins
 
 Parsers: `regex` (named groups), `csv` (`columns` in order and/or `fields:
 {name: index}`, plus nested `switch: {field: <name>, cases: {...}, default:
-{...}}` layouts and `extract` to regex a column), `kv` (`key=value` pairs, with
-`rename`), `json` (with `rename`). Any rule can add `extract: [{from: <field>,
+{...}}` layouts and `extract` to regex a column), `kv` (`key=value` pairs, values
+bare or in double or single quotes, with `rename`), `json` (with `rename`;
+nested objects become dotted names such as `alert.severity`). Renames apply in
+the order written. Any rule can add `extract: [{from: <field>,
 patterns: [...]}]` to pull named groups out of a field it already parsed, as
-the Fortinet connector does to get the client address out of `ui="ssh(10.0.0.5)"`. `source: raw` runs a rule against the text
+the Fortinet connector does to get the client address out of `ui="ssh(10.0.0.5)"`;
+`from: message` reads the message itself when no parsed field has that name,
+which is how the Meraki connector reads the device name in front of its
+key=value pairs. Extracted values fill gaps and never replace a parsed field. `source: raw` runs a rule against the text
 before the header was stripped.
 
 Fields the detectors use:
@@ -912,7 +921,7 @@ Cerberus is a free, open-source, self-hosted tool that detects attacks and unusu
 No. A SIEM collects and keeps logs from everything: servers, endpoints, cloud services. Cerberus does one part of that job: it analyses network device logs and tells a network security team what needs attention. It keeps events for days rather than years, and it can run beside a SIEM, sending its alerts there by webhook or API.
 
 **Which firewalls and switches does Cerberus support?**
-Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS and IOS-XE, Cisco ASA and Firepower, Juniper SRX and Junos, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, and RTL-Playground switches. Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file.
+Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS and IOS-XE, Cisco ASA and Firepower, Cisco Meraki (MX, MS, MR), Juniper SRX and Junos, SonicWall, Sophos Firewall, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, RTL-Playground switches, and Suricata sensors (EVE JSON). Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file.
 
 **Do I need to install agents on my devices?**
 No. Devices send syslog to Cerberus, which every firewall and managed switch can do from its own settings. Optionally Cerberus polls them over read-only SNMP to draw the network topology.

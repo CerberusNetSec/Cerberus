@@ -144,6 +144,7 @@ class Config:
     oidc_default_role: str = ""
     # Ingest options for any mode that receives syslog.
     syslog_tls_port: int = 0
+    flow_port: int = 0  # NetFlow v5/v9 and IPFIX over UDP; 0 is off
     syslog_tls_cert: str = ""
     syslog_tls_key: str = ""
     syslog_tls_client_ca: str = ""
@@ -208,6 +209,7 @@ class Config:
             oidc_viewer_groups=env("CERBERUS_OIDC_VIEWER_GROUPS", ""),
             oidc_default_role=env("CERBERUS_OIDC_DEFAULT_ROLE", "").strip().lower(),
             syslog_tls_port=_int("CERBERUS_SYSLOG_TLS_PORT", 0),
+            flow_port=_int("CERBERUS_FLOW_PORT", 0),
             syslog_tls_cert=env("CERBERUS_SYSLOG_TLS_CERT", ""),
             syslog_tls_key=env("CERBERUS_SYSLOG_TLS_KEY", ""),
             syslog_tls_client_ca=env("CERBERUS_SYSLOG_TLS_CLIENT_CA", ""),

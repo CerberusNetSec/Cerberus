@@ -19,6 +19,15 @@ _R3164 = re.compile(
 _ASA = re.compile(
     r"^[A-Z][a-z]{2} [ \d]\d \d{4} \d\d:\d\d:\d\d(?:\.\d+)?(?:(?: [A-Z]{2,5})?: | ([\w.\-]+) : )(.*)$", re.S
 )
+# Huawei VRP "Mon dd yyyy hh:mm:ss host ..." and HPE Comware/H3C "Mon dd hh:mm:ss yyyy host ...".
+_YEAR = re.compile(
+    r"^[A-Z][a-z]{2} [ \d]\d (?:\d{4} \d\d:\d\d:\d\d|\d\d:\d\d:\d\d \d{4})(?:\.\d+)?(?: ?[+-]\d\d:?\d\d| [A-Z]{2,5})? "
+    r"([\w.\-]+) (.*)$", re.S
+)
+# Cisco NX-OS: "[: ]yyyy Mon dd hh:mm:ss[.mmm][ TZ]:[ hostname] %FAC-SEV-MNEMONIC: text"
+_NXOS = re.compile(
+    r"^:? ?\d{4} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d(?:\.\d+)?(?: [A-Z]{2,5})?:? (?:([\w.\-]+):? )?(%.*)$", re.S
+)
 _TAG = re.compile(r"^([A-Za-z0-9_./()-]{1,48})(?:\[(\d+)\])?: ?(.*)$", re.S)
 # Cisco IOS: "[seq: ][origin-id: ][*]Mon dd [yyyy ]hh:mm:ss[.mmm][ TZ]: %FAC-SEV-MNEMONIC: text"
 _CISCO = re.compile(
@@ -75,6 +84,18 @@ def parse_syslog(data: bytes | str) -> dict:
         out["message"] = m.group(2)
         return out
 
+    m = _YEAR.match(text)
+    if m:
+        out["hostname"] = m.group(1)
+        rest = m.group(2)
+        tag = _TAG.match(rest)
+        if tag and not rest.startswith("%"):
+            out["app"] = tag.group(1)
+            out["message"] = tag.group(3)
+        else:
+            out["message"] = rest
+        return out
+
     m = _R3164.match(text)
     if m:
         out["hostname"] = m.group(2)
@@ -88,6 +109,12 @@ def parse_syslog(data: bytes | str) -> dict:
         return out
 
     m = _CISCO.match(text)
+    if m:
+        out["hostname"] = m.group(1) or ""
+        out["message"] = m.group(2)
+        return out
+
+    m = _NXOS.match(text)
     if m:
         out["hostname"] = m.group(1) or ""
         out["message"] = m.group(2)

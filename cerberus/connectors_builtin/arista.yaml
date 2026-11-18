@@ -1,0 +1,60 @@
+id: arista
+name: Arista EOS
+description: >
+  EOS agents' %FACILITY-SEVERITY-MNEMONIC messages: link state (EOS reports it
+  as line protocol), configuration changes and sessions, ACL hits, spanning
+  tree guards, MAC flaps and errdisabled ports. Logins come from sshd and are
+  read by the generic connector.
+priority: 29
+
+match:
+  # "host Agent: %FAC-SEV-MNEMONIC: ..." - IOS never puts a process name in front.
+  raw: ['^(?:[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d|\d{4}-\d\d-\d\dT\S+) \S+ [A-Za-z][\w-]*(?:\[\d+\])?: %[A-Z0-9_]+-[0-7]-[A-Z0-9_]+:']
+  app: ['^(?:Ebra|Aaa|ConfigAgent|Cli|Stp|StpTxRx|Lag|Lldp|Acl|AclAgent|Bridging|SuperServer|Fhrp|Mlag|PortSec|Sysdb|ProcMgr|Launcher|EventMgr|Strata\w*|Sand\w*|Fap\w*)(?:-\w+)?$']
+
+rules:
+  # Ebra: %LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet5, changed state to down
+  - name: link
+    pattern: '%LINEPROTO-\d-UPDOWN: Line protocol on Interface (?P<interface>[^,\s]+), changed state to (?P<state>up|down|lowerlayerdown|notpresent)'
+    set: {event_type: link_state}
+    map:
+      state: {up: up, _default: down}
+
+  # ConfigAgent: %SYS-5-CONFIG_I: Configured from console by admin on vty3 (10.0.0.9)
+  # ConfigAgent: %SYS-5-CONFIG_SESSION_COMMIT_SUCCESS: Configuration session s1 committed by user admin on vty3 (10.0.0.9)
+  - name: config-change
+    pattern: '%SYS-\d-CONFIG_(?:I|SESSION_COMMIT_SUCCESS|E|STARTUP)\w*: .*?\bby (?:user )?(?P<user>[^\s,]+)(?: on (?P<line>\S+))?(?: \((?P<src_ip>[0-9a-fA-F.:]+)\))?'
+    set: {event_type: config_change}
+
+  # Acl: %ACL-6-IPACCESS: list INBOUND Ethernet1 denied tcp 203.0.113.5(51515) -> 10.0.0.5(22)
+  - name: acl-hit
+    pattern: '%ACL-\d-IPACCESS: list (?P<acl>\S+)(?: (?P<interface>[A-Za-z][\w/.\-]*))? (?P<action>permitted|denied) (?P<proto>\w+) (?P<src_ip>[0-9a-fA-F.:]+)(?:\((?P<src_port>\d+)\))? -> (?P<dst_ip>[0-9a-fA-F.:]+)(?:\((?P<dst_port>\d+)\))?'
+    set: {event_type: traffic}
+    map: {action: {permitted: allow, denied: block}}
+
+  - name: stp-guard
+    pattern: '%(?:SPANTREE|STP)-\d-\w*(?P<cause>BPDUGUARD|ROOTGUARD|LOOPGUARD)\w*: .*?(?P<interface>(?:Ethernet|Port-Channel|Et|Po)[\d/]+)'
+    set: {event_type: stp_guard}
+
+  - name: stp-change
+    pattern: '%(?:SPANTREE|STP)-\d-\w*(?:ROOT|TOPOLOGY)\w*: (?P<detail>.*)'
+    set: {event_type: stp_change}
+
+  # Bridging: %ETH-4-HOST_FLAPPING: Host 00:11:22:33:44:55 in VLAN 10 is flapping between interface Ethernet1 and interface Ethernet2
+  - name: mac-flap
+    pattern: '%ETH-\d-HOST_FLAPPING: Host (?P<mac>\S+) in VLAN (?P<vlan>\d+) is flapping between interface (?P<interface>\S+) and interface (?P<interface2>\S+)'
+    set: {event_type: mac_flap}
+
+  - name: err-disable
+    pattern: '%(?:ETH|PORTSECURITY|XCVR)-\d-\w*(?:ERRDISABLE|VIOLATION)\w*: .*?(?P<interface>(?:Ethernet|Et)[\d/]+)'
+    set: {event_type: security_violation}
+
+  - name: restart
+    pattern: '%SYS-\d-(?:SYSTEM_RESTARTED|RELOAD\w*): (?P<detail>.*)'
+    set: {event_type: system_restart}
+
+  - name: other
+    pattern: '%(?P<facility_name>[A-Z0-9_]+)-(?P<level>[0-7])-(?P<mnemonic>[A-Z0-9_]+): (?P<detail>.*)'
+    set: {event_type: system}
+    map:
+      level: {'0': critical, '1': high, '2': high, '3': medium, '4': low, _default: info}

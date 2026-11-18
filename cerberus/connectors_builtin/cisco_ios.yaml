@@ -7,7 +7,8 @@ description: >
 priority: 30
 
 match:
-  raw: ['%[A-Z0-9_]+-[0-7]-[A-Z0-9_]+:']
+  # Not the message families of NX-OS (cisco_nxos) and wireless controllers (cisco_wlc).
+  raw: ['%(?!(?:ETHPORT|ETH_PORT_CHANNEL|ETHPM|VSHD|AUTHPRIV|DAEMON|SYSMGR|VPC|L2FM|ACLLOG|STP|APF|LWAPP|CAPWAP|RRM|APMGR|WIPS|EMWEB|RLDP|MM|DTL|CLIENT_ORCH_LOG|CLIENT_EXCLUSION_SERVER|EWLC_\w+|APMGR_TRACE_MESSAGE|CAPWAPAC_SMGR_TRACE_MESSAGE|ROGUE\w*)-[0-7]-)[A-Z0-9_]+-[0-7]-[A-Z0-9_]+:']
 
 rules:
   - name: link-updown
@@ -43,7 +44,10 @@ rules:
 
   - name: dot1x-failed
     source: raw
-    pattern: '%(?:DOT1X|MAB|AUTHMGR)-\d-FAIL: .*?client \((?P<mac>[0-9a-fA-F.:]+)\) on Interface (?P<interface>\S+)'
+    pattern: '%(?:DOT1X|MAB|AUTHMGR|SESSION_MGR)-\d-FAIL: .*?client \((?P<mac>[0-9a-fA-F.:]+)\) on Interface (?P<interface>\S+)'
+    extract:
+      - from: raw
+        patterns: ['\bUsername: (?P<user>\S+)']
     set: {event_type: auth_failure}
 
   - name: config-change

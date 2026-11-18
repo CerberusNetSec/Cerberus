@@ -1,0 +1,63 @@
+id: mikrotik
+name: MikroTik RouterOS
+description: >
+  RouterOS logging, as BSD syslog over UDP or CEF over TCP/TLS: firewall rules
+  with logging on, logins and failed logins, configuration changes made by a
+  user, and interface links. RouterOS does not log a rule's action, so give
+  the rules' log prefix a word that says it (DROP, BLOCK, REJECT; ACCEPT,
+  ALLOW). Without one, the connection is recorded with no action.
+priority: 27
+
+match:
+  raw:
+    - '\b(?:input|forward|output|prerouting|postrouting|srcnat|dstnat|[\w-]+): in:\S+ out:(?:\(unknown 0\)|\S+?),? (?:connection-state|src-mac|proto)\b'
+    - '\b(?:system|interface|account),(?:info|warning|error|critical)(?:,\w+)* '
+    - '\|MikroTik\|'
+
+rules:
+  # firewall,info DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac 00:11:22:33:44:55,
+  #   proto TCP (SYN), 203.0.113.5:51515->198.51.100.10:22, len 60
+  - name: firewall
+    source: raw
+    pattern: '(?:(?P<prefix>[^\s:]+(?: [^\s:]+)*?) )?(?P<chain>[\w-]+): in:(?P<interface>\S+?),? out:(?P<out_interface>\(unknown 0\)|[^,\s]+),?.*?\bproto (?P<proto>[A-Za-z0-9]+)(?: \([^)]*\))?, (?:\[?(?P<src_ip>[0-9a-fA-F.:]+?)\]?(?::(?P<src_port>\d+))?->\[?(?P<dst_ip>[0-9a-fA-F.:]+?)\]?(?::(?P<dst_port>\d+))?)(?:,|\s|$)'
+    extract:
+      - from: prefix
+        patterns: ['(?i)(?P<action>drop|block|deny|reject|accept|allow|permit|pass)']
+    set: {event_type: traffic}
+    map:
+      action: {accept: allow, allow: allow, permit: allow, pass: allow, _default: block}
+      proto: {'6': tcp, '17': udp, '1': icmp}
+
+  # system,error,critical login failure for user admin from 203.0.113.5 via ssh
+  - name: login-failed
+    source: raw
+    pattern: 'login failure for user (?P<user>\S+) from (?P<src_ip>[0-9a-fA-F.:]+) via (?P<service>\S+)'
+    set: {event_type: auth_failure}
+
+  # system,info,account user admin logged in from 10.0.0.9 via winbox
+  - name: login
+    source: raw
+    pattern: '\buser (?P<user>\S+) logged in from (?P<src_ip>[0-9a-fA-F.:]+) via (?P<service>\S+)'
+    set: {event_type: auth_success}
+
+  # system,info filter rule added by admin / address changed by winbox-3.40/tcp-msg(winbox):admin@10.0.0.9 (...)
+  - name: config-change
+    source: raw
+    pattern: '\b(?P<detail>[\w -]+? (?:added|changed|removed|moved)) by (?:[\w.\-/():]+:)?(?P<user>[^@\s()]+)(?:@(?P<src_ip>[0-9a-fA-F.:]+))?'
+    set: {event_type: config_change}
+
+  # interface,info ether2 link down / ether2 link up (speed 1G, full duplex)
+  - name: link
+    source: raw
+    pattern: '\b(?P<interface>[\w.\-]+) link (?P<state>up|down)\b'
+    set: {event_type: link_state}
+
+  - name: event
+    source: raw
+    pattern: '(?P<topics>(?:system|interface|account|firewall|dhcp|wireless|ipsec|ppp|critical|error|warning|info)(?:,\w+)*) (?P<detail>.*)$'
+    set: {event_type: system}
+    extract:
+      - from: topics
+        patterns: ['\b(?P<level>critical|error)\b']
+    map:
+      level: {critical: high, error: medium, _default: info}

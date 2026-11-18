@@ -112,6 +112,14 @@ syslog:
     secret: ""  # a kubernetes.io/tls Secret (tls.crt, tls.key; ca.crt to require device certificates)
     requireClientCertificates: false
 
+# NetFlow v5/v9 and IPFIX over UDP, on the syslog Service. Behind several
+# collectors, the load balancer must keep each exporter on one collector
+# (templates are per exporter): externalTrafficPolicy Local with
+# session affinity on the source address.
+flows:
+  enabled: false
+  port: 2055
+
 web:
   service:
     type: ClusterIP

@@ -9,7 +9,7 @@
   },
   {
     "q": "Which firewalls and switches does Cerberus support?",
-    "a": "Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Cisco IOS and IOS-XE, Cisco ASA and Firepower, Cisco Meraki (MX, MS, MR), Juniper SRX and Junos, SonicWall, Sophos Firewall, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, RTL-Playground switches, and Suricata sensors (EVE JSON). Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file."
+    "a": "Built-in connectors cover OPNsense, Palo Alto Networks, Fortinet FortiGate, Check Point, Cisco IOS and IOS-XE, Cisco NX-OS, Cisco ASA and Firepower, Cisco Meraki (MX, MS, MR), Cisco wireless controllers, Juniper SRX and Junos, Arista EOS, SonicWall, Sophos Firewall, WatchGuard Firebox, MikroTik RouterOS, Huawei VRP, HPE Comware and H3C, Extreme EXOS and VOSS, Ubiquiti UniFi and EdgeOS, Aruba, Dell, Brocade and Ruckus ICX, RTL-Playground switches, Suricata sensors (EVE JSON) and any product that sends CEF. Cerberus also receives NetFlow v5, v9 and IPFIX. Any other device that sends RFC 3164 or RFC 5424 syslog works through the generic connector, and you can add a vendor with a short YAML file."
   },
   {
     "q": "Do I need to install agents on my devices?",

@@ -380,6 +380,8 @@ Chart values worth knowing (all in [`values.yaml`](helm/cerberus/values.yaml)):
   lines under a `sites` key).
 - `syslog.service.loadBalancerSourceRanges`: restrict to your management
   networks. `syslog.tls.*` adds syslog over TLS from a `kubernetes.io/tls` Secret.
+  `flows.enabled` adds NetFlow v5/v9 and IPFIX on UDP `flows.port` (2055) to the
+  same Service, with session affinity so each exporter stays on one collector.
 - `metrics.token`; the pods carry `prometheus.io/scrape` annotations.
 
 The chart is linted and rendered in CI in both forms.

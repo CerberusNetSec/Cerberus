@@ -1,0 +1,74 @@
+id: watchguard
+name: WatchGuard Firebox (Fireware)
+description: >
+  Fireware syslog: allowed and denied packets (for policies with logging on),
+  IPS and proxy detections, Firebox and management logins, configuration saves
+  and interface links. Use Syslog format, with the serial number and time
+  stamp boxes ticked or not.
+priority: 27
+
+match:
+  message:
+    - '\bmsg_id="[0-9A-F]{4}-[0-9A-F]{4}"'
+
+rules:
+  # firewall: msg_id="3000-0148" Deny 1-Trusted 0-External 60 tcp 20 64 10.0.0.5 203.0.113.9 50000 22 offset 10 S 1 win 64240 (Unhandled Internal Packet-00)
+  - name: ips
+    when: {message: '\bsignature_name="'}
+    pattern: '(?P<action>Allow|Deny|Drop) (?P<interface>\S+) (?P<out_interface>\S+) \d+ (?P<proto>[a-z0-9]+) \d+ \d+ (?P<src_ip>[0-9a-fA-F.:]+) (?P<dst_ip>[0-9a-fA-F.:]+)(?: (?P<src_port>\d+) (?P<dst_port>\d+))?'
+    extract:
+      - from: message
+        patterns: ['\bsignature_name="(?P<threat_name>[^"]*)"']
+      - from: message
+        patterns: ['\bseverity="(?P<level>\d)"']
+    set: {event_type: threat}
+    map:
+      action: {allow: allow, _default: block}
+      level: {'5': critical, '4': high, '3': medium, '2': low, _default: info}
+
+  - name: traffic
+    pattern: 'msg_id="[0-9A-F]{4}-[0-9A-F]{4}" (?P<action>Allow|Deny|Drop) (?P<interface>\S+) (?P<out_interface>\S+) \d+ (?P<proto>[a-z0-9]+) \d+ \d+ (?P<src_ip>[0-9a-fA-F.:]+) (?P<dst_ip>[0-9a-fA-F.:]+)(?: (?P<src_port>\d+) (?P<dst_port>\d+))?(?:.*\((?P<policy>[^()]*)\))?'
+    extract:
+      - from: message
+        patterns: ['\bsent_bytes="(?P<bytes_sent>\d+)"']
+      - from: message
+        patterns: ['\brcvd_bytes="(?P<bytes_received>\d+)"']
+    set: {event_type: traffic}
+    map:
+      action: {allow: allow, _default: block}
+
+  # The Traffic Monitor layout: Deny 10.0.1.131 10.0.1.1 echo-request/icmp Trusted Firebox Denied 84 64 (Ping-00) ... msg_id="3000-0148"
+  - name: traffic-monitor-layout
+    pattern: '\b(?P<action>Allow|Deny|Drop) (?P<src_ip>[0-9a-fA-F.:]+) (?P<dst_ip>[0-9a-fA-F.:]+) (?P<service>\S+)/(?P<proto>[a-z0-9]+)(?: (?P<src_port>\d+) (?P<dst_port>\d+))? (?P<interface>\S+) (?P<out_interface>\S+)(?:.*?\((?P<policy>[^()]*)\))?'
+    extract:
+      - from: message
+        patterns: ['\bsent_bytes="(?P<bytes_sent>\d+)"']
+      - from: message
+        patterns: ['\brcvd_bytes="(?P<bytes_received>\d+)"']
+    set: {event_type: traffic}
+    map:
+      action: {allow: allow, _default: block}
+
+  # Authentication of Firewall user [jdoe@Firebox-DB] from 203.0.113.5 was rejected, password is incorrect
+  # Management user admin@Firebox-DB from 203.0.113.5 log in attempt was rejected - Invalid credentials
+  - name: login-failed
+    pattern: '(?i)\buser \[?(?P<user>[^\s@\]]+)(?:@(?P<auth_server>[^\s\]]+))?\]? from (?P<src_ip>[0-9a-fA-F.:]+)\b.*?(?:rejected|failed|incorrect|invalid|denied)'
+    set: {event_type: auth_failure}
+
+  - name: login
+    pattern: '(?i)\buser \[?(?P<user>[^\s@\]]+)(?:@(?P<auth_server>[^\s\]]+))?\]? from (?P<src_ip>[0-9a-fA-F.:]+)\b.*?(?:logged in|log in .*?succeeded|authenticated|login succeeded)'
+    set: {event_type: auth_success}
+
+  - name: config-change
+    pattern: '(?i)\bconfiguration (?:file )?(?:was )?(?:saved|changed|updated|uploaded)(?: (?:by|from) (?P<user>[^\s@]+)(?:@\S+)?)?(?:.*?from (?P<src_ip>[0-9a-fA-F.:]+))?'
+    set: {event_type: config_change}
+
+  - name: link
+    pattern: '(?i)\binterface (?P<interface>[\w.\-]+)(?: \([^)]*\))? (?:link )?(?:is |status (?:is |changed to )?)?(?P<state>up|down)\b'
+    set: {event_type: link_state}
+    map:
+      state: {up: up, down: down}
+
+  - name: event
+    pattern: 'msg_id="(?P<msg_id>[^"]+)" (?P<detail>.*)$'
+    set: {event_type: system}

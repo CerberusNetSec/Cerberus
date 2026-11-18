@@ -7050,6 +7050,17 @@
   "body": {
    "connectors": [
     {
+     "description": "Flow records from Cerberus's own NetFlow v5, v9 and IPFIX listener (CERBERUS_FLOW_PORT). Each record is one connection the exporter forwarded: addresses, ports, protocol, bytes and interfaces; NSEL and IPFIX firewall events say whether a firewall denied it.",
+     "id": "netflow",
+     "name": "NetFlow / IPFIX",
+     "origin": "builtin",
+     "priority": 1,
+     "rules": [
+      "flow-end",
+      "flow"
+     ]
+    },
+    {
      "description": "Suricata's EVE JSON log sent as syslog (an eve-log output with `filetype: syslog`, or a log shipper forwarding eve.json): alerts, flows and the protocol records. Brings detection to a network with a span or mirror port, whatever its firewall. Suricata's one-line fast.log alerts are handled by the OPNsense connector.",
      "id": "suricata",
      "name": "Suricata (EVE JSON)",
@@ -7074,6 +7085,21 @@
       "suricata-alert",
       "gui-login-failed",
       "gui-login-success"
+     ]
+    },
+    {
+     "description": "Check Point Log Exporter in its default syslog format ([key:\"value\"; ...]): firewall accepts and drops, IPS, Anti-Bot, Anti-Virus and Threat Emulation detections, SmartConsole and VPN logins, and policy installs. Log Exporter's CEF output is read by the CEF connector instead.",
+     "id": "checkpoint",
+     "name": "Check Point (Log Exporter)",
+     "origin": "builtin",
+     "priority": 20,
+     "rules": [
+      "threat",
+      "login-failed",
+      "login",
+      "config-change",
+      "traffic",
+      "event"
      ]
     },
     {
@@ -7242,6 +7268,63 @@
      ]
     },
     {
+     "description": "The %%NN MODULE/severity/MNEMONIC messages of Huawei VRP (CloudEngine, S series, AR, USG) and HPE Comware / H3C switches and routers: interface state, SSH, Telnet and console logins, configuration commands and saves, spanning tree protection and MAC flapping.",
+     "id": "huawei_h3c",
+     "name": "Huawei VRP / HPE Comware (H3C)",
+     "origin": "builtin",
+     "priority": 27,
+     "rules": [
+      "huawei-link",
+      "comware-link",
+      "comware-line-protocol",
+      "huawei-login-failed",
+      "huawei-login",
+      "comware-login-failed",
+      "comware-login",
+      "huawei-show-command",
+      "huawei-command",
+      "comware-show-command",
+      "comware-command",
+      "config-saved",
+      "stp-guard",
+      "stp-change",
+      "mac-flap",
+      "other"
+     ]
+    },
+    {
+     "description": "RouterOS logging, as BSD syslog over UDP or CEF over TCP/TLS: firewall rules with logging on, logins and failed logins, configuration changes made by a user, and interface links. RouterOS does not log a rule's action, so give the rules' log prefix a word that says it (DROP, BLOCK, REJECT; ACCEPT, ALLOW). Without one, the connection is recorded with no action.",
+     "id": "mikrotik",
+     "name": "MikroTik RouterOS",
+     "origin": "builtin",
+     "priority": 27,
+     "rules": [
+      "firewall",
+      "login-failed",
+      "login",
+      "config-change",
+      "link",
+      "event"
+     ]
+    },
+    {
+     "description": "Fireware syslog: allowed and denied packets (for policies with logging on), IPS and proxy detections, Firebox and management logins, configuration saves and interface links. Use Syslog format, with the serial number and time stamp boxes ticked or not.",
+     "id": "watchguard",
+     "name": "WatchGuard Firebox (Fireware)",
+     "origin": "builtin",
+     "priority": 27,
+     "rules": [
+      "ips",
+      "traffic",
+      "traffic-monitor-layout",
+      "login-failed",
+      "login",
+      "config-change",
+      "link",
+      "event"
+     ]
+    },
+    {
      "description": "Dell OS10 (%IFM_OSTATE_DN and audit messages), Dell OS9/Force10 (%IFMGR-5-OSTATE_DN), Dell N-series and PowerConnect (FASTPATH \"%% Link Down: Gi1/0/5\" and login messages; the same FASTPATH format covers UniFi gen-1 switches and EdgeSwitch port changes), Brocade FastIron / Ruckus ICX (\"Interface ethernet1/1/5, state down\", \"Security: SSH login by ...\"), and Brocade Fabric OS SAN switches (RASLog SEC- login events).",
      "id": "dell_brocade",
      "name": "Dell Networking / Brocade (Ruckus ICX)",
@@ -7266,6 +7349,80 @@
       "fos-login-failed",
       "fos-login",
       "fos-login-failed-audit"
+     ]
+    },
+    {
+     "description": "ExtremeXOS <Severity:component.condition> messages (port links, logins, CLI commands, spanning tree) and the link and login messages of VOSS (VSP/Fabric Engine).",
+     "id": "extreme",
+     "name": "Extreme Networks (EXOS, VOSS)",
+     "origin": "builtin",
+     "priority": 28,
+     "rules": [
+      "exos-link",
+      "exos-login-failed",
+      "exos-login",
+      "exos-show-command",
+      "exos-command",
+      "exos-stp",
+      "voss-link",
+      "voss-login-failed",
+      "voss-login",
+      "exos-other",
+      "voss-other"
+     ]
+    },
+    {
+     "description": "EOS agents' %FACILITY-SEVERITY-MNEMONIC messages: link state (EOS reports it as line protocol), configuration changes and sessions, ACL hits, spanning tree guards, MAC flaps and errdisabled ports. Logins come from sshd and are read by the generic connector.",
+     "id": "arista",
+     "name": "Arista EOS",
+     "origin": "builtin",
+     "priority": 29,
+     "rules": [
+      "link",
+      "config-change",
+      "acl-hit",
+      "stp-guard",
+      "stp-change",
+      "mac-flap",
+      "err-disable",
+      "restart",
+      "other"
+     ]
+    },
+    {
+     "description": "Nexus switches: interface up and down, SSH and console logins (failed and accepted), configuration changes, ACL log entries, spanning tree guards and MAC moves, and crashed services. Use `logging server <ip> 6` and, for the hostname in each message, `logging origin-id hostname`.",
+     "id": "cisco_nxos",
+     "name": "Cisco NX-OS (Nexus)",
+     "origin": "builtin",
+     "priority": 29,
+     "rules": [
+      "link-admin-down",
+      "link-down",
+      "link-up",
+      "login-failed-pam",
+      "login-failed",
+      "login",
+      "config-change",
+      "acl-log",
+      "stp-guard",
+      "stp-change",
+      "mac-move",
+      "service-crash",
+      "other"
+     ]
+    },
+    {
+     "description": "Wireless LAN controllers: client authentication failures (Wi-Fi password spraying shows up as many of them), rogue access points and wireless attacks reported by the controller, AP joins and disconnects, and admin logins. 802.1X messages a 9800 shares with IOS are read by the Cisco IOS connector.",
+     "id": "cisco_wlc",
+     "name": "Cisco wireless controllers (AireOS, Catalyst 9800)",
+     "origin": "builtin",
+     "priority": 29,
+     "rules": [
+      "client-auth-failed",
+      "wireless-threat",
+      "admin-login-failed",
+      "ap-state",
+      "other"
      ]
     },
     {
@@ -7312,6 +7469,21 @@
       "reset",
       "config-reset",
       "stp-other"
+     ]
+    },
+    {
+     "description": "Any device or product that sends ArcSight CEF over syslog: Check Point Log Exporter, Sophos, Forcepoint, Trend Micro, Barracuda, Imperva, F5, Citrix and many others. Connections, blocks, threats, logins and configuration changes are told apart from the standard CEF keys and the event name; the rest is stored. A vendor's own connector, where there is one, is tried first.",
+     "id": "cef",
+     "name": "CEF (Common Event Format)",
+     "origin": "builtin",
+     "priority": 60,
+     "rules": [
+      "threat",
+      "login-failed",
+      "login",
+      "config-change",
+      "traffic",
+      "event"
      ]
     },
     {
@@ -51430,6 +51602,7 @@
    "events_since": 1800000000.0,
    "events_stored": 6785,
    "federation": null,
+   "flows": null,
    "max_events": 2000000,
    "open_alerts": {
     "critical": 6,
@@ -52062,6 +52235,7 @@
    "events_since": 1800000000.0,
    "events_stored": 6785,
    "federation": null,
+   "flows": null,
    "max_events": 2000000,
    "open_alerts": {
     "critical": 6,
@@ -52879,6 +53053,7 @@
    "events_since": 1800000000.0,
    "events_stored": 6785,
    "federation": null,
+   "flows": null,
    "max_events": 2000000,
    "open_alerts": {
     "critical": 6,
@@ -54056,6 +54231,7 @@
    "events_since": 1800000000.0,
    "events_stored": 6785,
    "federation": null,
+   "flows": null,
    "max_events": 2000000,
    "open_alerts": {},
    "queue_size": 50000,

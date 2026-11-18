@@ -13,6 +13,7 @@ from .backends import open_store
 from .engine import Engine
 from .federation import Central, Forwarder
 from .notifiers import Notifier
+from .flows import FlowReceiver
 from .receiver import SyslogReceiver, tls_context
 from .snmp_poller import SnmpPoller
 from .web import create_app
@@ -43,8 +44,11 @@ async def run_collector(cfg: Config) -> None:
                           Publisher(cfg, cfg.data_dir / "spool"), store)
     receiver = make_receiver(cfg, collector.submit)
     collector.receiver = receiver
+    flows = FlowReceiver(collector.submit, cfg.bind, cfg.flow_port)
+    collector.flows = flows
     await collector.start()
     await receiver.start()
+    await flows.start()
     server = uvicorn.Server(uvicorn.Config(status_app(collector), host=cfg.bind, port=cfg.web_port,
                                            log_level="warning", access_log=False))
     log.info("Cerberus %s collector %s; status on http://%s:%d/status", __version__, collector.name, cfg.bind,
@@ -53,6 +57,7 @@ async def run_collector(cfg: Config) -> None:
         await server.serve()
     finally:
         await receiver.stop()
+        await flows.stop()
         await collector.stop()
         if store:
             store.close()
@@ -163,6 +168,7 @@ async def amain() -> None:
         from .listeners import apply_saved
         apply_saved(cfg, db.get_setting("listeners"))  # ports chosen under Settings win over the environment
         receiver = make_receiver(cfg, engine.submit)
+        engine.flows = FlowReceiver(engine.submit, cfg.bind, cfg.flow_port)
 
     poller = SnmpPoller(engine, db)
 
@@ -171,6 +177,8 @@ async def amain() -> None:
     snmp_task = asyncio.create_task(poller.run())
     if receiver:
         await receiver.start()
+    if engine.flows:
+        await engine.flows.start()
 
     engine.receiver = receiver
     tasks = []
@@ -200,6 +208,8 @@ async def amain() -> None:
     finally:
         if receiver:
             await receiver.stop()
+        if engine.flows:
+            await engine.flows.stop()
         for task in tasks:
             task.cancel()
         if forwarder:

@@ -1,0 +1,48 @@
+id: cisco_wlc
+name: Cisco wireless controllers (AireOS, Catalyst 9800)
+description: >
+  Wireless LAN controllers: client authentication failures (Wi-Fi password
+  spraying shows up as many of them), rogue access points and wireless
+  attacks reported by the controller, AP joins and disconnects, and admin
+  logins. 802.1X messages a 9800 shares with IOS are read by the Cisco IOS
+  connector.
+priority: 29
+
+match:
+  raw:
+    - '%(?:APF|LWAPP|CAPWAP|RRM|APMGR|WIPS|EMWEB|RLDP|MM|DTL)-[0-7]-[A-Z0-9_]+:'
+    - '%(?:CLIENT_ORCH_LOG|CLIENT_EXCLUSION_SERVER|EWLC_\w+|APMGR_TRACE_MESSAGE|CAPWAPAC_SMGR_TRACE_MESSAGE|WIPS_\w+|ROGUE\w*)-[0-7]-[A-Z0-9_]+:'
+
+rules:
+  # AireOS: %APF-3-AUTHENTICATION_FAILED: apf_foreignap.c:1234 Authentication failed for client 00:11:22:33:44:55 ... user jdoe
+  - name: client-auth-failed
+    source: raw
+    pattern: '%(?:APF|AAA|DOT1X\w*|CLIENT_ORCH_LOG|CLIENT_EXCLUSION_SERVER)-\d-\w*(?:AUTH\w*FAIL\w*|FAIL\w*AUTH\w*|EXCLUDED|EXCLUSION\w*|WRONG_PSK\w*|MIC_FAIL\w*): .*?(?i:client|mac)[: (]+(?P<mac>[0-9a-fA-F]{2}(?:[:.-]?[0-9a-fA-F]{2}){5}|[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})'
+    extract:
+      - from: raw
+        patterns: ['(?i)\buser(?:name)?[:= ]+''?(?P<user>[^\s,'']+)']
+    set: {event_type: auth_failure}
+
+  # Rogue and attack reports from the controller.
+  - name: wireless-threat
+    source: raw
+    pattern: '%(?:APF|WIPS\w*|IDS|RRM|ROGUE\w*|EWLC_\w*ROGUE\w*|EWLC_\w*WIPS\w*)-\d-(?P<mnemonic>\w*(?:ROGUE|ATTACK|SIGNATURE|IDS|WIPS|CONTAIN|SPOOF|FLOOD|DEAUTH)\w*): (?P<threat_name>.*)'
+    set: {event_type: threat, level: medium}
+
+  # Admin logins to the controller: %EMWEB-... / %AAA-... failed for user ... from 203.0.113.5
+  - name: admin-login-failed
+    source: raw
+    pattern: '%(?:EMWEB|AAA|LOG)-\d-\w*(?:FAIL\w*|DENIED|REJECT\w*): .*?(?i:user)[: ]+''?(?P<user>[^\s,'']+).*?(?:from|IP)[: ]+(?P<src_ip>[0-9a-fA-F.:]+)'
+    set: {event_type: auth_failure}
+
+  - name: ap-state
+    source: raw
+    pattern: '%(?:LWAPP|CAPWAP|APMGR\w*|CAPWAPAC\w*)-\d-(?P<mnemonic>\w*(?:DISC|JOIN|ASSOC|DOWN|UP|REBOOT)\w*): (?P<detail>.*)'
+    set: {event_type: system}
+
+  - name: other
+    source: raw
+    pattern: '%(?P<facility_name>[A-Z0-9_]+)-(?P<level>[0-7])-(?P<mnemonic>[A-Z0-9_]+): (?P<detail>.*)'
+    set: {event_type: system}
+    map:
+      level: {'0': critical, '1': high, '2': high, '3': medium, '4': low, _default: info}

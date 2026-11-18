@@ -1,0 +1,24 @@
+id: netflow
+name: NetFlow / IPFIX
+description: >
+  Flow records from Cerberus's own NetFlow v5, v9 and IPFIX listener
+  (CERBERUS_FLOW_PORT). Each record is one connection the exporter forwarded:
+  addresses, ports, protocol, bytes and interfaces; NSEL and IPFIX firewall
+  events say whether a firewall denied it.
+priority: 1
+
+match:
+  app: ['^netflow$']
+
+rules:
+  # A connection a firewall tore down (NSEL "deleted"): its creation was the traffic event.
+  - name: flow-end
+    when: {message: '"fw_event":"deleted"'}
+    parser: json
+    rename: {in_if: interface, out_if: out_interface}
+    set: {event_type: session_end}
+
+  - name: flow
+    parser: json
+    rename: {in_if: interface, out_if: out_interface}
+    set: {event_type: traffic}

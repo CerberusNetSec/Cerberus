@@ -41,10 +41,10 @@ firewall cluster).
 Version tags are published by CI for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/cerberusnetsec/cerberus:1.1.0
+docker pull ghcr.io/cerberusnetsec/cerberus:1.2.0
 ```
 
-To build your own, `docker build -t registry.example.com/cerberus:1.1.0 .`,
+To build your own, `docker build -t registry.example.com/cerberus:1.2.0 .`,
 push it, and set `CERBERUS_IMAGE` (Compose, Swarm) or the `images:` entry in
 `kubernetes/base/kustomization.yaml`.
 
@@ -137,7 +137,7 @@ CERBERUS_SITE_NAME=north CERBERUS_CENTRAL_URL=https://cerberus.example.com \
   docker compose -f deploy/compose/site.yml up -d
 ```
 
-Set `CERBERUS_IMAGE=ghcr.io/cerberusnetsec/cerberus:1.1.0` to use the published image
+Set `CERBERUS_IMAGE=ghcr.io/cerberusnetsec/cerberus:1.2.0` to use the published image
 instead of building locally. Compose (without Swarm) bind-mounts secret files,
 so they must be readable by the container's user (uid 10001); `make-secrets.py`
 writes them mode 0644.

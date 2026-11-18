@@ -12,7 +12,7 @@ resources:
 images:
   - name: cerberus
     newName: ghcr.io/cerberusnetsec/cerberus
-    newTag: "1.1.0"
+    newTag: "1.2.0"
 configMapGenerator:
   - name: cerberus
     literals:
